@@ -1,0 +1,338 @@
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Logo } from '../components/Logo';
+import { ChevronRight, ChevronLeft, Check } from 'lucide-react';
+import { useApp } from '../context/AppContext';
+
+const STEPS = [
+  { id: 1, label: 'Basic info' },
+  { id: 2, label: 'Lifestyle' },
+  { id: 3, label: 'Diet' },
+  { id: 4, label: 'Allergies' },
+  { id: 5, label: 'Fixed meals' },
+  { id: 6, label: 'Review' },
+];
+
+function TagInput({ tags, onAdd, onRemove, placeholder }) {
+  const [input, setInput] = useState('');
+
+  function handleKeyDown(e) {
+    if ((e.key === 'Enter' || e.key === ',') && input.trim()) {
+      e.preventDefault();
+      const val = input.trim().replace(/,$/, '');
+      if (val && !tags.includes(val)) onAdd(val);
+      setInput('');
+    }
+  }
+
+  return (
+    <div className="tag-input-container" onClick={e => e.currentTarget.querySelector('input')?.focus()}>
+      {tags.map((t, i) => (
+        <span key={i} className="tag-chip">
+          {t}
+          <button type="button" className="tag-chip-remove" onClick={() => onRemove(t)}>×</button>
+        </span>
+      ))}
+      <input
+        className="tag-raw-input"
+        placeholder={tags.length === 0 ? placeholder : ''}
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={handleKeyDown}
+      />
+    </div>
+  );
+}
+
+function OptionBtn({ options, value, onChange, multi = false }) {
+  function isSelected(opt) { return multi ? (value || []).includes(opt) : value === opt; }
+  function handleClick(opt) {
+    if (multi) {
+      const arr = value || [];
+      onChange(arr.includes(opt) ? arr.filter(v => v !== opt) : [...arr, opt]);
+    } else {
+      onChange(opt);
+    }
+  }
+  return (
+    <div className="option-buttons">
+      {options.map(opt => (
+        <button key={opt.value || opt} type="button"
+          className={`option-btn${isSelected(opt.value || opt) ? ' selected' : ''}`}
+          onClick={() => handleClick(opt.value || opt)}
+        >
+          {opt.label || opt}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const INITIAL_FORM = {
+  name: '', age: '', sex: 'female', height_cm: '', weight_kg: '',
+  activity_level: 'medium', goal: 'maintain',
+  diet_type: 'non-veg', dislikes: [], allergies: [],
+  fixed_breakfast: '', fixed_lunch: '', fixed_dinner: '',
+};
+
+export default function OnboardingPage() {
+  const navigate = useNavigate();
+  const { createProfile, addToast } = useApp();
+  const [step, setStep] = useState(1);
+  const [form, setForm] = useState(INITIAL_FORM);
+
+  function set(key, val) { setForm(p => ({ ...p, [key]: val })); }
+
+  function handleNext() {
+    if (step < 6) setStep(s => s + 1);
+  }
+  function handleBack() {
+    if (step > 1) setStep(s => s - 1);
+  }
+
+  function handleFinish() {
+    const profileData = {
+      ...form,
+      age: Number(form.age),
+      height_cm: Number(form.height_cm),
+      weight_kg: Number(form.weight_kg),
+      fixed_meals: {
+        breakfast: form.fixed_breakfast,
+        lunch: form.fixed_lunch,
+        dinner: form.fixed_dinner,
+      },
+    };
+    createProfile(profileData);
+    addToast('Profile created! Welcome to Nutrigen.ai 🎉', 'success');
+    navigate('/app/home');
+  }
+
+  function canProceed() {
+    if (step === 1) return form.name && form.age && form.height_cm && form.weight_kg;
+    return true;
+  }
+
+  return (
+    <div className="onboarding-page" id="onboarding-page">
+      <div className="onboarding-header">
+        <Logo size="sm" />
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-500)' }}>Step {step} of {STEPS.length}</span>
+      </div>
+      <div className="onboarding-body">
+        <div className="onboarding-container">
+          <div style={{ textAlign: 'center', marginBottom: 'var(--space-5)' }}>
+            <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 700, color: 'var(--gray-900)', marginBottom: 4, letterSpacing: '-0.02em' }}>Create your profile</h1>
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-500)' }}>This helps us create safe and personalized meal plans for you.</p>
+          </div>
+
+          <div className="onboarding-card">
+            {/* Step tabs */}
+            <div className="onboarding-step-tabs">
+              {STEPS.map(s => (
+                <div key={s.id}
+                  className={`onboarding-step-tab${step === s.id ? ' active' : step > s.id ? ' done' : ''}`}
+                >
+                  <div className="step-num">
+                    {step > s.id ? <Check size={11} /> : s.id}
+                  </div>
+                  {s.label}
+                </div>
+              ))}
+            </div>
+
+            <div className="onboarding-content">
+              {/* Step 1: Personal Info */}
+              {step === 1 && (
+                <>
+                  <h2 className="onboarding-step-title">Basic information</h2>
+                  <p className="onboarding-step-desc">Let's start with some basic details.</p>
+                  <div className="onboarding-form">
+                    <div className="grid-2">
+                      <div className="form-group">
+                        <label className="form-label">Name</label>
+                        <input className="form-input" placeholder="Sarah Kumar" value={form.name} onChange={e => set('name', e.target.value)} id="onboard-name" />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Age</label>
+                        <input className="form-input" type="number" placeholder="28" value={form.age} onChange={e => set('age', e.target.value)} id="onboard-age" />
+                      </div>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Gender</label>
+                      <OptionBtn options={[{ value: 'female', label: 'Female' }, { value: 'male', label: 'Male' }, { value: 'other', label: 'Other' }]} value={form.sex} onChange={v => set('sex', v)} />
+                    </div>
+                    <div className="grid-2">
+                      <div className="form-group">
+                        <label className="form-label">Height (cm)</label>
+                        <input className="form-input" type="number" placeholder="165" value={form.height_cm} onChange={e => set('height_cm', e.target.value)} id="onboard-height" />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Weight (kg)</label>
+                        <input className="form-input" type="number" placeholder="65" value={form.weight_kg} onChange={e => set('weight_kg', e.target.value)} id="onboard-weight" />
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Step 2: Lifestyle */}
+              {step === 2 && (
+                <>
+                  <h2 className="onboarding-step-title">Lifestyle &amp; goals</h2>
+                  <p className="onboarding-step-desc">Help us understand your daily routine and fitness goals.</p>
+                  <div className="onboarding-form">
+                    <div className="form-group">
+                      <label className="form-label">Activity level</label>
+                      <p className="form-hint">How active are you in daily life?</p>
+                      <OptionBtn
+                        options={[{ value: 'low', label: '🧘 Low' }, { value: 'medium', label: '🚶 Moderate' }, { value: 'high', label: '🏃 High' }]}
+                        value={form.activity_level} onChange={v => set('activity_level', v)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Your goal</label>
+                      <OptionBtn
+                        options={[{ value: 'lose', label: '📉 Lose weight' }, { value: 'maintain', label: '⚖️ Maintain' }, { value: 'gain', label: '📈 Gain weight' }]}
+                        value={form.goal} onChange={v => set('goal', v)}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Step 3: Diet */}
+              {step === 3 && (
+                <>
+                  <h2 className="onboarding-step-title">Diet preferences</h2>
+                  <p className="onboarding-step-desc">Tell us about your dietary preferences.</p>
+                  <div className="onboarding-form">
+                    <div className="form-group">
+                      <label className="form-label">Diet type</label>
+                      <OptionBtn
+                        options={[{ value: 'veg', label: '🥦 Vegetarian' }, { value: 'non-veg', label: '🍗 Non-Vegetarian' }, { value: 'vegan', label: '🌱 Vegan' }]}
+                        value={form.diet_type} onChange={v => set('diet_type', v)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Foods you dislike</label>
+                      <p className="form-hint">Type a food and press Enter or comma to add it.</p>
+                      <TagInput
+                        tags={form.dislikes}
+                        onAdd={t => set('dislikes', [...form.dislikes, t])}
+                        onRemove={t => set('dislikes', form.dislikes.filter(d => d !== t))}
+                        placeholder="e.g. broccoli, bitter gourd"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Step 4: Allergies */}
+              {step === 4 && (
+                <>
+                  <h2 className="onboarding-step-title">Allergies &amp; restrictions</h2>
+                  <p className="onboarding-step-desc">We check every ingredient against your allergies before finalizing your plan.</p>
+                  <div className="onboarding-form">
+                    <div className="form-group">
+                      <label className="form-label">Common allergens</label>
+                      <OptionBtn
+                        multi
+                        options={['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish']}
+                        value={form.allergies}
+                        onChange={v => set('allergies', v)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Other allergies</label>
+                      <p className="form-hint">Add any additional allergies not listed above.</p>
+                      <TagInput
+                        tags={form.allergies.filter(a => !['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish'].includes(a))}
+                        onAdd={t => set('allergies', [...form.allergies, t])}
+                        onRemove={t => set('allergies', form.allergies.filter(a => a !== t))}
+                        placeholder="e.g. sesame, mustard"
+                      />
+                    </div>
+                    {form.allergies.length === 0 && (
+                      <div style={{ padding: 'var(--space-4)', background: 'var(--green-50)', border: '1px solid var(--green-200)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--green-700)' }}>
+                        ✓ No allergies selected. You can add them later from your profile.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* Step 5: Fixed Meals */}
+              {step === 5 && (
+                <>
+                  <h2 className="onboarding-step-title">Fixed meals <span style={{ fontSize: 14, fontWeight: 400, color: 'var(--gray-400)' }}>(optional)</span></h2>
+                  <p className="onboarding-step-desc">If you always have specific meals at certain times, tell us and we'll keep them fixed in your plan.</p>
+                  <div className="onboarding-form">
+                    {[
+                      { key: 'fixed_breakfast', label: '🌅 Fixed Breakfast', placeholder: 'e.g. 3 boiled eggs with brown bread' },
+                      { key: 'fixed_lunch', label: '☀️ Fixed Lunch', placeholder: 'e.g. dal rice with salad' },
+                      { key: 'fixed_dinner', label: '🌙 Fixed Dinner', placeholder: 'Leave blank if flexible' },
+                    ].map(f => (
+                      <div key={f.key} className="form-group">
+                        <label className="form-label">{f.label}</label>
+                        <input className="form-input" placeholder={f.placeholder} value={form[f.key]} onChange={e => set(f.key, e.target.value)} />
+                      </div>
+                    ))}
+                    <p className="form-hint">Fixed meals will be locked in your plan. You can change them later through Chat.</p>
+                  </div>
+                </>
+              )}
+
+              {/* Step 6: Review */}
+              {step === 6 && (
+                <>
+                  <h2 className="onboarding-step-title">Review your profile</h2>
+                  <p className="onboarding-step-desc">Everything looks good? You can always edit later.</p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+                    {[
+                      { label: 'Name', value: form.name },
+                      { label: 'Age / Gender', value: `${form.age} years · ${form.sex}` },
+                      { label: 'Height / Weight', value: `${form.height_cm} cm · ${form.weight_kg} kg` },
+                      { label: 'Activity Level', value: { low: 'Low', medium: 'Moderate', high: 'High' }[form.activity_level] },
+                      { label: 'Goal', value: { lose: 'Lose weight', maintain: 'Maintain weight', gain: 'Gain weight' }[form.goal] },
+                      { label: 'Diet Type', value: { veg: 'Vegetarian', 'non-veg': 'Non-Vegetarian', vegan: 'Vegan' }[form.diet_type] },
+                      { label: 'Allergies', value: form.allergies.length ? form.allergies.join(', ') : 'None' },
+                      { label: 'Dislikes', value: form.dislikes.length ? form.dislikes.join(', ') : 'None' },
+                    ].map((item, i) => (
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius-md)' }}>
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-500)', fontWeight: 500 }}>{item.label}</span>
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-900)', fontWeight: 500, textAlign: 'right', maxWidth: '60%' }}>{item.value || '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 'var(--space-5)', padding: 'var(--space-4)', background: 'var(--green-50)', border: '1px solid var(--green-200)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--green-700)' }}>
+                    🎉 Your profile is ready. Click <strong>Continue</strong> to start planning!
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="onboarding-actions">
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={step === 1 ? () => navigate('/') : handleBack}
+                id="onboard-back"
+              >
+                <ChevronLeft size={14} />
+                {step === 1 ? 'Back to home' : 'Back'}
+              </button>
+              {step < 6 ? (
+                <button className="btn btn-primary btn-sm" onClick={handleNext} disabled={!canProceed()} id="onboard-next">
+                  Next <ChevronRight size={14} />
+                </button>
+              ) : (
+                <button className="btn btn-primary" onClick={handleFinish} id="onboard-finish">
+                  Continue to Nutrigen.ai <ChevronRight size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

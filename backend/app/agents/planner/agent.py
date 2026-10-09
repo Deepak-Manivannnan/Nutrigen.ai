@@ -1,0 +1,226 @@
+import os
+from typing import Dict, Any, Optional, List
+from backend.app.agents.base import BaseAgent
+from backend.app.agents.planner.tools import PLANNER_TOOLS
+from backend.app.schemas.domain import MealPlan
+from backend.app.llm.client import LLMClient
+
+from backend.app.observability.logging import get_logger
+
+logger = get_logger("agents.planner")
+
+def _load_prompt() -> str:
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompt.md")
+    if os.path.exists(prompt_path):
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "You are the Planner Agent. Plan daily meals adhering to calorie targets and dietary constraints."
+
+class PlannerAgent(BaseAgent[MealPlan]):
+    """
+    Planner Agent: Creates a complete multi-day meal plan.
+    Slices calories across meals, locks fixed user meals, utilizes recipe APIs
+    with authentic AI fallbacks, and reformulates plans upon Supervisor feedback.
+    """
+    def __init__(
+        self,
+        client: Optional[LLMClient] = None,
+        max_steps: Optional[int] = None,
+        timeout_seconds: Optional[int] = None
+    ):
+        super().__init__(
+            name="PlannerAgent",
+            system_prompt=_load_prompt(),
+            output_schema=MealPlan,
+            tools=PLANNER_TOOLS,
+            client=client,
+            max_steps=max_steps or 2,
+            timeout_seconds=timeout_seconds or 120
+        )
+
+    async def generate_plan(
+        self,
+        days: int,
+        calorie_target: float,
+        user_profile: Dict[str, Any],
+        fixed_meals: Optional[Dict[str, Any]] = None,
+        feedback: Optional[List[str]] = None,
+        version: int = 1,
+        task_id: Optional[str] = None,
+        current_plan: Optional[MealPlan] = None
+    ) -> MealPlan:
+        plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
+        plan_name = getattr(current_plan, "name", None) or f"{days}-Day {plan_diet.capitalize()} Plan"
+
+        task_instruction = (
+            f"Generate a complete {days}-day meal plan targeting {calorie_target:.0f} calories per day (±5%).\n"
+            f"Plan version: {version}.\n"
+            f"Plan diet type: {plan_diet}.\n"
+            f"Provide exactly {days} days, with 3 meals (breakfast, lunch, dinner) per day, ingredients in grams, and accurate calories.\n"
+        )
+        if feedback:
+            task_instruction += (
+                f"\nCRITICAL REVISION FEEDBACK FROM PREVIOUS ROUND (Must be addressed):\n"
+                f"- " + "\n- ".join(feedback) + "\n"
+            )
+
+        context = {
+            "task_id": task_id,
+            "days": days,
+            "calorie_target": calorie_target,
+            "user_profile": {
+                "name": user_profile.get("name"),
+                "diet_type": plan_diet,
+                "dislikes": user_profile.get("dislikes", []),
+                "allergies": user_profile.get("allergies", [])
+            },
+            "fixed_meals": fixed_meals or {},
+            "version": version
+        }
+        if current_plan and current_plan.days:
+            context["current_plan"] = current_plan.model_dump()
+
+        meal_plan = None
+        if days > 1:
+            logger.info(f"[PlannerAgent] Generating {days}-day plan directly via structured output.")
+            plan_prompt = (
+                f"You are the Meal Planner Agent. Generate a complete {days}-day clinical meal plan for {user_profile.get('name', 'user')}.\n"
+                f"- Target calories: {calorie_target:.0f} kcal per day (±5%)\n"
+                f"- Diet type: {plan_diet}\n"
+                f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
+                f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
+                f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
+            )
+            if feedback:
+                plan_prompt += f"\n- Address this clinical review feedback from previous round:\n" + "\n".join(f"  * {fb}" for fb in feedback)
+            if fixed_meals:
+                plan_prompt += f"\n- Fixed meal constraints:\n" + "\n".join(f"  * {k}: {v}" for k, v in fixed_meals.items())
+
+            try:
+                meal_plan = await self.llm.generate_structured(
+                    prompt=plan_prompt,
+                    response_schema=MealPlan
+                )
+            except Exception as e:
+                logger.warning(f"[PlannerAgent] Direct structured generation error: {e}")
+        else:
+            try:
+                meal_plan = await self.run(task_instruction, context)
+            except Exception as e:
+                logger.warning(f"[PlannerAgent] Run encountered error: {e}. Executing direct generation fallback.")
+                meal_plan = MealPlan(days=[], target_calories=calorie_target, version=version)
+
+        # Fallback safeguard: If loop returned empty or incomplete days, generate directly
+        if not meal_plan or not meal_plan.days or len(meal_plan.days) < days:
+            logger.info(f"[PlannerAgent] Plan had {len(meal_plan.days) if meal_plan else 0}/{days} days. Running direct structured generation fallback.")
+            fallback_prompt = (
+                f"You are the Meal Planner Agent. Generate a complete {days}-day clinical meal plan for {user_profile.get('name', 'user')}.\n"
+                f"- Target calories: {calorie_target:.0f} kcal per day (±5%)\n"
+                f"- Diet type: {plan_diet}\n"
+                f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
+                f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
+                f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
+            )
+            if feedback:
+                fallback_prompt += f"\n- Address this clinical review feedback:\n" + "\n".join(f"  * {fb}" for fb in feedback)
+            try:
+                direct_plan = await self.llm.generate_structured(
+                    prompt=fallback_prompt,
+                    response_schema=MealPlan
+                )
+                if direct_plan and direct_plan.days:
+                    meal_plan = direct_plan
+            except Exception as direct_err:
+                logger.error(f"[PlannerAgent] Direct generation error: {direct_err}")
+
+        meal_plan.target_calories = calorie_target
+        meal_plan.version = version
+        meal_plan.diet_type = plan_diet
+        meal_plan.name = plan_name
+
+        # Calculate daily totals & averages and tag meal diet_type
+        total_cal = 0.0
+        for day in meal_plan.days:
+            for m in day.meals:
+                if not getattr(m, "diet_type", None):
+                    m.diet_type = plan_diet
+            day_cal = sum(m.calories for m in day.meals)
+            if day.total_calories <= 0.0:
+                day.total_calories = round(day_cal, 1)
+            total_cal += day.total_calories
+
+        if meal_plan.days:
+            meal_plan.average_daily_calories = round(total_cal / len(meal_plan.days), 1)
+
+        return meal_plan
+
+    async def modify_meal(
+        self,
+        current_plan: MealPlan,
+        edit_details: Any,
+        user_profile: Dict[str, Any],
+        task_id: Optional[str] = None
+    ) -> MealPlan:
+        """
+        Modifies a specific meal slot in an existing meal plan while keeping
+        all other days and meals strictly unchanged.
+        """
+        target_day = getattr(edit_details, "day", None) or 1
+        target_meal_type = getattr(edit_details, "meal_type", None) or "lunch"
+        instructions = getattr(edit_details, "instructions", "") or "modify meal"
+        plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
+
+        # Find the existing dish in that slot
+        old_dish = "unknown"
+        for d in current_plan.days:
+            if d.day_number == target_day:
+                for m in d.meals:
+                    if m.meal_type.lower() == target_meal_type.lower():
+                        old_dish = m.recipe_name
+                        break
+
+        task_instruction = (
+            f"Modify an existing meal plan according to user instructions:\n"
+            f"- Target Day: Day {target_day}\n"
+            f"- Target Meal: {target_meal_type}\n"
+            f"- Previous dish in this slot: '{old_dish}'\n"
+            f"- Modification instructions: '{instructions}'\n\n"
+            f"IMPORTANT RULES:\n"
+            f"1. Keep ALL OTHER DAYS and meals in the plan EXACTLY identical to the existing plan.\n"
+            f"2. Replace only Day {target_day} {target_meal_type} with a recipe matching the user's instructions.\n"
+            f"3. Strictly adhere to the plan's diet type '{plan_diet}' and exclude allergies {user_profile.get('allergies', [])}.\n"
+            f"4. Recalculate Day {target_day} total calories to be close to the target {current_plan.target_calories:.0f} kcal (±5%).\n"
+            f"5. Set version = {current_plan.version + 1}.\n"
+        )
+
+        context = {
+            "task_id": task_id,
+            "current_plan": current_plan.model_dump(),
+            "target_day": target_day,
+            "target_meal_type": target_meal_type,
+            "instructions": instructions,
+            "user_profile": {**user_profile, "diet_type": plan_diet}
+        }
+
+        updated_plan: MealPlan = await self.run(task_instruction, context)
+        updated_plan.target_calories = current_plan.target_calories
+        updated_plan.version = current_plan.version + 1
+        updated_plan.diet_type = plan_diet
+        updated_plan.name = getattr(current_plan, "name", None) or f"{len(updated_plan.days)}-Day {plan_diet.capitalize()} Plan"
+
+        total_cal = 0.0
+        for day in updated_plan.days:
+            for m in day.meals:
+                if not getattr(m, "diet_type", None):
+                    m.diet_type = plan_diet
+            day_cal = sum(m.calories for m in day.meals)
+            day.total_calories = round(day_cal, 1)
+            total_cal += day.total_calories
+
+        if updated_plan.days:
+            updated_plan.average_daily_calories = round(total_cal / len(updated_plan.days), 1)
+
+        return updated_plan
+

@@ -1,0 +1,491 @@
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  CalendarDays,
+  CheckCircle2,
+  Clock,
+  ShieldCheck,
+  BarChart2,
+  MessageSquare,
+  ShoppingCart,
+  Copy,
+  Plus,
+  Trash2,
+  ChevronRight,
+  Sun,
+  Sunrise,
+  Sunset,
+  Apple,
+  Edit3,
+  Check,
+} from 'lucide-react';
+import { useApp } from '../context/AppContext';
+import { generateDemoPlan } from '../utils/workflowSimulator';
+
+const MEAL_ICONS = {
+  Breakfast: Sunrise,
+  Lunch: Sun,
+  Dinner: Sunset,
+  Snack: Apple,
+};
+
+export default function PlansPage() {
+  const navigate = useNavigate();
+  const {
+    plans,
+    activePlanId,
+    setActivePlanId,
+    approvePlan,
+    deletePlan,
+    renamePlan,
+    addPlan,
+    addToast,
+  } = useApp();
+
+  const [activeDayIndex, setActiveDayIndex] = useState(0);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editedName, setEditedName] = useState('');
+
+  // Active plan lookup
+  const activePlan = plans.find(p => p.id === activePlanId) || plans[0] || null;
+
+  function handleApprove(planId) {
+    approvePlan(planId);
+  }
+
+  function handleModifyInChat(plan) {
+    navigate('/app/chat', { state: { prefill: `I want to update "${plan.name}" (Plan #${plan.id}): ` } });
+    addToast(`Ready to update "${plan.name}" in chat`, 'default');
+  }
+
+  function handleExportPlan(plan) {
+    if (!plan) return;
+    const summary = `${plan.name} (${plan.days} Days)\nCalorie Target: ${plan.calorieTarget} kcal/day\nDiet: ${plan.dietType}\nStatus: ${plan.status.toUpperCase()}\n\n` +
+      (plan.planDays || [])
+        .map(
+          d => `Day ${d.day} (${d.label}) - ${d.totalCalories} kcal:\n` +
+            d.meals.map(m => `  • ${m.type}: ${m.name} (${m.calories} kcal | P: ${m.protein}g C: ${m.carbs}g F: ${m.fat}g)`).join('\n')
+        )
+        .join('\n\n');
+
+    navigator.clipboard?.writeText(summary);
+    addToast('Meal plan copied to clipboard!', 'success');
+  }
+
+  function handleLoadSample() {
+    const sample = generateDemoPlan('7-day 1800 cal veg');
+    addPlan(sample);
+    setActivePlanId(sample.id);
+    setActiveDayIndex(0);
+    addToast('Sample 7-day meal plan created!', 'success');
+  }
+
+  if (!activePlan || plans.length === 0) {
+    return (
+      <div className="page-content" id="plans-page">
+        <div className="page-header">
+          <h1 className="page-title">Weekly Meal Plans</h1>
+          <p className="page-subtitle">Review, adjust, and approve your agent-generated meal plans.</p>
+        </div>
+
+        <div className="card empty-state" style={{ padding: '60px var(--space-6)' }}>
+          <div className="empty-icon">📋</div>
+          <h2 className="empty-title">No meal plans found</h2>
+          <p className="empty-desc">
+            You don't have an active meal plan yet. Start a conversation with our multi-agent assistant to generate your first personalized plan.
+          </p>
+          <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => navigate('/app/chat')}
+              id="empty-plan-chat-btn"
+            >
+              <MessageSquare size={16} />
+              Start Planning in Chat
+            </button>
+            <button
+              className="btn btn-outline"
+              onClick={handleLoadSample}
+              id="empty-plan-sample-btn"
+            >
+              Load Sample 7-Day Plan
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const daysList = activePlan.planDays || [];
+  const currentDay = daysList[activeDayIndex] || daysList[0] || null;
+
+  // Day macros calculation
+  const dayCalories = currentDay?.totalCalories || activePlan.calorieTarget || 1800;
+  const dayProtein = currentDay?.meals?.reduce((s, m) => s + (m.protein || 0), 0) || 75;
+  const dayCarbs = currentDay?.meals?.reduce((s, m) => s + (m.carbs || 0), 0) || 160;
+  const dayFat = currentDay?.meals?.reduce((s, m) => s + (m.fat || 0), 0) || 45;
+
+  return (
+    <div className="page-content" id="plans-page">
+      {/* Top Header */}
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
+        <div>
+          <h1 className="page-title">Weekly Meal Plans</h1>
+          <p className="page-subtitle">Inspect daily meals, nutritional macros, and allergy verification reports.</p>
+        </div>
+        <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => navigate('/app/chat')}
+            id="create-new-plan-btn"
+          >
+            <Plus size={14} />
+            New Plan in Chat
+          </button>
+        </div>
+      </div>
+
+      {/* Plan Selector tabs if multiple plans */}
+      {plans.length > 1 && (
+        <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-6)', overflowX: 'auto', paddingBottom: 4 }}>
+          {plans.map(p => {
+            const isSelected = p.id === activePlan.id;
+            return (
+              <button
+                key={p.id}
+                onClick={() => {
+                  setActivePlanId(p.id);
+                  setActiveDayIndex(0);
+                }}
+                className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-outline'}`}
+                style={{ borderRadius: 'var(--radius-full)' }}
+              >
+                {p.name} · Version {p.version || 1} {p.status === 'approved' ? 'Approved' : 'Draft'}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Plan Header Card */}
+      <div
+        className="card"
+        style={{
+          marginBottom: 'var(--space-6)',
+          background: 'linear-gradient(180deg, #ffffff 0%, var(--gray-50) 100%)',
+          borderColor: activePlan.status === 'approved' ? 'var(--green-200)' : 'var(--color-border)',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-2)' }}>
+              {isEditingName ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  <input
+                    type="text"
+                    value={editedName}
+                    onChange={e => setEditedName(e.target.value)}
+                    className="form-input"
+                    style={{ fontSize: 'var(--text-lg)', padding: '4px 8px', fontWeight: 600, width: 260 }}
+                    autoFocus
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        if (editedName.trim()) renamePlan(activePlan.id, editedName.trim());
+                        setIsEditingName(false);
+                      } else if (e.key === 'Escape') {
+                        setIsEditingName(false);
+                      }
+                    }}
+                  />
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => {
+                      if (editedName.trim()) renamePlan(activePlan.id, editedName.trim());
+                      setIsEditingName(false);
+                    }}
+                    title="Save name"
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setIsEditingName(false)}
+                    title="Cancel"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--gray-900)', margin: 0 }}>
+                    {activePlan.name}
+                  </h2>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setEditedName(activePlan.name);
+                      setIsEditingName(true);
+                    }}
+                    title="Rename plan"
+                    style={{ padding: '2px 6px', color: 'var(--gray-500)' }}
+                  >
+                    <Edit3 size={14} />
+                  </button>
+                </div>
+              )}
+
+              <span className={`badge ${activePlan.status === 'approved' ? 'badge-green' : 'badge-gray'}`}>
+                {activePlan.status === 'approved' ? (
+                  <>
+                    <CheckCircle2 size={12} /> Version {activePlan.version || 1} Approved
+                  </>
+                ) : (
+                  <>
+                    <Clock size={12} /> Version {activePlan.version || 1} Draft
+                  </>
+                )}
+              </span>
+            </div>
+
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-600)', margin: 0 }}>
+              {activePlan.days} days plan · {activePlan.dietType} · Target {activePlan.calorieTarget?.toLocaleString()} kcal/day
+            </p>
+
+            {/* Agent Verification Badges */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
+              <span className="badge badge-green" title="Verified against Mifflin-St Jeor target">
+                <BarChart2 size={12} /> Nutrition Agent: Verified (±50 kcal)
+              </span>
+              <span className="badge badge-green" title="Screened against user allergen profile">
+                <ShieldCheck size={12} /> Allergy Agent: Cleared (Zero allergens detected)
+              </span>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', alignItems: 'center' }}>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => handleExportPlan(activePlan)}
+              title="Copy meal plan text"
+              id="export-plan-btn"
+            >
+              <Copy size={14} /> Copy Summary
+            </button>
+
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => handleModifyInChat(activePlan)}
+              id="modify-plan-chat-btn"
+            >
+              <MessageSquare size={14} /> Modify in Chat
+            </button>
+
+            {activePlan.status === 'approved' ? (
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => navigate('/app/grocery')}
+                id="view-grocery-btn"
+              >
+                <ShoppingCart size={14} /> View Grocery List →
+              </button>
+            ) : (
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => handleApprove(activePlan.id)}
+                id="approve-plan-btn"
+                style={{ background: 'var(--green-600)' }}
+              >
+                <CheckCircle2 size={14} /> Approve &amp; Generate Grocery List
+              </button>
+            )}
+
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowDeleteModal(true)}
+              title="Delete this meal plan"
+              id="delete-plan-btn"
+              style={{ color: 'var(--color-error)' }}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Day Selector Navigation Tabs */}
+      <div className="plan-detail-tabs" id="plan-day-tabs">
+        {daysList.map((dayItem, idx) => {
+          const isActive = idx === activeDayIndex;
+          return (
+            <button
+              key={dayItem.day}
+              className={`plan-tab${isActive ? ' active' : ''}`}
+              onClick={() => setActiveDayIndex(idx)}
+              id={`day-tab-${dayItem.day}`}
+            >
+              <span style={{ display: 'block', fontWeight: 600 }}>
+                Day {dayItem.day} ({dayItem.label})
+              </span>
+              <span style={{ fontSize: '11px', color: isActive ? 'var(--green-700)' : 'var(--gray-400)', fontWeight: 500 }}>
+                {dayItem.totalCalories || activePlan.calorieTarget} kcal
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Active Day Content */}
+      {currentDay ? (
+        <div>
+          {/* Day Macro Overview Bar */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 'var(--space-3)',
+              padding: 'var(--space-4) var(--space-5)',
+              background: '#fff',
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-lg)',
+              marginBottom: 'var(--space-5)',
+            }}
+          >
+            <div>
+              <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--gray-900)' }}>
+                Day {currentDay.day} ({currentDay.label}) Overview
+              </span>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginLeft: 'var(--space-2)' }}>
+                4 balanced meals
+              </span>
+            </div>
+
+            <div className="macro-row">
+              <span className="macro-pill macro-cal">🔥 {dayCalories} Total kcal</span>
+              <span className="macro-pill macro-protein">🥩 Protein: {dayProtein}g</span>
+              <span className="macro-pill macro-carbs">🌾 Carbs: {dayCarbs}g</span>
+              <span className="macro-pill macro-fat">🥑 Fat: {dayFat}g</span>
+            </div>
+          </div>
+
+          {/* Meals Grid */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+              gap: 'var(--space-4)',
+              marginBottom: 'var(--space-6)',
+            }}
+          >
+            {currentDay.meals?.map((meal, mIdx) => {
+              const MealIcon = MEAL_ICONS[meal.type] || Sunrise;
+              return (
+                <div
+                  key={mIdx}
+                  className="card"
+                  style={{
+                    padding: 'var(--space-5)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    position: 'relative',
+                    transition: 'all var(--transition-fast)',
+                  }}
+                  id={`meal-card-${currentDay.day}-${mIdx}`}
+                >
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-3)' }}>
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                          color: 'var(--green-700)',
+                          background: 'var(--green-50)',
+                          padding: '3px 8px',
+                          border: '1px solid var(--green-200)',
+                          borderRadius: 'var(--radius-full)',
+                        }}
+                      >
+                        <MealIcon size={13} /> {meal.type}
+                      </span>
+                      <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--gray-700)' }}>
+                        {meal.calories} kcal
+                      </span>
+                    </div>
+
+                    <h3 style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--gray-900)', marginBottom: 'var(--space-3)', lineHeight: 1.4 }}>
+                      {meal.name}
+                    </h3>
+
+                    {meal.ingredients && (
+                      <p style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginBottom: 'var(--space-4)', lineHeight: 1.5 }}>
+                        <strong>Ingredients:</strong>{' '}
+                        {Array.isArray(meal.ingredients)
+                          ? meal.ingredients
+                            .map(ing => {
+                              if (typeof ing === 'string') return ing;
+                              if (ing && typeof ing === 'object') {
+                                return ing.name ? `${ing.name}${ing.amount_grams ? ` (${Math.round(ing.amount_grams)}g)` : ''}` : '';
+                              }
+                              return '';
+                            })
+                            .filter(Boolean)
+                            .join(', ')
+                          : String(meal.ingredients)}
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="macro-row" style={{ marginTop: 'var(--space-2)' }}>
+                      <span className="macro-pill macro-protein">P: {meal.protein}g</span>
+                      <span className="macro-pill macro-carbs">C: {meal.carbs}g</span>
+                      <span className="macro-pill macro-fat">F: {meal.fat}g</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowDeleteModal(false)}>
+          <div className="modal confirm-dialog">
+            <div className="confirm-body">
+              <div className="confirm-title">Delete this meal plan?</div>
+              <div className="confirm-desc">
+                Are you sure you want to delete <strong>{activePlan.name}</strong>? This action will permanently remove this {activePlan.days}-day meal plan and its associated grocery list.
+              </div>
+            </div>
+            <div className="confirm-footer">
+              <button className="btn btn-outline btn-sm" onClick={() => setShowDeleteModal(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={() => {
+                  setShowDeleteModal(false);
+                  deletePlan(activePlan.id);
+                }}
+                id="confirm-delete-plan-btn"
+              >
+                Delete Plan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

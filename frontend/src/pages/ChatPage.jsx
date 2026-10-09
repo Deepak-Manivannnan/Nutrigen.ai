@@ -1,0 +1,360 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Send, Trash2, ChevronRight } from 'lucide-react';
+import { useApp } from '../context/AppContext';
+import {
+  sendChatMessage,
+  fetchPlanById,
+  adaptBackendPlan,
+  adaptBackendGrocery,
+} from '../utils/api';
+
+const SUGGESTIONS = [
+  'Plan 7 days — 1,800 calories',
+  'Plan tomorrow (vegetarian)',
+  'Create a grocery list',
+  'Plan 5 days for weight loss',
+];
+
+function renderInlineMarkdown(str) {
+  if (!str) return '';
+  const parts = [];
+  const regex = /(\*\*.*?\*\*|\*.*?\*)/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = regex.exec(str)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(str.slice(lastIndex, match.index));
+    }
+    const matchText = match[0];
+    if (matchText.startsWith('**') && matchText.endsWith('**')) {
+      parts.push(<strong key={match.index}>{matchText.slice(2, -2)}</strong>);
+    } else if (matchText.startsWith('*') && matchText.endsWith('*')) {
+      parts.push(<em key={match.index}>{matchText.slice(1, -1)}</em>);
+    }
+    lastIndex = regex.lastIndex;
+  }
+
+  if (lastIndex < str.length) {
+    parts.push(str.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : str;
+}
+
+function FormattedMessage({ text }) {
+  if (!text) return null;
+  const lines = text.split('\n');
+
+  return (
+    <div className="chat-formatted-text">
+      {lines.map((line, idx) => {
+        if (!line.trim()) {
+          return <div key={idx} style={{ height: '0.35rem' }} />;
+        }
+        const bulletMatch = line.match(/^(\s*[-•*]\s+)(.*)$/);
+        if (bulletMatch) {
+          return (
+            <div key={idx} style={{ display: 'flex', gap: '0.4rem', margin: '0.2rem 0' }}>
+              <span style={{ color: 'var(--green-600)', fontWeight: 600 }}>•</span>
+              <span>{renderInlineMarkdown(bulletMatch[2])}</span>
+            </div>
+          );
+        }
+        return (
+          <div key={idx} style={{ margin: '0.15rem 0' }}>
+            {renderInlineMarkdown(line)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MessageBubble({ msg, onAction, onQuickOption, userInitial = 'U' }) {
+  const isUser = msg.role === 'user';
+  const initials = isUser ? userInitial : '🌿';
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  return (
+    <div className={`message-row${isUser ? ' user' : ''}`}>
+      <div className={`message-avatar ${isUser ? 'user' : 'ai'}`}>{initials}</div>
+      <div style={{ maxWidth: '85%' }}>
+        <div className={`message-bubble ${isUser ? 'user' : 'ai'}`}>
+          <FormattedMessage text={msg.content} />
+          {msg.actionType && (
+            <button className="chat-action-btn" onClick={() => onAction && onAction(msg)} id={`chat-action-${msg.id}`}>
+              {msg.actionLabel} <ChevronRight size={13} />
+            </button>
+          )}
+        </div>
+        {msg.quickOptions && msg.quickOptions.length > 0 && (
+          <div className="chat-quick-options" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+            {msg.quickOptions.map((opt, i) => (
+              <button
+                key={i}
+                type="button"
+                className="btn btn-outline btn-xs"
+                style={{
+                  borderRadius: '16px',
+                  fontSize: '11.5px',
+                  padding: '4px 12px',
+                  fontWeight: 500,
+                  background: opt.value.toLowerCase().includes('delete') ? '#fef2f2' : '#ffffff',
+                  borderColor: opt.value.toLowerCase().includes('delete') ? '#fca5a5' : 'var(--green-400)',
+                  color: opt.value.toLowerCase().includes('delete') ? '#dc2626' : 'var(--green-700)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+                onClick={() => onQuickOption && onQuickOption(opt.value)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="message-time">{formatTime(msg.timestamp)}</div>
+      </div>
+    </div>
+  );
+}
+
+function StatusIndicator({ text }) {
+  if (!text) return null;
+  return (
+    <div className="status-indicator">
+      <div className="status-spinner" />
+      Nutrigen is typing...
+    </div>
+  );
+}
+
+function ClearChatConfirm({ onConfirm, onCancel }) {
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onCancel()}>
+      <div className="modal confirm-dialog">
+        <div className="confirm-body">
+          <div className="confirm-title">Clear this conversation?</div>
+          <div className="confirm-desc">Your current chat messages will be removed from this view. This doesn't affect your saved plans or grocery lists.</div>
+        </div>
+        <div className="confirm-footer">
+          <button className="btn btn-outline btn-sm" onClick={onCancel}>Cancel</button>
+          <button className="btn btn-danger btn-sm" onClick={onConfirm} id="confirm-clear">Clear chat</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function ChatPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const {
+    profile, messages, addMessage, clearMessages,
+    isAgentRunning, setIsAgentRunning,
+    chatStatus, setChatStatus,
+    addPlan, deletePlan, refreshPlans, setGrocery, addToast,
+  } = useApp();
+
+  const [input, setInput] = useState('');
+  const [showClear, setShowClear] = useState(false);
+  const messagesEndRef = useRef(null);
+  const inputRef = useRef(null);
+
+  const userInitial = profile?.name ? profile.name.trim()[0].toUpperCase() : 'D';
+
+  useEffect(() => {
+    if (location.state?.prefill) {
+      setInput(location.state.prefill);
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }
+  }, [location.state]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, chatStatus]);
+
+  async function handleSend(textOverride) {
+    const text = (typeof textOverride === 'string' ? textOverride : input).trim();
+    if (!text || isAgentRunning) return;
+
+    addMessage({ role: 'user', content: text });
+    setInput('');
+    setIsAgentRunning(true);
+    setChatStatus('Nutrigen is typing...');
+
+    const taskId = `t-${Math.random().toString(16).slice(2, 10)}`;
+
+    try {
+      const historyPayload = messages.slice(-6).map(m => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const chatRes = await sendChatMessage(profile?.id || 1, text, taskId, historyPayload);
+
+      setChatStatus(null);
+      setIsAgentRunning(false);
+
+      // Handle deletion response sync
+      if (chatRes.deleted_plan_id) {
+        deletePlan(chatRes.deleted_plan_id);
+        refreshPlans();
+      } else if (chatRes.intent === 'delete_plan') {
+        refreshPlans();
+      }
+
+      let createdPlan = null;
+      if (chatRes.plan_id) {
+        try {
+          const rawPlan = await fetchPlanById(chatRes.plan_id);
+          if (rawPlan) {
+            createdPlan = adaptBackendPlan(rawPlan, profile);
+            addPlan(createdPlan);
+            if (createdPlan.grocery_list) {
+              const grocery = adaptBackendGrocery(createdPlan.grocery_list, createdPlan.days);
+              if (grocery) setGrocery(grocery);
+            }
+          }
+        } catch (planErr) {
+          console.warn('Could not fetch generated plan:', planErr);
+        }
+      }
+
+      addMessage({
+        role: 'assistant',
+        content: chatRes.response || 'How can I assist you further?',
+        actionType: createdPlan ? 'view_plan' : null,
+        actionLabel: createdPlan ? 'View Meal Plan →' : null,
+        actionTarget: createdPlan ? 'plans' : null,
+        planId: createdPlan?.id,
+        quickOptions: chatRes.quick_options || null,
+      });
+    } catch (err) {
+      console.warn('Backend chat failed:', err);
+      setIsAgentRunning(false);
+      setChatStatus(null);
+      addMessage({
+        role: 'assistant',
+        content: "I'm having trouble connecting to the server. Please try again in a moment.",
+      });
+    }
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  function handleSuggestion(text) {
+    setInput(text);
+    inputRef.current?.focus();
+  }
+
+  function handleAction(msg) {
+    if (msg.actionTarget === 'plans') navigate('/app/plans');
+    else if (msg.actionTarget === 'grocery') navigate('/app/grocery');
+  }
+
+  const hasContent = messages.length > 0 || chatStatus;
+
+  return (
+    <div className="chat-layout">
+      <div className="chat-main">
+        {/* Chat Header */}
+        <div className="chat-header">
+          <span className="chat-title">Chat</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            {hasContent && (
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowClear(true)} id="clear-chat-btn">
+                <Trash2 size={13} /> Clear chat
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Messages */}
+        <div className="chat-messages" id="chat-messages">
+          {!hasContent ? (
+            <div className="chat-welcome">
+              <div className="chat-welcome-icon">
+                <span style={{ fontSize: 26 }}>🌿</span>
+              </div>
+              <h2>How can I help with<br />your meal plan today?</h2>
+              <p>Tell me what you'd like to plan.</p>
+              <div className="chat-suggestions">
+                {SUGGESTIONS.map((s, i) => (
+                  <button key={i} className="chat-suggestion-btn" onClick={() => handleSuggestion(s)} id={`suggestion-${i}`}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              {messages.map(msg => (
+                <MessageBubble
+                  key={msg.id}
+                  msg={msg}
+                  onAction={handleAction}
+                  onQuickOption={handleSend}
+                  userInitial={userInitial}
+                />
+              ))}
+              {chatStatus && <StatusIndicator text={chatStatus} />}
+              <div ref={messagesEndRef} />
+            </>
+          )}
+        </div>
+
+        {/* Input */}
+        <div className="chat-input-area">
+          <div className="chat-input-wrapper">
+            <div className="chat-input-pill">
+              <textarea
+                ref={inputRef}
+                className="chat-input"
+                placeholder="Type your message..."
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                rows={1}
+                disabled={isAgentRunning}
+                id="chat-input"
+              />
+            </div>
+            <button
+              className="chat-send-btn"
+              onClick={handleSend}
+              disabled={!input.trim() || isAgentRunning}
+              id="chat-send"
+              title="Send message"
+            >
+              <Send size={18} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {showClear && (
+        <ClearChatConfirm
+          onConfirm={() => {
+            clearMessages();
+            setShowClear(false);
+            addToast('Chat cleared', 'default');
+          }}
+          onCancel={() => setShowClear(false)}
+        />
+      )}
+    </div>
+  );
+}

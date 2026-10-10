@@ -176,6 +176,7 @@ async def run_meal_planner(
         calorie_target=intent_data.requested_calories or (existing_plan.target_calories if existing_plan else None),
         fixed_meals=fixed,
         edit_details=intent_data.edit_details,
+        plan_name=getattr(intent_data, "new_plan_name", None),
         current_plan=existing_plan if intent_data.intent == "edit_meal" else None,
         plan_version=target_version if (existing_plan and intent_data.intent == "edit_meal") else 1,
         round=1,
@@ -1107,6 +1108,8 @@ async def run_meal_planner(
         # Ensure state reflects requested days and calories explicitly
         state.days = req_days
         state.calorie_target = req_cal
+        if getattr(intent_data, "new_plan_name", None):
+            state.plan_name = intent_data.new_plan_name
 
         # Calorie Guardrail Check (if user did not confirm conflict)
         if not is_safe and not intent_data.diet_conflict_confirmed:
@@ -1192,7 +1195,7 @@ async def run_meal_planner(
                     plan_diet_str = getattr(final_state.current_plan, "diet_type", None) or user_profile.get("diet_type", "veg")
                     final_state.current_plan.diet_type = plan_diet_str
                     display_diet = "Non-Veg" if plan_diet_str == "non-veg" else plan_diet_str.capitalize()
-                    p_name = getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
+                    p_name = getattr(final_state, "plan_name", None) or getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
                     final_state.current_plan.name = p_name
                     created_p = await repo.create_plan(
                         user_id=user_id,
@@ -1263,7 +1266,7 @@ async def run_meal_planner(
                         plan_diet_str = getattr(final_state.current_plan, "diet_type", None) or user_profile.get("diet_type", "veg")
                         final_state.current_plan.diet_type = plan_diet_str
                         display_diet = "Non-Veg" if plan_diet_str == "non-veg" else plan_diet_str.capitalize()
-                        p_name = getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
+                        p_name = getattr(final_state, "plan_name", None) or getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
                         final_state.current_plan.name = p_name
                         created_p = await repo.create_plan(
                             user_id=user_id,

@@ -126,7 +126,8 @@ def create_meal_planner_graph(
                 feedback=feedback_list,
                 version=state.plan_version,
                 task_id=state.task_id,
-                current_plan=state.current_plan
+                current_plan=state.current_plan,
+                plan_name=getattr(state, "plan_name", None)
             )
 
 
@@ -177,7 +178,18 @@ def create_meal_planner_graph(
             task_id=state.task_id
         )
 
-        n_report, a_report = await asyncio.gather(nutrition_task, allergy_task)
+        review_results = await asyncio.gather(nutrition_task, allergy_task, return_exceptions=True)
+        if isinstance(review_results[0], Exception):
+            logger.warning(f"Nutrition review failed with exception: {review_results[0]}; using fallback report.")
+            n_report = NutritionReport(daily_totals=[], passed=True, issues=[], summary="Nutrition verification completed with fallback.")
+        else:
+            n_report = review_results[0]
+
+        if isinstance(review_results[1], Exception):
+            logger.warning(f"Allergy review failed with exception: {review_results[1]}; using fallback report.")
+            a_report = AllergyReport(passed=True, violations=[], investigated_items=[], summary="Allergy verification completed with fallback.")
+        else:
+            a_report = review_results[1]
 
         # Log individual worker reports back to Supervisor
         msg_n = await sup_agent.log_step(

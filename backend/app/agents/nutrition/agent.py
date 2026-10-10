@@ -1,10 +1,14 @@
 import os
+import logging
 from typing import Dict, Any, Optional
 from backend.app.agents.base import BaseAgent
 from backend.app.agents.nutrition.tools import NUTRITION_TOOLS
 from backend.app.schemas.domain import MealPlan, NutritionReport, NutritionIssue
 from backend.app.tools.nutrition.calculator import audit_meal_plan_nutrition
 from backend.app.llm.client import LLMClient
+
+logger = logging.getLogger("agents.nutrition")
+
 
 def _load_prompt() -> str:
     prompt_path = os.path.join(os.path.dirname(__file__), "prompt.md")
@@ -74,7 +78,16 @@ class NutritionAgent(BaseAgent[NutritionReport]):
         }
 
         # 3. Run LLM reasoning loop
-        report: NutritionReport = await self.run(task_instruction, context)
+        try:
+            report: NutritionReport = await self.run(task_instruction, context)
+        except Exception as e:
+            logger.warning(f"NutritionAgent LLM review failed ({e}); falling back to deterministic calculations.")
+            report = NutritionReport(
+                daily_totals=code_daily_totals,
+                passed=code_passed,
+                issues=code_issues,
+                summary=f"Nutritional profile verified deterministically: all days meet {calorie_target:.0f} kcal/day target." if code_passed else f"Calorie target mismatch on {len(code_issues)} day(s)."
+            )
 
         # 4. Enforce Deterministic Code Math Guarantee (Overrule LLM arithmetic errors)
         report.daily_totals = code_daily_totals

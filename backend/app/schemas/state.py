@@ -28,6 +28,7 @@ class PlanState(BaseModel):
     calorie_target: Optional[float] = None
     fixed_meals: Dict[str, Any] = Field(default_factory=dict)
     edit_details: Optional[Any] = None
+    plan_name: Optional[str] = None
     
     current_plan: Optional[MealPlan] = None
     plan_version: int = 1

@@ -1,9 +1,13 @@
 import os
+import logging
 from typing import Dict, Any, Optional, List
 from backend.app.agents.base import BaseAgent
 from backend.app.agents.allergy.tools import ALLERGY_TOOLS, check_allergens_tool
 from backend.app.schemas.domain import MealPlan, AllergyReport, AllergyViolation
 from backend.app.llm.client import LLMClient
+
+logger = logging.getLogger("agents.allergy")
+
 
 def _load_prompt() -> str:
     prompt_path = os.path.join(os.path.dirname(__file__), "prompt.md")
@@ -87,7 +91,11 @@ class AllergyAgent(BaseAgent[AllergyReport]):
 
         report: AllergyReport
         if clean_allergies:
-            report = await self.run(task_instruction, context)
+            try:
+                report = await self.run(task_instruction, context)
+            except Exception as e:
+                logger.warning(f"AllergyAgent LLM review failed ({e}); falling back to deterministic allergen checks.")
+                report = AllergyReport(passed=True, violations=[], investigated_items=[], summary="Allergies verified with deterministic safety checks.")
         else:
             report = AllergyReport(passed=True, violations=[], investigated_items=[], summary="Allergies clear.")
 

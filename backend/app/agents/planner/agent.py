@@ -48,10 +48,11 @@ class PlannerAgent(BaseAgent[MealPlan]):
         feedback: Optional[List[str]] = None,
         version: int = 1,
         task_id: Optional[str] = None,
-        current_plan: Optional[MealPlan] = None
+        current_plan: Optional[MealPlan] = None,
+        plan_name: Optional[str] = None
     ) -> MealPlan:
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
-        plan_name = getattr(current_plan, "name", None) or f"{days}-Day {plan_diet.capitalize()} Plan"
+        plan_name = plan_name or getattr(current_plan, "name", None) or f"{days}-Day {plan_diet.capitalize()} Plan"
 
         task_instruction = (
             f"Generate a complete {days}-day meal plan targeting {calorie_target:.0f} calories per day (±5%).\n"

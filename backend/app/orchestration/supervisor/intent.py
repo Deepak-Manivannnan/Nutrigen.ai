@@ -165,28 +165,48 @@ def _extract_plan_parameters_from_text(text: str) -> Dict[str, Any]:
         if m_day_cal and ("day" in cl or "daily" in cl):
             res["calories"] = float(m_day_cal.group(1))
 
-    # Diet type
-    if any(w in cl for w in ["vegetarian", "veg foods", "veg food", "veg meal", "veg plan", "veg"]) and not any(w in cl for w in ["non-veg", "non-vegetarian"]):
-        res["diet_type"] = "veg"
-    elif any(w in cl for w in ["non-veg", "non-vegetarian"]):
+    # Diet type: MUST check non-veg / non-vegetarian variants FIRST to avoid matching "veg" in "non veg"!
+    if any(w in cl for w in ["non-veg", "non veg", "nonveg", "non-vegetarian", "non vegetarian"]):
         res["diet_type"] = "non-veg"
     elif "vegan" in cl:
         res["diet_type"] = "vegan"
+    elif any(w in cl for w in ["vegetarian", "veg foods", "veg food", "veg meal", "veg plan", "veg"]):
+        res["diet_type"] = "veg"
 
-    # Exclusions (e.g. dairy / diary)
-    if re.search(r'\b(dairy|diary)\b', cl):
+    # Exclusions (e.g. pork, beef, turkey, chicken, fish, dairy, eggs, etc.)
+    excl_matches = re.findall(r'\b(?:exclude|avoid|without|no|dont eat|don\'t eat)\s+([a-zA-Z0-9,\s&]+)', cl)
+    for match in excl_matches:
+        tokens = re.split(r'[,&/\s]+(?:and\s+)?', match)
+        for token in tokens:
+            t = token.strip()
+            if t in ["pork", "beef", "turkey", "chicken", "meat", "fish", "dairy", "diary", "egg", "eggs", "nuts", "peanuts", "shellfish", "gluten", "seafood", "mutton", "lamb"]:
+                norm_t = "dairy" if t == "diary" else ("eggs" if t == "egg" else t)
+                if norm_t not in res["exclusions"]:
+                    res["exclusions"].append(norm_t)
+    if re.search(r'\b(dairy|diary)\b', cl) and "dairy" not in res["exclusions"]:
         if any(w in cl for w in ["dont", "don't", "no ", "without", "exclude", "avoid", "free"]):
             res["exclusions"].append("dairy")
 
     return res
 
 def _extract_plan_name_from_text(text: str) -> Optional[str]:
-    m_q = re.search(r'["\']([^"\']+)["\']', text)
-    if m_q:
-        return m_q.group(1).strip()
+    # Check double/smart quotes first: e.g. "Good plan" or "5-Day Veg Plan"
+    m_dq = re.search(r'["“]([^"”]+)["”]', text)
+    if m_dq:
+        val = m_dq.group(1).strip()
+        if val.lower() not in ["breakfast", "lunch", "dinner", "snack"] and len(val.split()) <= 6:
+            return val
+    # Check single quotes: only when not an apostrophe in a contraction (e.g. 'Good plan')
+    m_sq = re.search(r"(?:^|[\s(])'([^']+)'(?:[\s).,!?]|$)", text)
+    if m_sq:
+        val = m_sq.group(1).strip()
+        if val.lower() not in ["breakfast", "lunch", "dinner", "snack"] and len(val.split()) <= 6:
+            return val
     clean = text.lower()
     if "good meal" in clean:
         return "Good Meal"
+    if "good plan" in clean or clean.strip() == "good" or " good " in f" {clean} ":
+        return "Good plan"
     return None
 
 def _scan_history_for_plan_context(history: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
@@ -541,6 +561,23 @@ async def extract_user_intent(
         m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
         if m_id:
             target_id = int(m_id.group(1))
+
+        # If plan is not explicitly named in current message, inherit from history
+        if not plan_name and not target_id and history:
+            for h in reversed(history):
+                c = (h.get("content") or "").strip()
+                # Check for explicit plan name recognized by helper
+                p_cand = _extract_plan_name_from_text(c)
+                if p_cand:
+                    plan_name = p_cand
+                    break
+                # Check for double/smart quotes around plan name (e.g. update your "Good" plan)
+                m_q = re.search(r'["“]([^"”]+)["”](?:\s*plan)?', c, re.IGNORECASE)
+                if m_q and m_q.group(1).lower() not in ["breakfast", "lunch", "dinner", "snack"]:
+                    cand_name = m_q.group(1).strip()
+                    if len(cand_name.split()) <= 5:
+                        plan_name = cand_name
+                        break
 
         # Clean instructions to remove redundant "(Plan #11):" noise
         cleaned_instructions = re.sub(r'\(Plan\s*#\d+\):?', '', user_message, flags=re.IGNORECASE).strip()

@@ -564,3 +564,227 @@ async def test_user_reported_update_plan_selection_flow():
         assert len(plans_after) == 2, f"Expected 2 plans, but found {len(plans_after)} plans in database!"
 
 
+@pytest.mark.asyncio
+async def test_user_reported_profile_info_conversational_response():
+    """
+    Tests Issue 1:
+    User asks 'okay can u please tell me about my profile'.
+    Supervisor retrieves profile details & calorie calculations and generates
+    conversational response through the LLM.
+    """
+    await init_db()
+    user_profile = {
+        "name": "Deepak",
+        "age": 24,
+        "sex": "male",
+        "height_cm": 165.0,
+        "weight_kg": 72.0,
+        "activity_level": "low",
+        "goal": "maintain",
+        "diet_type": "non-veg",
+        "allergies": [],
+        "dislikes": []
+    }
+    user_id = 6
+
+    state = await run_meal_planner(
+        user_id=user_id,
+        user_message="okay can u please tell me about my profile",
+        user_profile=user_profile,
+        history=[]
+    )
+    assert state.status == "conversational"
+    assert any(k in state.system_message.lower() for k in ["165", "72", "maintain", "24", "non-vegetarian", "non veg", "calorie"])
+
+
+@pytest.mark.asyncio
+async def test_user_reported_non_veg_spaced_with_exclusions_and_calorie_confirm():
+    """
+    Tests Issue 2:
+    User asks 'okay can u create another plan with 1900 kcal/day non veg meal plan for 5 days and exclude pork, beef, turkey'.
+    'non veg' (spaced) must be detected as non-veg, and exclusions pork, beef, turkey captured.
+    Assistant asks calorie confirmation. User replies 'okay'.
+    Resulting meal plan must be 5 days, non-veg, excluding pork, beef, and turkey.
+    """
+    await init_db()
+    user_profile = {
+        "name": "Deepak",
+        "age": 24,
+        "sex": "male",
+        "height_cm": 165.0,
+        "weight_kg": 72.0,
+        "activity_level": "low",
+        "goal": "maintain",
+        "diet_type": "non-veg",
+        "allergies": [],
+        "dislikes": []
+    }
+    user_id = 7
+    async with AsyncSessionLocal() as session:
+        p_repo = PlanRepository(session)
+        existing = await p_repo.get_all_by_user(user_id)
+        for p in existing:
+            await p_repo.delete_plan(p.id)
+
+    history = []
+    msg1 = "okay can u create another plan with 1900 kcal/day non veg meal plan for 5 days and exclude pork, beef, turkey"
+    state1 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg1,
+        user_profile=user_profile,
+        history=history
+    )
+    assert state1.status == "conversational"
+    assert "safe range" in state1.system_message.lower() or "recommended target" in state1.system_message.lower()
+
+    history.append({"role": "user", "content": msg1})
+    history.append({"role": "assistant", "content": state1.system_message})
+
+    # Turn 2: User says "okay"
+    msg2 = "okay"
+    state2 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg2,
+        user_profile=user_profile,
+        history=history
+    )
+    assert state2.status in ("draft", "drafting", "reviewing")
+    assert state2.current_plan is not None
+    assert len(state2.current_plan.days) == 5
+    assert state2.current_plan.diet_type == "non-veg"
+    assert "veg" not in state2.current_plan.name.lower() or "non-veg" in state2.current_plan.name.lower()
+
+    # Verify exclusions: no meal or ingredient contains pork, beef, or turkey
+    for d in state2.current_plan.days:
+        for m in d.meals:
+            dish = m.recipe_name.lower()
+            assert "pork" not in dish, f"Found pork in {dish}"
+            assert "beef" not in dish, f"Found beef in {dish}"
+            assert "turkey" not in dish, f"Found turkey in {dish}"
+            for ing in (m.ingredients or []):
+                i_name = ing.name.lower()
+                assert "pork" not in i_name, f"Found pork in ingredient {i_name}"
+                assert "beef" not in i_name, f"Found beef in ingredient {i_name}"
+                assert "turkey" not in i_name, f"Found turkey in ingredient {i_name}"
+
+
+@pytest.mark.asyncio
+async def test_user_reported_multi_turn_edit_meal_slot_preserves_selected_good_plan():
+    """
+    Tests Issue 3:
+    User has '5-Day Veg Plan' and 'Good plan'.
+    Turn 1: 'hey i want to update a meal plan' -> Assistant asks which one.
+    Turn 2: 'good plan' -> Assistant confirms 'Got it, let's update your "Good" plan!'.
+    Turn 3: 'hey i want you to replace the day 1 dinner meal with something else'.
+    The system MUST update 'Good plan', and leave '5-Day Veg Plan' completely untouched.
+    """
+    await init_db()
+    user_profile = {
+        "name": "Deepak",
+        "age": 24,
+        "sex": "male",
+        "height_cm": 165.0,
+        "weight_kg": 72.0,
+        "activity_level": "low",
+        "goal": "maintain",
+        "diet_type": "non-veg",
+        "allergies": [],
+        "dislikes": []
+    }
+    user_id = 8
+    async with AsyncSessionLocal() as session:
+        p_repo = PlanRepository(session)
+        existing = await p_repo.get_all_by_user(user_id)
+        for p in existing:
+            await p_repo.delete_plan(p.id)
+
+    from backend.app.schemas.domain import MealPlan, DayPlan, Meal, Ingredient
+    meals_veg = [
+        Meal(meal_type="breakfast", recipe_name="Paneer Bhurji", calories=700, protein_g=30, carbs_g=50, fat_g=20, ingredients=[Ingredient(name="Paneer", amount_grams=150, unit="g")]),
+        Meal(meal_type="lunch", recipe_name="Rajma Masala", calories=900, protein_g=35, carbs_g=100, fat_g=25, ingredients=[Ingredient(name="Rajma", amount_grams=200, unit="g")]),
+        Meal(meal_type="dinner", recipe_name="Palak Tofu", calories=600, protein_g=25, carbs_g=60, fat_g=15, ingredients=[Ingredient(name="Tofu", amount_grams=150, unit="g")]),
+    ]
+    meals_good = [
+        Meal(meal_type="breakfast", recipe_name="Egg Toast", calories=600, protein_g=30, carbs_g=50, fat_g=15, ingredients=[Ingredient(name="Eggs", amount_grams=100, unit="g")]),
+        Meal(meal_type="lunch", recipe_name="Chicken Rice", calories=950, protein_g=50, carbs_g=90, fat_g=25, ingredients=[Ingredient(name="Chicken", amount_grams=200, unit="g")]),
+        Meal(meal_type="dinner", recipe_name="Fish Curry", calories=700, protein_g=40, carbs_g=50, fat_g=20, ingredients=[Ingredient(name="Fish", amount_grams=180, unit="g")]),
+    ]
+
+    plan_5d = MealPlan(
+        name="5-Day Veg Plan",
+        diet_type="veg",
+        target_calories=2250,
+        days=[DayPlan(day_number=i, meals=meals_veg, total_calories=2200, total_protein_g=90, total_carbs_g=210, total_fat_g=60) for i in range(1, 6)]
+    )
+    plan_good = MealPlan(
+        name="Good plan",
+        diet_type="non-veg",
+        target_calories=2250,
+        days=[DayPlan(day_number=i, meals=meals_good, total_calories=2250, total_protein_g=120, total_carbs_g=190, total_fat_g=60) for i in range(1, 4)]
+    )
+
+    async with AsyncSessionLocal() as session:
+        p_repo = PlanRepository(session)
+        db_p1 = await p_repo.create_plan(user_id=user_id, days=5, calorie_target=2250, meal_plan=plan_5d, status="draft", name="5-Day Veg Plan", diet_type="veg")
+        db_p2 = await p_repo.create_plan(user_id=user_id, days=3, calorie_target=2250, meal_plan=plan_good, status="approved", name="Good plan", diet_type="non-veg")
+        id_veg = db_p1.id
+        id_good = db_p2.id
+
+    history = []
+
+    # Turn 1: User says 'hey i want to update a meal plan'
+    msg1 = "hey i want to update a meal plan"
+    state1 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg1,
+        user_profile=user_profile,
+        history=history
+    )
+    assert state1.status == "conversational"
+    assert "5-day veg plan" in state1.system_message.lower()
+    assert "good" in state1.system_message.lower()
+
+    history.append({"role": "user", "content": msg1})
+    history.append({"role": "assistant", "content": state1.system_message})
+
+    # Turn 2: User responds 'good plan'
+    msg2 = "good plan"
+    state2 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg2,
+        user_profile=user_profile,
+        history=history
+    )
+    assert state2.status == "conversational"
+    assert "good" in state2.system_message.lower()
+
+    history.append({"role": "user", "content": msg2})
+    history.append({"role": "assistant", "content": state2.system_message})
+
+    # Turn 3: User says 'hey i want you to replace the day 1 dinner meal with something else'
+    msg3 = "hey i want you to replace the day 1 dinner meal with something else"
+    state3 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg3,
+        user_profile=user_profile,
+        history=history
+    )
+
+    # Must update Good plan!
+    assert state3.current_plan is not None
+    assert "good" in state3.current_plan.name.lower()
+    assert state3.plan_id == id_good
+
+    # Verify database: Good plan is updated, 5-Day Veg Plan version & meals unchanged
+    async with AsyncSessionLocal() as session:
+        p_repo = PlanRepository(session)
+        p_veg_db = await p_repo.get_by_id(id_veg)
+        p_good_db = await p_repo.get_by_id(id_good)
+        assert p_veg_db.version == 1
+        assert p_good_db.version == 2
+        # Check day 1 dinner in Good plan was updated from Fish Curry
+        d1_dinner = next(m for m in p_good_db.meals if m.day == 1 and m.meal_type == "dinner")
+        assert d1_dinner.recipe_name != "Fish Curry"
+
+
+

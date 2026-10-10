@@ -238,19 +238,48 @@ class SupervisorAgent:
         max_cal = int(cal_info["max_safe_calories"])
         target_cal = int(cal_info["suggested_target"])
 
-        return (
-            f"Here are the specific details currently stored in your profile, {name}:\n\n"
-            f"• **Age**: {age} years\n"
-            f"• **Gender**: {sex}\n"
-            f"• **Height & Weight**: {height} cm | {weight} kg\n"
-            f"• **Activity Level**: {activity}\n"
-            f"• **Health Goal**: {goal}\n"
-            f"• **Dietary Preference**: {diet}\n"
-            f"• **Daily Recommended Calorie Range**: {min_cal:,} – {max_cal:,} kcal (Midpoint target: {target_cal:,} kcal)\n"
-            f"• **Disliked Foods**: {dislikes}\n"
-            f"• **Allergies & Restrictions**: {allergies}\n\n"
-            f"I use these biometric parameters and boundaries to balance your meals, calculate portion sizes, and ensure all dishes adhere strictly to your preferences!"
+        profile_summary = (
+            f"User profile details for {name}:\n"
+            f"- Age: {age} years\n"
+            f"- Gender: {sex}\n"
+            f"- Height: {height} cm\n"
+            f"- Weight: {weight} kg\n"
+            f"- Activity Level: {activity}\n"
+            f"- Health Goal: {goal}\n"
+            f"- Dietary Preference: {diet}\n"
+            f"- Daily Recommended Calorie Range: {min_cal:,} – {max_cal:,} kcal (Midpoint target: {target_cal:,} kcal)\n"
+            f"- Disliked Foods: {dislikes}\n"
+            f"- Allergies & Restrictions: {allergies}\n"
         )
+        context_prompt = (
+            f"The user asked: '{user_message}'.\n"
+            f"Here are the exact biometric and dietary parameters retrieved from their profile:\n"
+            f"{profile_summary}\n\n"
+            f"Present these details clearly, accurately, and naturally in friendly, helpful conversational English. "
+            f"You may format the key profile parameters as clean bullet points and explain how NutriGen uses them to balance meals, portion sizes, and dietary boundaries."
+        )
+        try:
+            return await self.generate_conversational_response(
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=name
+            )
+        except Exception as e:
+            logger.warning(f"LLM generation failed for profile info: {e}")
+            return (
+                f"Here are the specific details currently stored in your profile, {name}:\n\n"
+                f"• **Age**: {age} years\n"
+                f"• **Gender**: {sex}\n"
+                f"• **Height & Weight**: {height} cm | {weight} kg\n"
+                f"• **Activity Level**: {activity}\n"
+                f"• **Health Goal**: {goal}\n"
+                f"• **Dietary Preference**: {diet}\n"
+                f"• **Daily Recommended Calorie Range**: {min_cal:,} – {max_cal:,} kcal (Midpoint target: {target_cal:,} kcal)\n"
+                f"• **Disliked Foods**: {dislikes}\n"
+                f"• **Allergies & Restrictions**: {allergies}\n\n"
+                f"I use these biometric parameters and boundaries to balance your meals, calculate portion sizes, and ensure all dishes adhere strictly to your preferences!"
+            )
 
     async def handle_conversational_intent(
         self,

@@ -17,7 +17,8 @@ def find_referenced_plan(
     all_plans: List[Any],
     target_id: Optional[int] = None,
     target_name: Optional[str] = None,
-    fallback_to_first: bool = True
+    fallback_to_first: bool = True,
+    history: Optional[List[Dict[str, Any]]] = None
 ) -> Optional[Any]:
     """Helper to cleanly resolve referenced meal plan without exposing internal IDs."""
     if not all_plans:
@@ -31,10 +32,18 @@ def find_referenced_plan(
         p = next((p for p in all_plans if p.name.strip().lower() == t_clean or t_clean in p.name.strip().lower() or p.name.strip().lower() in t_clean), None)
         if p:
             return p
+        if t_clean in ("good", "good plan"):
+            p = next((p for p in all_plans if "good" in p.name.strip().lower()), None)
+            if p:
+                return p
+
     clean_msg = user_message.strip().lower()
     for p in sorted(all_plans, key=lambda x: len(str(getattr(x, "name", ""))), reverse=True):
         p_name = str(getattr(p, "name", "")).strip().lower()
         if p_name and p_name in clean_msg:
+            return p
+        base_name = p_name.replace("plan", "").strip()
+        if base_name and len(base_name) >= 3 and (f'"{base_name}"' in clean_msg or f"'{base_name}'" in clean_msg or f" {base_name} " in f" {clean_msg} "):
             return p
 
     # Match by day count (e.g. "5 day meal plan", "the 5 day", "5-day")
@@ -60,6 +69,26 @@ def find_referenced_plan(
                 return matching_by_diet[0]
             elif len(matching_by_diet) > 1:
                 return matching_by_diet[0]
+
+    # Match from conversation history (if active plan was selected/discussed in previous turn)
+    if history:
+        for h in reversed(history):
+            c = (h.get("content") or "").strip().lower()
+            if not c:
+                continue
+            for p in sorted(all_plans, key=lambda x: len(str(getattr(x, "name", ""))), reverse=True):
+                p_name = str(getattr(p, "name", "")).strip().lower()
+                if p_name and (p_name in c or f'"{p_name}"' in c or f"'{p_name}'" in c):
+                    return p
+                base_name = p_name.replace("plan", "").strip()
+                if base_name and len(base_name) >= 3 and (f'"{base_name}"' in c or f"'{base_name}'" in c or f" {base_name} " in f" {c} " or c.startswith(base_name) or c == base_name):
+                    return p
+            m_h_days = re.search(r'\b(\d+)\s*(?:-| )?days?\b', c)
+            if m_h_days:
+                h_d = int(m_h_days.group(1))
+                h_matches = [p for p in all_plans if getattr(p, "days", None) == h_d]
+                if len(h_matches) == 1:
+                    return h_matches[0]
 
     if fallback_to_first:
         return all_plans[0]
@@ -124,7 +153,8 @@ async def run_meal_planner(
             user_message,
             all_plans,
             target_id=intent_data.target_plan_id,
-            target_name=intent_data.target_plan_name
+            target_name=intent_data.target_plan_name,
+            history=history
         )
         if matched_plan:
             existing_plan = PlanRepository.to_meal_plan_domain(matched_plan)
@@ -846,7 +876,8 @@ async def run_meal_planner(
                 all_plans,
                 target_id=intent_data.target_plan_id,
                 target_name=intent_data.target_plan_name,
-                fallback_to_first=False
+                fallback_to_first=False,
+                history=history
             )
             if target_p or len(all_plans) == 1:
                 target_plan_to_use = target_p or all_plans[0]
@@ -905,12 +936,16 @@ async def run_meal_planner(
     # Step 8: Handle New Plan (Diet Conflict Check & Calorie Guardrails)
     # =========================================================================
     if intent_data.intent == "new_plan":
-        # Check and apply requested ingredient exclusions (e.g. dairy / diary)
-        if "dairy" in intent_data.requested_exclusions or re.search(r'\b(diary|dairy)\b', user_message, re.IGNORECASE):
-            if "allergies" not in user_profile:
-                user_profile["allergies"] = []
+        # Check and apply requested ingredient exclusions (e.g. pork, beef, turkey, dairy)
+        if "allergies" not in user_profile:
+            user_profile["allergies"] = []
+        for exc in intent_data.requested_exclusions:
+            if exc not in [str(a).lower() for a in user_profile["allergies"]]:
+                user_profile["allergies"].append(exc)
+        if re.search(r'\b(diary|dairy)\b', user_message, re.IGNORECASE):
             if "dairy" not in [str(a).lower() for a in user_profile["allergies"]]:
                 user_profile["allergies"].append("dairy")
+        state.user_profile["allergies"] = list(user_profile.get("allergies", []))
 
         profile_diet = str(user_profile.get("diet_type", "veg")).lower()
         req_diet = str(intent_data.requested_diet_type).lower() if intent_data.requested_diet_type else None
@@ -1045,6 +1080,7 @@ async def run_meal_planner(
                         status="draft",  # Version X Draft upon modification!
                         increment_version=is_edit_previously_approved
                     )
+                    final_state.plan_id = db_plan_id
                     final_state.plan_version = new_version
                     final_state.status = "draft"
                     clean_inst = getattr(intent_data.edit_details, "instructions", "") or user_message
@@ -1066,9 +1102,10 @@ async def run_meal_planner(
                     ]
                     logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
                 else:
-                    plan_diet_str = user_profile.get("diet_type", "veg")
+                    plan_diet_str = getattr(final_state.current_plan, "diet_type", None) or user_profile.get("diet_type", "veg")
                     final_state.current_plan.diet_type = plan_diet_str
-                    p_name = f"{len(final_state.current_plan.days)}-Day {plan_diet_str.capitalize()} Plan"
+                    display_diet = "Non-Veg" if plan_diet_str == "non-veg" else plan_diet_str.capitalize()
+                    p_name = getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
                     final_state.current_plan.name = p_name
                     created_p = await repo.create_plan(
                         user_id=user_id,
@@ -1081,6 +1118,7 @@ async def run_meal_planner(
                         diet_type=plan_diet_str,
                         version=1
                     )
+                    final_state.plan_id = created_p.id
                     final_state.plan_version = 1
                     final_state.status = "draft"
                     context_prompt = (
@@ -1112,6 +1150,7 @@ async def run_meal_planner(
                             status="draft",
                             increment_version=is_edit_previously_approved
                         )
+                        final_state.plan_id = db_plan_id
                         final_state.plan_version = new_version
                         final_state.status = "draft"
                         clean_inst = getattr(intent_data.edit_details, "instructions", "") or user_message
@@ -1134,9 +1173,12 @@ async def run_meal_planner(
                         ]
                         logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
                     else:
-                        plan_diet_str = user_profile.get("diet_type", "veg")
-                        p_name = f"{len(final_state.current_plan.days)}-Day {plan_diet_str.capitalize()} Plan"
-                        await repo.create_plan(
+                        plan_diet_str = getattr(final_state.current_plan, "diet_type", None) or user_profile.get("diet_type", "veg")
+                        final_state.current_plan.diet_type = plan_diet_str
+                        display_diet = "Non-Veg" if plan_diet_str == "non-veg" else plan_diet_str.capitalize()
+                        p_name = getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
+                        final_state.current_plan.name = p_name
+                        created_p = await repo.create_plan(
                             user_id=user_id,
                             days=len(final_state.current_plan.days),
                             calorie_target=final_state.current_plan.target_calories,
@@ -1147,6 +1189,7 @@ async def run_meal_planner(
                             diet_type=plan_diet_str,
                             version=1
                         )
+                        final_state.plan_id = created_p.id
                         final_state.plan_version = 1
                         final_state.status = "draft"
                         context_prompt = (

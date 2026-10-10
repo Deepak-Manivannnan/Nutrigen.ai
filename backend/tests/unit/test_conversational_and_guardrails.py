@@ -193,4 +193,50 @@ def test_find_referenced_plan_by_day_count():
     assert matched_3 is not None
     assert matched_3.id == 2
 
+def test_extract_non_veg_spaced_and_meat_exclusions():
+    from backend.app.orchestration.supervisor.intent import _extract_plan_parameters_from_text
+    msg = "okay can u create another plan with 1900 kcal/day non veg meal plan for 5 days and exclude pork, beef, turkey"
+    res = _extract_plan_parameters_from_text(msg)
+    assert res["diet_type"] == "non-veg", f"Expected non-veg, got {res['diet_type']}"
+    assert res["days"] == 5
+    assert res["calories"] == 1900.0
+    assert "pork" in res["exclusions"]
+    assert "beef" in res["exclusions"]
+    assert "turkey" in res["exclusions"]
+
+@pytest.mark.asyncio
+async def test_multi_turn_edit_meal_slot_inherits_good_plan():
+    from backend.app.orchestration.supervisor.intent import extract_user_intent
+    from backend.app.orchestration.runner import find_referenced_plan
+    from unittest.mock import MagicMock
+
+    history = [
+        {"role": "user", "content": "hey i want to update a meal plan"},
+        {"role": "assistant", "content": 'No problem at all! Would you like to update the 5-Day Veg Plan or your "Good" plan?'},
+        {"role": "user", "content": "good plan"},
+        {"role": "assistant", "content": 'Got it, let\'s update your "Good" plan! What specific changes would you like to make to your meals?'}
+    ]
+    user_msg = "hey i want you to replace the day 1 dinner meal with something else"
+
+    extraction = await extract_user_intent(user_msg, history=history)
+    assert extraction.intent == "edit_meal"
+    assert extraction.edit_details is not None
+    assert extraction.edit_details.day == 1
+    assert extraction.edit_details.meal_type == "dinner"
+    assert extraction.target_plan_name is not None
+    assert "good" in extraction.target_plan_name.lower()
+
+    # Verify find_referenced_plan resolves the Good plan from history
+    p_veg = MagicMock(id=1, days=5, diet_type="veg")
+    p_veg.name = "5-Day Veg Plan"
+    p_good = MagicMock(id=2, days=3, diet_type="non-veg")
+    p_good.name = "Good plan"
+    all_plans = [p_veg, p_good]
+
+    matched = find_referenced_plan(user_msg, all_plans, target_name=extraction.target_plan_name, history=history)
+    assert matched is not None
+    assert matched.id == 2
+    assert matched.name == "Good plan"
+
+
 

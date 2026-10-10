@@ -95,8 +95,10 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 "  * Absolutely NO animal products: NO meat, poultry, fish, seafood, eggs, dairy (milk, cheese, paneer, butter, ghee, curd, yogurt), or honey. 100% plant-based.\n"
             )
         else:
+            allergies_list = user_profile.get("allergies", [])
+            excl_text = f" STRICT EXCLUSIONS: Do NOT include any of these excluded ingredients or meats: {', '.join(allergies_list)}." if allergies_list else ""
             diet_rules_prompt = (
-                "- DIETARY RULE: Non-Vegetarian. Include balanced lean proteins (poultry, fish, eggs) along with fresh vegetables and whole grains.\n"
+                f"- DIETARY RULE: Non-Vegetarian. Include balanced lean proteins (poultry, fish, eggs) along with fresh vegetables and whole grains.{excl_text}\n"
             )
 
         meal_plan = None

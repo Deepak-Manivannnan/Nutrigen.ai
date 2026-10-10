@@ -90,6 +90,7 @@ async def run_meal_planner(
     # Determine existing active plan if editing or referencing
     existing_plan = None
     db_plan_id = None
+    matched_plan = None
     if all_plans:
         matched_plan = find_referenced_plan(
             user_message,
@@ -100,6 +101,10 @@ async def run_meal_planner(
         if matched_plan:
             existing_plan = PlanRepository.to_meal_plan_domain(matched_plan)
             db_plan_id = matched_plan.id
+
+    is_previously_approved = bool(matched_plan and getattr(matched_plan, "status", None) == "approved")
+    current_version = (matched_plan.version or 1) if matched_plan else 1
+    target_version = (current_version + 1) if is_previously_approved else current_version
 
     # If existing plan has a specific diet type, preserve it
     effective_plan_diet = getattr(existing_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
@@ -114,7 +119,7 @@ async def run_meal_planner(
         fixed_meals=fixed,
         edit_details=intent_data.edit_details,
         current_plan=existing_plan if intent_data.intent == "edit_meal" else None,
-        plan_version=(existing_plan.version + 1) if (existing_plan and intent_data.intent == "edit_meal") else 1,
+        plan_version=target_version if (existing_plan and intent_data.intent == "edit_meal") else 1,
         round=1,
         max_rounds=3,
         status="drafting"
@@ -407,7 +412,8 @@ async def run_meal_planner(
             target_day_plan.total_carbs_g = round(sum(m.carbs_g for m in target_day_plan.meals), 1)
             target_day_plan.total_fat_g = round(sum(m.fat_g for m in target_day_plan.meals), 1)
 
-            new_version = (target_plan.version or 1) + 1
+            is_snack_previously_approved = (target_plan.status == "approved")
+            new_version = (target_plan.version or 1) + 1 if is_snack_previously_approved else (target_plan.version or 1)
             domain_plan.version = new_version
             domain_plan.average_daily_calories = round(sum(d.total_calories for d in domain_plan.days) / len(domain_plan.days), 1)
 
@@ -418,7 +424,7 @@ async def run_meal_planner(
                     meal_plan=domain_plan,
                     grocery_list=None,
                     status="draft",
-                    increment_version=True
+                    increment_version=is_snack_previously_approved
                 )
             else:
                 async with AsyncSessionLocal() as temp_session:
@@ -428,7 +434,7 @@ async def run_meal_planner(
                         meal_plan=domain_plan,
                         grocery_list=None,
                         status="draft",
-                        increment_version=True
+                        increment_version=is_snack_previously_approved
                     )
 
             context_prompt = (
@@ -991,13 +997,15 @@ async def run_meal_planner(
             if session:
                 repo = PlanRepository(session)
                 if intent_data.intent == "edit_meal" and existing_plan and db_plan_id:
-                    new_version = (existing_plan.version or 1) + 1
+                    is_edit_previously_approved = bool(matched_plan and getattr(matched_plan, "status", None) == "approved")
+                    new_version = (existing_plan.version or 1) + 1 if is_edit_previously_approved else (existing_plan.version or 1)
+                    final_state.current_plan.version = new_version
                     updated_p = await repo.update_plan(
                         plan_id=db_plan_id,
                         meal_plan=final_state.current_plan,
                         grocery_list=None,  # Reset grocery list until user approves!
                         status="draft",  # Version X Draft upon modification!
-                        increment_version=True
+                        increment_version=is_edit_previously_approved
                     )
                     final_state.plan_version = new_version
                     final_state.status = "draft"
@@ -1005,7 +1013,7 @@ async def run_meal_planner(
                     clean_inst = re.sub(r'\(Plan\s*#\d+\):?', '', clean_inst, flags=re.IGNORECASE).strip()
                     context_prompt = (
                         f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
-                        f"The plan has been updated to Version {new_version} Draft in the Plans tab. "
+                        f"The plan is now Version {new_version} Draft in the Plans tab. "
                         f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready."
                     )
                     final_state.system_message = await supervisor.generate_conversational_response(
@@ -1018,7 +1026,7 @@ async def run_meal_planner(
                         {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
                         {"label": "Modify in chat", "value": f"I want to update \"{plan_title}\": "}
                     ]
-                    logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft.")
+                    logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
                 else:
                     plan_diet_str = user_profile.get("diet_type", "veg")
                     final_state.current_plan.diet_type = plan_diet_str
@@ -1056,13 +1064,15 @@ async def run_meal_planner(
                 async with AsyncSessionLocal() as temp_session:
                     repo = PlanRepository(temp_session)
                     if intent_data.intent == "edit_meal" and existing_plan and db_plan_id:
-                        new_version = (existing_plan.version or 1) + 1
+                        is_edit_previously_approved = bool(matched_plan and getattr(matched_plan, "status", None) == "approved")
+                        new_version = (existing_plan.version or 1) + 1 if is_edit_previously_approved else (existing_plan.version or 1)
+                        final_state.current_plan.version = new_version
                         await repo.update_plan(
                             plan_id=db_plan_id,
                             meal_plan=final_state.current_plan,
                             grocery_list=None,
                             status="draft",
-                            increment_version=True
+                            increment_version=is_edit_previously_approved
                         )
                         final_state.plan_version = new_version
                         final_state.status = "draft"
@@ -1071,7 +1081,7 @@ async def run_meal_planner(
                         plan_title = getattr(final_state.current_plan, "name", "your meal plan")
                         context_prompt = (
                             f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
-                            f"The plan has been updated to Version {new_version} Draft in the Plans tab. "
+                            f"The plan is now Version {new_version} Draft in the Plans tab. "
                             f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready."
                         )
                         final_state.system_message = await supervisor.generate_conversational_response(
@@ -1084,6 +1094,7 @@ async def run_meal_planner(
                             {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
                             {"label": "Modify in chat", "value": f"I want to update \"{plan_title}\": "}
                         ]
+                        logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
                     else:
                         plan_diet_str = user_profile.get("diet_type", "veg")
                         p_name = f"{len(final_state.current_plan.days)}-Day {plan_diet_str.capitalize()} Plan"

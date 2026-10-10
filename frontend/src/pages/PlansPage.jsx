@@ -405,6 +405,7 @@ export default function PlansPage() {
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
               gap: 'var(--space-4)',
+              alignItems: 'start',
               marginBottom: 'var(--space-6)',
             }}
           >
@@ -421,6 +422,7 @@ export default function PlansPage() {
                     justifyContent: 'space-between',
                     position: 'relative',
                     transition: 'all var(--transition-fast)',
+                    height: 'fit-content',
                   }}
                   id={`meal-card-${currentDay.day}-${mIdx}`}
                 >

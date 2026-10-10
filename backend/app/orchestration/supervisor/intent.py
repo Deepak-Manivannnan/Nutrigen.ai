@@ -412,8 +412,12 @@ async def extract_user_intent(
             new_plan_name=new_name
         )
 
-    # Fast rule check: Explicit plan deletion (e.g. "i want to delete good meal plan", "delete meal plan", "delete good meal")
-    if ("delete" in cleaned or "remove plan" in cleaned or "clear plan" in cleaned) and any(w in cleaned for w in ["plan", "good meal", "meal plan"]) and not any(w in cleaned for w in ["why", "explain"]):
+    # Fast rule check: Explicit plan / meal deletion (e.g. "hey i want to delete a meal", "i want to delete a meal", "delete a meal", "delete meal", "delete meal plan", "delete good meal")
+    delete_keywords = ["delete", "remove", "clear", "cancel"]
+    has_delete = any(k in cleaned for k in delete_keywords)
+    has_target = any(w in cleaned for w in ["plan", "meal plan", "a meal", "the meal", "my meal", "this meal", "meal", "good meal"])
+    has_specific_slot = bool(re.search(r'day\s*\d+', cleaned)) and any(s in cleaned for s in ["breakfast", "lunch", "dinner", "snack"])
+    if has_delete and has_target and not has_specific_slot and not any(w in cleaned for w in ["why", "explain"]):
         target_id = None
         m = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
         if m:
@@ -476,7 +480,8 @@ async def extract_user_intent(
     general_update_phrases = [
         "i want to update", "i wanted to update", "update my meal plan", "update a meal plan",
         "update the meal plan", "update meal plan", "modify my meal plan", "modify meal plan",
-        "update good meal", "modify good meal"
+        "update good meal", "modify good meal", "update a meal", "update the meal", "update meal",
+        "modify a meal", "modify meal"
     ]
     if any(p in cleaned for p in general_update_phrases) and not has_meal_slot:
         target_id = None
@@ -565,13 +570,13 @@ async def extract_user_intent(
         "8. 'new_plan':\n"
         "   - EXPLICIT request to create a NEW multi-day meal plan from scratch ('Plan a 5-day vegetarian meal plan', 'Generate meals for 1900 kcal').\n\n"
         "9. 'edit_meal':\n"
-        "   - MUST ONLY be selected when user explicitly asks to modify, swap, replace, or update a meal dish in an existing plan (e.g. 'replace day 2 breakfast with something else', 'swap lunch with paneer', 'I want to update Good Meal'). NEVER select for general questions!\n\n"
+        "   - MUST ONLY be selected when user explicitly asks to modify, swap, replace, or update a meal dish in an existing plan (e.g. 'replace day 2 breakfast with something else', 'swap lunch with paneer', 'I want to update Good Meal'). NEVER select for general questions, and NEVER select for 'delete a meal' or 'delete meal'!\n\n"
         "10. 'approve_plan':\n"
         "   - User wants to approve the drafted meal plan and generate the grocery list (e.g. 'approve this plan', 'looks good approve it', 'approve').\n\n"
         "11. 'grocery_only':\n"
         "   - Requesting only grocery lists or mandi commodity prices.\n\n"
         "12. 'delete_plan':\n"
-        "   - Asking to delete a meal plan (e.g. 'delete good meal plan', 'i want to delete this meal plan'), or confirming deletion.\n\n"
+        "   - Asking to delete a meal plan or meal (e.g. 'hey i want to delete a meal', 'delete a meal', 'delete meal', 'delete good meal plan', 'i want to delete this meal plan'), or confirming deletion. CRITICAL: 'delete a meal' or 'delete meal' without a specific day and slot MUST ALWAYS be classified as 'delete_plan', NEVER 'edit_meal'!\n\n"
         f"User message: \"{user_message}\"\n\n"
         "--- CRITICAL FIELD EXTRACTION RULES ---\n"
         "• MEAL EDITS vs NEW PLANS:\n"

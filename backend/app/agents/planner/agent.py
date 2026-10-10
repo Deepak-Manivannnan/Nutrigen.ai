@@ -1,8 +1,9 @@
 import os
+import re
 from typing import Dict, Any, Optional, List
 from backend.app.agents.base import BaseAgent
 from backend.app.agents.planner.tools import PLANNER_TOOLS
-from backend.app.schemas.domain import MealPlan
+from backend.app.schemas.domain import MealPlan, Meal, DayPlan, Ingredient
 from backend.app.llm.client import LLMClient
 
 from backend.app.observability.logging import get_logger
@@ -178,61 +179,133 @@ class PlannerAgent(BaseAgent[MealPlan]):
         task_id: Optional[str] = None
     ) -> MealPlan:
         """
-        Modifies a specific meal slot in an existing meal plan while keeping
-        all other days and meals strictly unchanged.
+        Modifies a specific meal slot (or specific day) in an existing meal plan
+        while keeping all other days and meals strictly unchanged.
         """
+        updated_plan = current_plan.model_copy(deep=True)
+
         target_day = getattr(edit_details, "day", None) or 1
-        target_meal_type = getattr(edit_details, "meal_type", None) or "lunch"
+        target_meal_type = getattr(edit_details, "meal_type", None)
         instructions = getattr(edit_details, "instructions", "") or "modify meal"
         target_meal_cal = getattr(edit_details, "target_meal_calories", None)
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
 
-        # Find the existing dish in that slot
-        old_dish = "unknown"
-        for d in current_plan.days:
-            if d.day_number == target_day:
-                for m in d.meals:
-                    if m.meal_type.lower() == target_meal_type.lower():
-                        old_dish = m.recipe_name
-                        break
+        cl_inst = instructions.lower()
 
-        cal_note = f"- Target slot calorie range: ~{int(target_meal_cal)} kcal\n" if target_meal_cal else ""
-        rule2_note = f" (~{int(target_meal_cal)} kcal)" if target_meal_cal else ""
-
-        task_instruction = (
-            f"Modify an existing meal plan according to user instructions:\n"
-            f"- Target Day: Day {target_day}\n"
-            f"- Target Meal: {target_meal_type}\n"
-            f"{cal_note}"
-            f"- Previous dish in this slot: '{old_dish}'\n"
-            f"- Modification instructions: '{instructions}'\n\n"
-            f"IMPORTANT RULES:\n"
-            f"1. Keep ALL OTHER DAYS and meals in the plan EXACTLY identical to the existing plan.\n"
-            f"2. Replace only Day {target_day} {target_meal_type} with a recipe matching the user's instructions{rule2_note}.\n"
-            f"3. Strictly adhere to the plan's diet type '{plan_diet}' (FOR VEGETARIAN: ZERO MEAT/CHICKEN/TURKEY/FISH/SEAFOOD) and exclude allergies {user_profile.get('allergies', [])}.\n"
-            f"4. Portions must be for a single person. Recalculate Day {target_day} total calories to be close to the target {current_plan.target_calories:.0f} kcal (±5%).\n"
-            f"5. Set version = {current_plan.version + 1}.\n"
+        # Check if the instruction asks to update an entire day's meals
+        is_entire_day = (
+            (not target_meal_type and any(k in cl_inst for k in ["entire day", "all meals", "whole day", "all 3 meals", "all 4 meals", "day meals"]))
+            or (not target_meal_type and bool(re.search(r'\bday\s*\d+\b', cl_inst)) and not any(m in cl_inst for m in ["breakfast", "lunch", "dinner", "snack"]))
         )
 
-        context = {
-            "task_id": task_id,
-            "current_plan": current_plan.model_dump(),
-            "target_day": target_day,
-            "target_meal_type": target_meal_type,
-            "instructions": instructions,
-            "user_profile": {**user_profile, "diet_type": plan_diet}
-        }
+        target_day_plan = next((d for d in updated_plan.days if d.day_number == target_day), None)
+        if not target_day_plan and updated_plan.days:
+            target_day_plan = updated_plan.days[0]
+            target_day = target_day_plan.day_number
 
-        updated_plan: MealPlan = await self.run(task_instruction, context)
+        if not target_day_plan:
+            return current_plan
+
+        if is_entire_day:
+            # Regenerate ONLY this day's meals
+            day_prompt = (
+                f"You are the Meal Planner Agent. Generate a replacement DayPlan for Day {target_day} of a {plan_diet} meal plan.\n"
+                f"- Daily calorie target: ~{int(current_plan.target_calories)} kcal (±5%)\n"
+                f"- User request: '{instructions}'\n"
+                f"- Diet type: {plan_diet} (FOR VEGETARIAN: ZERO MEAT/CHICKEN/FISH/SEAFOOD, FOR VEGAN: ZERO ANIMAL PRODUCTS)\n"
+                f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
+                f"- Meals to include: {len(target_day_plan.meals)} balanced meals ({', '.join(m.meal_type for m in target_day_plan.meals)}).\n"
+                f"- For EACH meal, provide realistic ingredients (amount_grams) and detailed 3 to 4 numbered step-by-step 'instructions' (prep, cook, season, serve warm).\n"
+            )
+            try:
+                new_day: DayPlan = await self.llm.generate_structured(
+                    prompt=day_prompt,
+                    response_schema=DayPlan
+                )
+                if new_day and new_day.meals:
+                    new_day.day_number = target_day
+                    new_day.total_calories = round(sum(m.calories for m in new_day.meals), 1)
+                    new_day.total_protein_g = round(sum(m.protein_g for m in new_day.meals), 1)
+                    new_day.total_carbs_g = round(sum(m.carbs_g for m in new_day.meals), 1)
+                    new_day.total_fat_g = round(sum(m.fat_g for m in new_day.meals), 1)
+                    for idx, d in enumerate(updated_plan.days):
+                        if d.day_number == target_day:
+                            updated_plan.days[idx] = new_day
+                            break
+            except Exception as e:
+                logger.error(f"[PlannerAgent] Error generating replacement day {target_day}: {e}")
+        else:
+            # Targeted single meal slot replacement
+            if not target_meal_type:
+                for mt in ["breakfast", "lunch", "dinner", "snack"]:
+                    if mt in cl_inst:
+                        target_meal_type = mt
+                        break
+            if not target_meal_type:
+                target_meal_type = "lunch"
+
+            meal_idx = next(
+                (i for i, m in enumerate(target_day_plan.meals) if m.meal_type.lower() == target_meal_type.lower()),
+                None
+            )
+            old_meal = target_day_plan.meals[meal_idx] if meal_idx is not None else None
+            old_dish = old_meal.recipe_name if old_meal else "existing dish"
+
+            slot_cal = target_meal_cal or (
+                old_meal.calories if old_meal and old_meal.calories > 100
+                else (current_plan.target_calories * (0.3 if target_meal_type in ("breakfast", "dinner") else 0.4))
+            )
+
+            meal_prompt = (
+                f"You are the Meal Planner Agent. Generate a single replacement {target_meal_type} meal for Day {target_day}.\n"
+                f"- Meal type: {target_meal_type}\n"
+                f"- Replaces previous dish: '{old_dish}'\n"
+                f"- User modification request: '{instructions}'\n"
+                f"- Target calories: ~{int(slot_cal)} kcal (±5%)\n"
+                f"- Diet type: {plan_diet} (FOR VEGETARIAN: ZERO MEAT/CHICKEN/FISH/SEAFOOD, FOR VEGAN: ZERO ANIMAL PRODUCTS)\n"
+                f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
+                f"- Provide realistic single-person ingredients with exact amount_grams.\n"
+                f"- Provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm).\n"
+            )
+            try:
+                replacement_meal: Meal = await self.llm.generate_structured(
+                    prompt=meal_prompt,
+                    response_schema=Meal
+                )
+                replacement_meal.meal_type = target_meal_type
+                replacement_meal.diet_type = plan_diet
+                replacement_meal.source = "user_specified"
+
+                if meal_idx is not None:
+                    target_day_plan.meals[meal_idx] = replacement_meal
+                else:
+                    target_day_plan.meals.append(replacement_meal)
+
+                target_day_plan.total_calories = round(sum(m.calories for m in target_day_plan.meals), 1)
+                target_day_plan.total_protein_g = round(sum(m.protein_g for m in target_day_plan.meals), 1)
+                target_day_plan.total_carbs_g = round(sum(m.carbs_g for m in target_day_plan.meals), 1)
+                target_day_plan.total_fat_g = round(sum(m.fat_g for m in target_day_plan.meals), 1)
+            except Exception as e:
+                logger.error(f"[PlannerAgent] Error generating replacement meal: {e}")
+
+        # Recalculate average daily calories across all days
+        if updated_plan.days:
+            updated_plan.average_daily_calories = round(
+                sum(d.total_calories for d in updated_plan.days) / len(updated_plan.days),
+                1
+            )
         updated_plan.target_calories = current_plan.target_calories
-        updated_plan.version = current_plan.version + 1
+        updated_plan.version = current_plan.version
         updated_plan.diet_type = plan_diet
         updated_plan.name = getattr(current_plan, "name", None) or f"{len(updated_plan.days)}-Day {plan_diet.capitalize()} Plan"
 
-        from backend.app.tools.nutrition.calculator import normalize_single_person_plan
-        await normalize_single_person_plan(updated_plan, current_plan.target_calories)
+        # Sanitize diet compliance on the plan
+        self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories)
 
         return updated_plan
+
 
     def _sanitize_diet_compliance(self, meal_plan: MealPlan, plan_diet: str, calorie_target: float):
         """Ensures zero non-compliant dishes exist in vegetarian or vegan plans."""

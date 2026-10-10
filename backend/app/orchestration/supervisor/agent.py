@@ -191,15 +191,15 @@ class SupervisorAgent:
             f"You are NutriGen, a dedicated meal planning and nutrition assistant.\n\n"
             f"{history_ctx}"
             f"The user asked: \"{user_message}\"\n\n"
-            f"In 1 to 2 natural, polite sentences, explain that your focus is dedicated exclusively to meal planning, nutrition, recipes, and groceries, so you cannot assist with topics outside of food like \"{user_message}\".\n"
-            f"CRITICAL: Do NOT start with 'Hey' or greetings. State the boundary directly and conversationally.\n"
+            f"In 1 to 2 natural, polite sentences, explain that your expertise is dedicated exclusively to meal planning, nutrition, recipes, and groceries, so you cannot assist with topics outside of food like \"{user_message}\".\n"
+            f"CRITICAL: Do NOT start with 'Hey' or greetings. State clearly that you cannot assist with topics outside of food.\n"
             f"Do NOT use bullet points or structured lists."
         )
         try:
             return await self.llm.generate_text(prompt)
         except Exception:
             return (
-                f"I'm specifically dedicated to meal planning, recipes, and nutrition, so I can't help with general topics like that. "
+                f"My expertise is dedicated exclusively to meal planning, recipes, and nutrition, so I cannot assist with topics outside of food. "
                 f"Feel free to ask me anything about your diet, meals, or groceries though!"
             )
 
@@ -274,3 +274,50 @@ class SupervisorAgent:
         elif intent == "explain":
             return await self.generate_explanation(state, user_message, history=history)
         return await self.generate_chat_response(user_name, user_message, history=history)
+
+    async def generate_conversational_response(
+        self,
+        user_message: str,
+        context: str,
+        history: Optional[List[Dict[str, Any]]] = None,
+        user_name: Optional[str] = None
+    ) -> str:
+        """
+        Dynamically generates a natural, warm, conversational response using LLM intelligence.
+        Takes the executed tool/workflow output and contextual background, and expresses it
+        in simple, friendly, polite conversational English without rigid predefined static text.
+        """
+        name = (user_name or "").strip() or "there"
+        history_ctx = self._format_history_context(history)
+
+        prompt = (
+            f"You are NutriGen, a helpful, friendly, and knowledgeable personal meal planning companion talking with {name}.\n\n"
+            f"{history_ctx}"
+            f"User's message: \"{user_message}\"\n\n"
+            f"Internal task outcome and context:\n"
+            f"{context}\n\n"
+            f"Instructions for your response:\n"
+            f"1. Respond directly to the user in natural, polite, simple English (2 to 3 sentences).\n"
+            f"2. Use your own conversational intelligence—never recite rigid boilerplate or marketing brochure text.\n"
+            f"3. Explain clearly and warmly what was done or what the user needs to know based on the context above.\n"
+            f"4. If in an ongoing dialogue, do NOT start with repetitive greetings ('Hey {name}' or 'Hi'). Answer directly in conversation flow.\n"
+            f"5. Maintain a supportive, encouraging, professional tone."
+        )
+        try:
+            return await self.llm.generate_text(prompt)
+        except Exception as e:
+            logger.warning(f"[SupervisorAgent] LLM conversational generation failed: {e}. Falling back to clean context.")
+            c_low = context.lower()
+            if "don't have an active meal plan yet" in c_low or "0 active meal plans" in c_low or "0 saved meal plans" in c_low:
+                return "You don't have an active meal plan yet to update. Would you like me to create one for you? Just let me know your calorie target or preferences!"
+            if "already approved" in c_low:
+                return "Your meal plan is already approved! You can view its full itemized grocery checklist in the Grocery tab."
+            if "approved" in c_low:
+                return "Your meal plan is now approved! You can check your grocery checklist in the Grocery tab."
+            if "deleted" in c_low:
+                return "Your meal plan has been permanently deleted. Let me know whenever you would like to create a new one!"
+            if "renamed" in c_low:
+                return "Your meal plan has been renamed successfully!"
+            if "snack" in c_low:
+                return "I've added the healthy snack to your meal plan in the Plans tab. Take a look and let me know if you would like any other adjustments!"
+            return "I've updated your meal plan! You can review the details in your Plans tab."

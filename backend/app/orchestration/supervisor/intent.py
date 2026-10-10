@@ -96,6 +96,14 @@ class UserIntentExtraction(BaseModel):
         None,
         description="'low_calorie' or 'rebalance' if user answered snack choice prompt."
     )
+    target_day: Optional[int] = Field(
+        None,
+        description="Day number targeted for meal edit or snack (e.g. Day 3 -> 3)."
+    )
+    snack_dish: Optional[str] = Field(
+        None,
+        description="Optional dish name for snack if specified by user."
+    )
 
     @field_validator("requested_exclusions", mode="before")
     @classmethod
@@ -344,11 +352,22 @@ async def extract_user_intent(
             )
 
     # 2. Check if previous assistant message asked for Snack rebalance options
-    if "adding a snack may exceed your daily calorie target" in last_asst_content:
-        if any(w in cleaned for w in ["low-calorie", "low calorie", "add low calorie", "add low-calorie"]):
-            return UserIntentExtraction(intent="add_snack", snack_rebalance_choice="low_calorie")
+    if "snack" in last_asst_content and any(w in last_asst_content for w in ["exceed", "calorie", "target", "rebalance", "low-calorie", "light"]):
+        hist_day = None
+        if history:
+            for h in reversed(history):
+                c = (h.get("content") or "").lower()
+                m_d = re.search(r'\b(?:for\s+)?day\s*(\d+)\b', c)
+                if m_d:
+                    hist_day = int(m_d.group(1))
+                    break
+        m_curr_day = re.search(r'\b(?:for\s+)?day\s*(\d+)\b', cleaned)
+        chosen_day = int(m_curr_day.group(1)) if m_curr_day else hist_day
+
+        if any(w in cleaned for w in ["low-calorie", "low calorie", "add low calorie", "add low-calorie", "light snack", "light"]):
+            return UserIntentExtraction(intent="add_snack", snack_rebalance_choice="low_calorie", target_day=chosen_day)
         if any(w in cleaned for w in ["rebalance", "rebalance all 4 meals", "all 4 meals"]):
-            return UserIntentExtraction(intent="add_snack", snack_rebalance_choice="rebalance")
+            return UserIntentExtraction(intent="add_snack", snack_rebalance_choice="rebalance", target_day=chosen_day)
 
     # 3. Check if previous assistant message asked for Plan Deletion confirmation
     is_pending_delete = (
@@ -474,9 +493,23 @@ async def extract_user_intent(
         )
 
     # Fast rule check: Add snack
-    if "snack" in cleaned and any(w in cleaned for w in ["add", "include", "put", "want a snack", "have a snack"]):
+    if "snack" in cleaned and any(w in cleaned for w in ["add", "include", "put", "want a snack", "have a snack", "snack meal"]):
+        m_day = re.search(r'\b(?:for\s+)?day\s*(\d+)\b', cleaned)
+        t_day = int(m_day.group(1)) if m_day else None
+        m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
+        t_id = int(m_id.group(1)) if m_id else None
+        p_name = _extract_plan_name_from_text(user_message)
+        choice = None
+        if any(w in cleaned for w in ["low-calorie", "low calorie", "light snack", "light"]):
+            choice = "low_calorie"
+        elif any(w in cleaned for w in ["rebalance", "all 4 meals"]):
+            choice = "rebalance"
         return UserIntentExtraction(
-            intent="add_snack"
+            intent="add_snack",
+            target_day=t_day,
+            target_plan_id=t_id,
+            target_plan_name=p_name,
+            snack_rebalance_choice=choice
         )
 
     # Fast rule check: Approve meal plan

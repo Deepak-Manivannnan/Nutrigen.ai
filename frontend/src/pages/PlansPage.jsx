@@ -387,7 +387,7 @@ export default function PlansPage() {
                 Day {currentDay.day} Overview
               </span>
               <span style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginLeft: 'var(--space-2)' }}>
-                4 balanced meals
+                {currentDay.meals?.length || 3} balanced meals
               </span>
             </div>
 

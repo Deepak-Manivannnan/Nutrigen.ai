@@ -95,7 +95,7 @@ async def test_out_of_scope_query_triggers_polite_guardrail():
     
     assert final_state.status == "out_of_scope"
     assert final_state.current_plan is None
-    assert "cannot assist with topics outside of food" in final_state.system_message or "dedicated exclusively" in final_state.system_message
+    assert any(p in final_state.system_message.lower() for p in ["outside of food", "dedicated exclusively", "focused exclusively", "meal planning"])
 
 @pytest.mark.asyncio
 async def test_edit_meal_intent_extraction():

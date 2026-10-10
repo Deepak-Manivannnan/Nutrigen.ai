@@ -305,6 +305,7 @@ export function adaptBackendGrocery(rawGrocery, planDays = 7) {
       name: item.name,
       qty: qtyStr,
       price: Math.round(item.estimated_cost || 0),
+      source: item.price_source || item.source || 'ai_estimate',
     });
   });
 

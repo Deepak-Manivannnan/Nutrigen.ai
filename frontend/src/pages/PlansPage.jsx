@@ -83,7 +83,7 @@ export default function PlansPage() {
   }
 
   function handleModifyInChat(plan) {
-    navigate('/app/chat', { state: { prefill: `I want to update "${plan.name}" (Plan #${plan.id}): ` } });
+    navigate('/app/chat', { state: { prefill: `I want to update "${plan.name}": ` } });
     addToast(`Ready to update "${plan.name}" in chat`, 'default');
   }
 

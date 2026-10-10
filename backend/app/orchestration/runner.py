@@ -12,6 +12,31 @@ from backend.app.observability.logging import get_logger
 
 logger = get_logger("orchestration.runner")
 
+def find_referenced_plan(
+    user_message: str,
+    all_plans: List[Any],
+    target_id: Optional[int] = None,
+    target_name: Optional[str] = None
+) -> Optional[Any]:
+    """Helper to cleanly resolve referenced meal plan without exposing internal IDs."""
+    if not all_plans:
+        return None
+    if target_id:
+        p = next((p for p in all_plans if p.id == target_id), None)
+        if p:
+            return p
+    if target_name:
+        t_clean = target_name.strip().lower()
+        p = next((p for p in all_plans if p.name.strip().lower() == t_clean or t_clean in p.name.strip().lower()), None)
+        if p:
+            return p
+    clean_msg = user_message.strip().lower()
+    for p in sorted(all_plans, key=lambda x: len(x.name), reverse=True):
+        p_name = p.name.strip().lower()
+        if p_name and p_name in clean_msg:
+            return p
+    return all_plans[0]
+
 async def run_meal_planner(
     user_id: int,
     user_message: str,
@@ -66,15 +91,15 @@ async def run_meal_planner(
     existing_plan = None
     db_plan_id = None
     if all_plans:
-        # Match target_plan_id if specified, else latest
-        if intent_data.target_plan_id:
-            matched = next((p for p in all_plans if p.id == intent_data.target_plan_id), None)
-            if matched:
-                existing_plan = PlanRepository.to_meal_plan_domain(matched)
-                db_plan_id = matched.id
-        if not existing_plan:
-            existing_plan = PlanRepository.to_meal_plan_domain(all_plans[0])
-            db_plan_id = all_plans[0].id
+        matched_plan = find_referenced_plan(
+            user_message,
+            all_plans,
+            target_id=intent_data.target_plan_id,
+            target_name=intent_data.target_plan_name
+        )
+        if matched_plan:
+            existing_plan = PlanRepository.to_meal_plan_domain(matched_plan)
+            db_plan_id = matched_plan.id
 
     # If existing plan has a specific diet type, preserve it
     effective_plan_diet = getattr(existing_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
@@ -146,11 +171,12 @@ async def run_meal_planner(
             ]
             return state
 
-        target_plan = None
-        if intent_data.target_plan_id:
-            target_plan = next((p for p in all_plans if p.id == intent_data.target_plan_id), None)
-        elif len(all_plans) == 1:
-            target_plan = all_plans[0]
+        target_plan = find_referenced_plan(
+            user_message,
+            all_plans,
+            target_id=intent_data.target_plan_id,
+            target_name=intent_data.target_plan_name
+        )
 
         if target_plan and intent_data.new_plan_name:
             new_title = intent_data.new_plan_name.strip()
@@ -163,29 +189,29 @@ async def run_meal_planner(
                         repo = PlanRepository(temp_session)
                         await repo.rename_plan(target_plan.id, new_title)
             except Exception as e:
-                logger.error(f"[{tid}] Failed to rename plan #{target_plan.id}: {e}")
+                logger.error(f"[{tid}] Failed to rename plan: {e}")
 
-            msg = f"Meal Plan #{target_plan.id} has been renamed to **\"{new_title}\"**! ✏️"
+            msg = f"Your meal plan has been renamed to **\"{new_title}\"**! ✏️"
             state.system_message = msg
             state.status = "approved"
             state.plan_id = target_plan.id
             return state
-        elif target_plan:
-            msg = f"What would you like to rename **\"{target_plan.name}\"** (Plan #{target_plan.id}) to? Reply with the new name!"
+        elif target_plan and (len(all_plans) == 1 or intent_data.target_plan_name or intent_data.target_plan_id):
+            msg = f"What would you like to rename **\"{target_plan.name}\"** to? Reply with the new name!"
             state.system_message = msg
             state.status = "conversational"
             return state
         else:
-            plan_bullets = [f"• **Plan #{p.id}**: {p.name}" for p in all_plans]
+            plan_bullets = [f"• **\"{p.name}\"**" for p in all_plans]
             msg = (
-                f"You have multiple meal plans in your Plans tab:\n\n"
+                f"You have {len(all_plans)} saved meal plans:\n\n"
                 + "\n".join(plan_bullets)
-                + "\n\nPlease specify which plan you want to rename (e.g. *\"Rename Plan #{all_plans[0].id} to High Protein\"*):"
+                + "\n\nPlease let me know which plan you want to rename:"
             )
             state.system_message = msg
             state.status = "conversational"
             state.quick_options = [
-                {"label": f"Rename {p.name}", "value": f"Rename Plan #{p.id} to "}
+                {"label": f"Rename {p.name}", "value": f"Rename \"{p.name}\" to "}
                 for p in all_plans
             ]
             return state
@@ -244,9 +270,9 @@ async def run_meal_planner(
         is_pending_confirmation = (
             "are you sure you want to delete" in last_asst_content
             or "can i delete it" in last_asst_content
+            or "which meal plan should be deleted" in last_asst_content
             or "reply 'yes, delete it'" in last_asst_content
             or "reply \"yes, delete it\"" in last_asst_content
-            or "which meal plan should be deleted" in last_asst_content
         )
 
         cleaned_user_msg = user_message.strip().lower()
@@ -258,7 +284,7 @@ async def run_meal_planner(
             state.status = "conversational"
             return state
 
-        # Determine target plan ID if explicitly stated
+        # Determine target plan if explicitly stated
         target_id = intent_data.target_plan_id
         if not target_id:
             m = re.search(r'(?:plan\s*#?|#)(\d+)', user_message, re.IGNORECASE)
@@ -271,15 +297,18 @@ async def run_meal_planner(
         )
 
         if is_confirming:
-            plan_to_delete = None
-            if target_id:
-                plan_to_delete = next((p for p in all_plans if p.id == target_id), None)
+            plan_to_delete = find_referenced_plan(
+                user_message,
+                all_plans,
+                target_id=target_id,
+                target_name=intent_data.target_plan_name
+            )
 
             if not plan_to_delete and is_pending_confirmation:
-                m_prev = re.search(r'Plan\s*#?(\d+)', last_asst_content, re.IGNORECASE)
+                m_prev = re.search(r'\*\*\"([^\"]+)\"\*\*', last_asst_content)
                 if m_prev:
-                    prev_id = int(m_prev.group(1))
-                    plan_to_delete = next((p for p in all_plans if p.id == prev_id), None)
+                    prev_name = m_prev.group(1).lower()
+                    plan_to_delete = next((p for p in all_plans if p.name.lower() == prev_name or prev_name in p.name.lower()), None)
 
             if not plan_to_delete and len(all_plans) == 1:
                 plan_to_delete = all_plans[0]
@@ -295,13 +324,13 @@ async def run_meal_planner(
                         async with AsyncSessionLocal() as temp_session:
                             repo = PlanRepository(temp_session)
                             await repo.delete_plan(del_id)
-                    logger.info(f"[{tid}] Deleted plan #{del_id} for user {user_id}")
+                    logger.info(f"[{tid}] Deleted plan '{del_name}' (id #{del_id}) for user {user_id}")
                 except Exception as e:
-                    logger.error(f"[{tid}] Error executing plan deletion #{del_id}: {e}")
+                    logger.error(f"[{tid}] Error executing plan deletion: {e}")
 
                 remaining_count = len(all_plans) - 1
                 msg = (
-                    f"Meal Plan #{del_id} (**\"{del_name}\"**) has been permanently deleted! 🗑️\n\n"
+                    f"**\"{del_name}\"** has been permanently deleted! 🗑️\n\n"
                     f"{'You currently have no saved meal plans. Would you like to create a new one?' if remaining_count == 0 else f'You have {remaining_count} meal plan remaining in your Plans tab.'}"
                 )
                 state.system_message = msg
@@ -313,7 +342,7 @@ async def run_meal_planner(
                 ]
                 return state
             else:
-                msg = "I couldn't identify which plan to delete. Please specify the plan number (e.g. *\"Delete Plan #<id>\"*) or select one from the Plans tab."
+                msg = "I couldn't identify which plan to delete. Please specify the plan name (e.g. *\"Delete Good Meal\"*) or select one from the Plans tab."
                 state.system_message = msg
                 state.status = "conversational"
                 return state
@@ -332,38 +361,39 @@ async def run_meal_planner(
             ]
             return state
 
-        # Case 1: 1 plan exists or user specified target_id
-        if target_id or len(all_plans) == 1:
-            target_plan = next((p for p in all_plans if p.id == target_id), None) if target_id else all_plans[0]
-            if target_plan:
-                msg = (
-                    f"You have created **\"{target_plan.name}\"** recently (**Plan #{target_plan.id}**: {target_plan.days}-day plan, "
-                    f"{int(target_plan.calorie_target)} kcal/day, status: {target_plan.status.capitalize()}).\n\n"
-                    f"Can I delete it? Are you sure you want to delete this meal plan?\n\n"
-                    f"Reply **'Yes, delete it'** to confirm, or **'Cancel'** to keep it."
-                )
-                state.system_message = msg
-                state.status = "conversational"
-                state.quick_options = [
-                    {"label": f"Yes, delete {target_plan.name}", "value": f"Yes, delete Plan #{target_plan.id}"},
-                    {"label": "Cancel", "value": "Cancel"}
-                ]
-                return state
+        # Case 1: 1 plan exists or user specified target plan by name or id
+        target_plan = find_referenced_plan(
+            user_message,
+            all_plans,
+            target_id=target_id,
+            target_name=intent_data.target_plan_name
+        )
+        if target_plan and (len(all_plans) == 1 or intent_data.target_plan_name or target_id):
+            msg = (
+                f"Are you sure you want to delete **\"{target_plan.name}\"**? 🗑️\n\n"
+                f"Reply **'Yes, delete it'** to confirm, or **'Cancel'** to keep it."
+            )
+            state.system_message = msg
+            state.status = "conversational"
+            state.quick_options = [
+                {"label": f"Yes, delete {target_plan.name}", "value": f"Yes, delete \"{target_plan.name}\""},
+                {"label": "Cancel", "value": "Cancel"}
+            ]
+            return state
 
-        # Case 2: Multiple plans exist
+        # Case 2: Multiple plans exist and user did not name one
         plan_bullets = []
         options = []
         for p in all_plans:
-            plan_bullets.append(f"• **Plan #{p.id}**: {p.name} ({p.days}-day, {int(p.calorie_target)} kcal/day)")
-            options.append({"label": f"Delete {p.name} (#{p.id})", "value": f"Delete Plan #{p.id}"})
+            plan_bullets.append(f"• **\"{p.name}\"** ({p.days}-day, {int(p.calorie_target)} kcal/day)")
+            options.append({"label": f"Delete {p.name}", "value": f"Delete \"{p.name}\""})
         options.append({"label": "Cancel", "value": "Cancel"})
 
         bullets_str = "\n".join(plan_bullets)
         msg = (
-            f"You have multiple meal plans ({len(all_plans)} saved meal plans).\n\n"
-            f"Please select the one you want to delete:\n\n"
+            f"Which meal plan would you like to delete?\n\n"
             f"{bullets_str}\n\n"
-            f"You can choose from the options below or reply with the plan name or number."
+            f"You can choose from the options below or reply with the plan name."
         )
         state.system_message = msg
         state.status = "conversational"
@@ -389,37 +419,40 @@ async def run_meal_planner(
 
         # If user generally said "I want to update my meal plan" without specific meal dish instructions
         if intent_data.is_update_request:
-            if len(all_plans) == 1:
-                target_p = all_plans[0]
+            target_p = find_referenced_plan(
+                user_message,
+                all_plans,
+                target_id=intent_data.target_plan_id,
+                target_name=intent_data.target_plan_name
+            )
+            if target_p and (len(all_plans) == 1 or intent_data.target_plan_name or intent_data.target_plan_id):
                 msg = (
-                    f"You have created **\"{target_p.name}\"** recently. "
-                    f"Tell me what you want to update in this meal plan?"
+                    f"What would you like to update in **\"{target_p.name}\"**? ✏️\n\n"
+                    f"You can swap a specific meal (e.g. *\"replace Day 2 breakfast with oatmeal\"*), "
+                    f"adjust ingredients, or add a healthy snack."
                 )
                 state.system_message = msg
                 state.status = "conversational"
                 state.quick_options = [
-                    {"label": "Swap breakfast tomorrow", "value": f"Update Plan #{target_p.id} swap day 1 breakfast with oatmeal"},
-                    {"label": "Add a healthy snack", "value": f"Add a snack to Plan #{target_p.id}"},
-                    {"label": "Change diet to vegetarian", "value": f"Update Plan #{target_p.id} to vegetarian"}
+                    {"label": "Swap breakfast", "value": f"I want to update \"{target_p.name}\": swap day 1 breakfast with oatmeal"},
+                    {"label": "Add a healthy snack", "value": f"Add a snack to \"{target_p.name}\""},
+                    {"label": "Change diet to vegetarian", "value": f"Update \"{target_p.name}\" to vegetarian"}
                 ]
                 return state
             else:
-                # Multiple plans: check if target_plan_id was specified
-                target_p = next((p for p in all_plans if p.id == intent_data.target_plan_id), None)
-                if not target_p:
-                    plan_bullets = [f"• **Plan #{p.id}**: {p.name} ({p.days}-day, {p.diet_type}, {int(p.calorie_target)} kcal)" for p in all_plans]
-                    msg = (
-                        f"You have multiple meal plans in your Plans tab:\n\n"
-                        + "\n".join(plan_bullets)
-                        + "\n\nPlease select the one you want to update:"
-                    )
-                    state.system_message = msg
-                    state.status = "conversational"
-                    state.quick_options = [
-                        {"label": f"Update {p.name} (#{p.id})", "value": f"I want to update Plan #{p.id}: "}
-                        for p in all_plans
-                    ]
-                    return state
+                plan_bullets = [f"• **\"{p.name}\"** ({p.days}-day, {p.diet_type}, {int(p.calorie_target)} kcal)" for p in all_plans]
+                msg = (
+                    f"You have multiple meal plans in your Plans tab:\n\n"
+                    + "\n".join(plan_bullets)
+                    + "\n\nPlease select the one you want to update:"
+                )
+                state.system_message = msg
+                state.status = "conversational"
+                state.quick_options = [
+                    {"label": f"Update {p.name}", "value": f"I want to update \"{p.name}\": "}
+                    for p in all_plans
+                ]
+                return state
 
     # =========================================================================
     # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
@@ -539,13 +572,16 @@ async def run_meal_planner(
                     )
                     final_state.plan_version = new_version
                     final_state.status = "draft"
-                    inst_text = getattr(intent_data.edit_details, "instructions", "") or user_message
+                    clean_inst = getattr(intent_data.edit_details, "instructions", "") or user_message
+                    clean_inst = re.sub(r'\(Plan\s*#\d+\):?', '', clean_inst, flags=re.IGNORECASE).strip()
+                    plan_title = getattr(final_state.current_plan, "name", "your meal plan")
                     final_state.system_message = (
-                        f"I've updated your meal plan! 🥗 Your request ('{inst_text}') has been applied in place.\n\n"
+                        f"I've updated **\"{plan_title}\"**! 🥗\n\n"
+                        f"Your modification request ({clean_inst}) has been applied in place. "
                         f"The plan is now updated to **Version {new_version} Draft** in your Plans tab. "
                         f"You can review it and click **'Approve & Generate Grocery List'** whenever you're ready!"
                     )
-                    logger.info(f"[{tid}] Updated existing plan #{db_plan_id} to Version {new_version} Draft.")
+                    logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft.")
                 else:
                     plan_diet_str = user_profile.get("diet_type", "veg")
                     p_name = f"{len(final_state.current_plan.days)}-Day {plan_diet_str.capitalize()} Plan"
@@ -583,9 +619,12 @@ async def run_meal_planner(
                         )
                         final_state.plan_version = new_version
                         final_state.status = "draft"
-                        inst_text = getattr(intent_data.edit_details, "instructions", "") or user_message
+                        clean_inst = getattr(intent_data.edit_details, "instructions", "") or user_message
+                        clean_inst = re.sub(r'\(Plan\s*#\d+\):?', '', clean_inst, flags=re.IGNORECASE).strip()
+                        plan_title = getattr(final_state.current_plan, "name", "your meal plan")
                         final_state.system_message = (
-                            f"I've updated your meal plan! 🥗 Your request ('{inst_text}') has been applied in place.\n\n"
+                            f"I've updated **\"{plan_title}\"**! 🥗\n\n"
+                            f"Your modification request ({clean_inst}) has been applied in place. "
                             f"The plan is now updated to **Version {new_version} Draft** in your Plans tab. "
                             f"You can review it and click **'Approve & Generate Grocery List'** whenever you're ready!"
                         )

@@ -159,6 +159,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
         target_day = getattr(edit_details, "day", None) or 1
         target_meal_type = getattr(edit_details, "meal_type", None) or "lunch"
         instructions = getattr(edit_details, "instructions", "") or "modify meal"
+        target_meal_cal = getattr(edit_details, "target_meal_calories", None)
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
 
         # Find the existing dish in that slot
@@ -170,15 +171,19 @@ class PlannerAgent(BaseAgent[MealPlan]):
                         old_dish = m.recipe_name
                         break
 
+        cal_note = f"- Target slot calorie range: ~{int(target_meal_cal)} kcal\n" if target_meal_cal else ""
+        rule2_note = f" (~{int(target_meal_cal)} kcal)" if target_meal_cal else ""
+
         task_instruction = (
             f"Modify an existing meal plan according to user instructions:\n"
             f"- Target Day: Day {target_day}\n"
             f"- Target Meal: {target_meal_type}\n"
+            f"{cal_note}"
             f"- Previous dish in this slot: '{old_dish}'\n"
             f"- Modification instructions: '{instructions}'\n\n"
             f"IMPORTANT RULES:\n"
             f"1. Keep ALL OTHER DAYS and meals in the plan EXACTLY identical to the existing plan.\n"
-            f"2. Replace only Day {target_day} {target_meal_type} with a recipe matching the user's instructions.\n"
+            f"2. Replace only Day {target_day} {target_meal_type} with a recipe matching the user's instructions{rule2_note}.\n"
             f"3. Strictly adhere to the plan's diet type '{plan_diet}' (FOR VEGETARIAN: ZERO MEAT/CHICKEN/TURKEY/FISH/SEAFOOD) and exclude allergies {user_profile.get('allergies', [])}.\n"
             f"4. Portions must be for a single person. Recalculate Day {target_day} total calories to be close to the target {current_plan.target_calories:.0f} kcal (±5%).\n"
             f"5. Set version = {current_plan.version + 1}.\n"

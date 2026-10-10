@@ -95,10 +95,22 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 "  * Absolutely NO animal products: NO meat, poultry, fish, seafood, eggs, dairy (milk, cheese, paneer, butter, ghee, curd, yogurt), or honey. 100% plant-based.\n"
             )
         else:
-            allergies_list = user_profile.get("allergies", [])
-            excl_text = f" STRICT EXCLUSIONS: Do NOT include any of these excluded ingredients or meats: {', '.join(allergies_list)}." if allergies_list else ""
+            allergies_list = [str(a).lower() for a in user_profile.get("allergies", [])]
+            allowed_proteins = ["eggs"]
+            if "chicken" not in allergies_list and "poultry" not in allergies_list:
+                allowed_proteins.append("chicken")
+            if "fish" not in allergies_list and "seafood" not in allergies_list:
+                allowed_proteins.append("fish")
+            if "turkey" not in allergies_list and "poultry" not in allergies_list:
+                allowed_proteins.append("turkey")
+            if "beef" not in allergies_list and "meat" not in allergies_list:
+                allowed_proteins.append("lean beef")
+            if "pork" not in allergies_list and "meat" not in allergies_list:
+                allowed_proteins.append("pork")
+
+            excl_text = f" ABSOLUTE HARD REQUIREMENT: Zero {', '.join(allergies_list)}. Do NOT include any recipe or ingredient containing {', '.join(allergies_list)}." if allergies_list else ""
             diet_rules_prompt = (
-                f"- DIETARY RULE: Non-Vegetarian. Include balanced lean proteins (poultry, fish, eggs) along with fresh vegetables and whole grains.{excl_text}\n"
+                f"- DIETARY RULE: Non-Vegetarian. Primary allowed protein sources: {', '.join(allowed_proteins)}.{excl_text}\n"
             )
 
         meal_plan = None
@@ -166,7 +178,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
         meal_plan.name = plan_name
 
         # Strict Diet Compliance Verification and Sanitization Pass
-        self._sanitize_diet_compliance(meal_plan, plan_diet, calorie_target)
+        self._sanitize_diet_compliance(meal_plan, plan_diet, calorie_target, user_profile)
 
         from backend.app.tools.nutrition.calculator import normalize_single_person_plan
         await normalize_single_person_plan(meal_plan, calorie_target)
@@ -181,24 +193,106 @@ class PlannerAgent(BaseAgent[MealPlan]):
         task_id: Optional[str] = None
     ) -> MealPlan:
         """
-        Modifies a specific meal slot (or specific day) in an existing meal plan
+        Modifies a specific meal slot (or specific day, or scrubbed exclusions) in an existing meal plan
         while keeping all other days and meals strictly unchanged.
         """
         updated_plan = current_plan.model_copy(deep=True)
 
-        target_day = getattr(edit_details, "day", None) or 1
-        target_meal_type = getattr(edit_details, "meal_type", None)
         instructions = getattr(edit_details, "instructions", "") or "modify meal"
         target_meal_cal = getattr(edit_details, "target_meal_calories", None)
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
 
         cl_inst = instructions.lower()
 
+        # Check if the instruction asks to replace recipes across the plan containing specific excluded ingredients
+        is_exclusion_scrub = (
+            any(w in cl_inst for w in ["pork", "beef", "turkey", "meat", "chicken", "fish", "dairy", "allerg"])
+            and any(w in cl_inst for w in ["replace", "remove", "exclude", "without", "free", "scrub", "different recipes"])
+        ) or (bool(user_profile.get("allergies")) and any(w in cl_inst for w in ["exclude", "remove", "without", "replace recipes", "replace the recipes"]))
+
+        if is_exclusion_scrub:
+            allergies_list = [str(a).lower() for a in user_profile.get("allergies", [])]
+            for exc in ["pork", "beef", "turkey", "dairy"]:
+                if exc in cl_inst and exc not in allergies_list:
+                    allergies_list.append(exc)
+            user_profile["allergies"] = allergies_list
+
+            from backend.app.tools.allergens import ALLERGEN_CANONICAL_TARGETS
+
+            for d in updated_plan.days:
+                for idx, m in enumerate(d.meals):
+                    meal_text = (m.recipe_name + " " + " ".join(ing.name for ing in m.ingredients)).lower()
+                    violates = False
+                    for exc in allergies_list:
+                        targets = ALLERGEN_CANONICAL_TARGETS.get(exc, [exc])
+                        if any(t in meal_text for t in targets):
+                            violates = True
+                            break
+                    if violates:
+                        target_cal = m.calories or (updated_plan.target_calories * (0.3 if m.meal_type in ("breakfast", "dinner") else 0.4))
+                        allowed_proteins = ["eggs", "chicken", "fish"]
+                        for a in allergies_list:
+                            if a in allowed_proteins:
+                                allowed_proteins.remove(a)
+                        p_str = ", ".join(allowed_proteins) or "plant-based proteins"
+
+                        meal_prompt = (
+                            f"Generate a replacement {m.meal_type} meal for Day {d.day_number} in a {plan_diet} meal plan.\n"
+                            f"- Target calories: ~{int(target_cal)} kcal (±5%)\n"
+                            f"- ABSOLUTE HARD CONSTRAINT: ZERO {', '.join(allergies_list)}. Do NOT include any {', '.join(allergies_list)}.\n"
+                            f"- Allowed protein sources: {p_str}.\n"
+                            f"- Provide realistic single-person ingredients with exact amount_grams.\n"
+                            f"- Provide 3 to 4 numbered step-by-step instructions.\n"
+                        )
+                        try:
+                            rep: Meal = await self.llm.generate_structured(
+                                prompt=meal_prompt,
+                                response_schema=Meal
+                            )
+                            rep.meal_type = m.meal_type
+                            rep.diet_type = plan_diet
+                            rep.source = "user_specified"
+                            d.meals[idx] = rep
+                        except Exception as e:
+                            logger.error(f"[PlannerAgent] Error replacing violating meal: {e}")
+
+            for d in updated_plan.days:
+                d.total_calories = round(sum(m.calories for m in d.meals), 1)
+                d.total_protein_g = round(sum(m.protein_g for m in d.meals), 1)
+                d.total_carbs_g = round(sum(m.carbs_g for m in d.meals), 1)
+                d.total_fat_g = round(sum(m.fat_g for m in d.meals), 1)
+            updated_plan.average_daily_calories = round(
+                sum(d.total_calories for d in updated_plan.days) / len(updated_plan.days),
+                1
+            )
+            self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories, user_profile)
+            return updated_plan
+
+        target_meal_type = getattr(edit_details, "meal_type", None)
+        if not target_meal_type:
+            for mt in ["snack", "breakfast", "lunch", "dinner"]:
+                if mt in cl_inst:
+                    target_meal_type = mt
+                    break
+
         # Check if the instruction asks to update an entire day's meals
         is_entire_day = (
             (not target_meal_type and any(k in cl_inst for k in ["entire day", "all meals", "whole day", "all 3 meals", "all 4 meals", "day meals"]))
             or (not target_meal_type and bool(re.search(r'\bday\s*\d+\b', cl_inst)) and not any(m in cl_inst for m in ["breakfast", "lunch", "dinner", "snack"]))
         )
+
+        target_day = getattr(edit_details, "day", None)
+        if target_day is None:
+            if target_meal_type == "snack":
+                snack_days = [d.day_number for d in updated_plan.days if any(m.meal_type.lower() == "snack" for m in d.meals)]
+                if len(snack_days) == 1:
+                    target_day = snack_days[0]
+                elif len(snack_days) > 1:
+                    target_day = snack_days[-1]
+                else:
+                    target_day = 1
+            else:
+                target_day = 1
 
         target_day_plan = next((d for d in updated_plan.days if d.day_number == target_day), None)
         if not target_day_plan and updated_plan.days:
@@ -238,12 +332,6 @@ class PlannerAgent(BaseAgent[MealPlan]):
             except Exception as e:
                 logger.error(f"[PlannerAgent] Error generating replacement day {target_day}: {e}")
         else:
-            # Targeted single meal slot replacement
-            if not target_meal_type:
-                for mt in ["breakfast", "lunch", "dinner", "snack"]:
-                    if mt in cl_inst:
-                        target_meal_type = mt
-                        break
             if not target_meal_type:
                 target_meal_type = "lunch"
 
@@ -283,7 +371,10 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 if meal_idx is not None:
                     target_day_plan.meals[meal_idx] = replacement_meal
                 else:
-                    target_day_plan.meals.append(replacement_meal)
+                    if any(k in cl_inst for k in ["add", "include", "put"]):
+                        target_day_plan.meals.append(replacement_meal)
+                    elif target_day_plan.meals:
+                        target_day_plan.meals[-1] = replacement_meal
 
                 target_day_plan.total_calories = round(sum(m.calories for m in target_day_plan.meals), 1)
                 target_day_plan.total_protein_g = round(sum(m.protein_g for m in target_day_plan.meals), 1)
@@ -304,21 +395,24 @@ class PlannerAgent(BaseAgent[MealPlan]):
         updated_plan.name = getattr(current_plan, "name", None) or f"{len(updated_plan.days)}-Day {plan_diet.capitalize()} Plan"
 
         # Sanitize diet compliance on the plan
-        self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories)
+        self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories, user_profile)
 
         return updated_plan
 
 
-    def _sanitize_diet_compliance(self, meal_plan: MealPlan, plan_diet: str, calorie_target: float):
-        """Ensures zero non-compliant dishes exist in vegetarian or vegan plans."""
+    def _sanitize_diet_compliance(self, meal_plan: MealPlan, plan_diet: str, calorie_target: float, user_profile: Optional[Dict[str, Any]] = None):
+        """Ensures zero non-compliant dishes exist in vegetarian, vegan, or allergy/exclusion restricted plans."""
         from backend.app.tools.diet_rules import check_diet_compliance
         from backend.app.schemas.domain import Ingredient
+        from backend.app.tools.allergens import ALLERGEN_CANONICAL_TARGETS
 
         dt = (plan_diet or "").strip().lower()
-        if dt not in ("veg", "vegetarian", "vegan"):
-            return
-
+        is_veg = dt in ("veg", "vegetarian", "vegan")
         is_vegan = dt == "vegan"
+        allergies = [str(a).lower() for a in (user_profile.get("allergies", []) if user_profile else [])]
+
+        if not is_veg and not allergies:
+            return
 
         fallback_veg_options = {
             "breakfast": [
@@ -449,19 +543,172 @@ class PlannerAgent(BaseAgent[MealPlan]):
             ]
         }
 
+        fallback_non_veg_options = {
+            "breakfast": [
+                {
+                    "name": "Poached Eggs on Multigrain Toast with Baby Spinach",
+                    "cals": 0.30 * calorie_target,
+                    "protein": 28.0,
+                    "carbs": 38.0,
+                    "fat": 16.0,
+                    "ingredients": [
+                        Ingredient(name="Whole Eggs", amount_grams=120.0),
+                        Ingredient(name="Multigrain Bread", amount_grams=60.0),
+                        Ingredient(name="Baby Spinach", amount_grams=50.0),
+                        Ingredient(name="Olive Oil", amount_grams=8.0)
+                    ],
+                    "instructions": [
+                        "1. Bring a small pot of water to a gentle simmer with a drop of vinegar.",
+                        "2. Crack fresh eggs into simmering water and poach for 3 minutes until whites are set.",
+                        "3. Toast multigrain bread until golden and crisp.",
+                        "4. Layer fresh baby spinach over toast, top with poached eggs, and season with black pepper."
+                    ]
+                },
+                {
+                    "name": "Egg White & Spinach Scramble with Avocado and Rye Toast",
+                    "cals": 0.30 * calorie_target,
+                    "protein": 30.0,
+                    "carbs": 35.0,
+                    "fat": 14.0,
+                    "ingredients": [
+                        Ingredient(name="Egg Whites", amount_grams=150.0),
+                        Ingredient(name="Whole Egg", amount_grams=50.0),
+                        Ingredient(name="Rye Toast", amount_grams=60.0),
+                        Ingredient(name="Avocado", amount_grams=40.0),
+                        Ingredient(name="Olive Oil", amount_grams=8.0)
+                    ],
+                    "instructions": [
+                        "1. Whisk egg whites and whole egg together with a pinch of sea salt.",
+                        "2. Heat olive oil in a non-stick pan and sauté baby spinach for 1 minute.",
+                        "3. Pour eggs into the pan and gently scramble over medium-low heat until soft curds form.",
+                        "4. Serve with toasted rye bread and sliced fresh avocado."
+                    ]
+                }
+            ],
+            "lunch": [
+                {
+                    "name": "Lemon Herb Grilled Chicken Breast with Quinoa and Steamed Asparagus",
+                    "cals": 0.40 * calorie_target,
+                    "protein": 42.0,
+                    "carbs": 55.0,
+                    "fat": 15.0,
+                    "ingredients": [
+                        Ingredient(name="Skinless Chicken Breast", amount_grams=180.0),
+                        Ingredient(name="Cooked Quinoa", amount_grams=140.0),
+                        Ingredient(name="Asparagus", amount_grams=100.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0),
+                        Ingredient(name="Lemon Juice", amount_grams=15.0)
+                    ],
+                    "instructions": [
+                        "1. Season chicken breast with olive oil, oregano, garlic powder, and fresh lemon juice.",
+                        "2. Grill on medium-high heat for 6-7 minutes per side until thoroughly cooked through.",
+                        "3. Steam asparagus spears until bright green and tender-crisp.",
+                        "4. Slice chicken breast and serve over warm fluffy quinoa with asparagus."
+                    ]
+                },
+                {
+                    "name": "Baked Herb Salmon Fillet with Steamed Brown Rice and Broccoli",
+                    "cals": 0.40 * calorie_target,
+                    "protein": 38.0,
+                    "carbs": 52.0,
+                    "fat": 18.0,
+                    "ingredients": [
+                        Ingredient(name="Salmon Fillet", amount_grams=160.0),
+                        Ingredient(name="Brown Rice", amount_grams=140.0),
+                        Ingredient(name="Broccoli Florets", amount_grams=100.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0),
+                        Ingredient(name="Dill & Lemon", amount_grams=10.0)
+                    ],
+                    "instructions": [
+                        "1. Preheat oven to 200°C (400°F) and place salmon fillet on a lined baking tray.",
+                        "2. Brush salmon with olive oil, fresh dill, sea salt, and lemon slices.",
+                        "3. Bake for 12-14 minutes until tender and flaky.",
+                        "4. Serve with steamed brown rice and tender broccoli florets."
+                    ]
+                }
+            ],
+            "dinner": [
+                {
+                    "name": "Pan-Seared White Fish Fillet with Roasted Sweet Potato and Green Beans",
+                    "cals": 0.30 * calorie_target,
+                    "protein": 34.0,
+                    "carbs": 42.0,
+                    "fat": 12.0,
+                    "ingredients": [
+                        Ingredient(name="White Fish Fillet", amount_grams=160.0),
+                        Ingredient(name="Sweet Potato", amount_grams=130.0),
+                        Ingredient(name="Green Beans", amount_grams=90.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0)
+                    ],
+                    "instructions": [
+                        "1. Cube sweet potatoes and roast in the oven with olive oil and thyme until fork-tender.",
+                        "2. Season fish fillet with paprika, sea salt, and black pepper.",
+                        "3. Pan-sear fish in olive oil over medium-high heat for 3-4 minutes per side.",
+                        "4. Blanch green beans in boiling water for 3 minutes and plate together with fish and potatoes."
+                    ]
+                },
+                {
+                    "name": "Grilled Garlic Herb Chicken Thigh with Jasmine Rice and Sautéed Greens",
+                    "cals": 0.30 * calorie_target,
+                    "protein": 35.0,
+                    "carbs": 44.0,
+                    "fat": 14.0,
+                    "ingredients": [
+                        Ingredient(name="Boneless Chicken Thigh", amount_grams=160.0),
+                        Ingredient(name="Jasmine Rice", amount_grams=130.0),
+                        Ingredient(name="Baby Spinach", amount_grams=80.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0)
+                    ],
+                    "instructions": [
+                        "1. Marinate chicken thigh with minced garlic, dried herbs, and olive oil.",
+                        "2. Sear on a hot grill pan for 5-6 minutes per side until beautifully charred and cooked.",
+                        "3. Steam fragrant jasmine rice until light and fluffy.",
+                        "4. Quickly wilt spinach in the remaining pan juices and serve warm alongside chicken."
+                    ]
+                }
+            ]
+        }
+
         for day in meal_plan.days:
             for meal in day.meals:
                 m_type = meal.meal_type.lower()
                 ing_names = [ing.name for ing in meal.ingredients]
                 names_to_check = ing_names + [meal.recipe_name]
-                violations = check_diet_compliance(dt, names_to_check)
-                if violations:
+                meal_full_text = " ".join(names_to_check).lower()
+
+                violates_diet = False
+                if is_veg:
+                    diet_violations = check_diet_compliance(dt, names_to_check)
+                    if diet_violations:
+                        violates_diet = True
+
+                violates_allergy = False
+                for exc in allergies:
+                    targets = ALLERGEN_CANONICAL_TARGETS.get(exc, [exc])
+                    if any(t in meal_full_text for t in targets):
+                        violates_allergy = True
+                        break
+
+                if violates_diet or violates_allergy:
                     logger.warning(
-                        f"[PlannerAgent] Diet violation in '{meal.recipe_name}' for {dt}: {violations}. "
-                        f"Replacing with certified {dt} dish."
+                        f"[PlannerAgent] Compliance violation in '{meal.recipe_name}' (diet: {violates_diet}, allergy: {violates_allergy}). "
+                        f"Replacing with certified compliant dish."
                     )
                     slot_key = "breakfast" if "breakfast" in m_type else ("lunch" if "lunch" in m_type else "dinner")
-                    opts = fallback_veg_options.get(slot_key, fallback_veg_options["lunch"])
+
+                    if is_veg:
+                        opts = fallback_veg_options.get(slot_key, fallback_veg_options["lunch"])
+                    else:
+                        # Non-veg: find fallback dishes that don't violate requested allergies
+                        candidate_opts = fallback_non_veg_options.get(slot_key, fallback_non_veg_options["lunch"])
+                        opts = []
+                        for opt in candidate_opts:
+                            opt_text = (opt["name"] + " " + " ".join(i.name for i in opt["ingredients"])).lower()
+                            if not any(t in opt_text for exc in allergies for t in ALLERGEN_CANONICAL_TARGETS.get(exc, [exc])):
+                                opts.append(opt)
+                        if not opts:
+                            opts = fallback_veg_options.get(slot_key, fallback_veg_options["lunch"])
+
                     chosen = opts[(day.day_number - 1) % len(opts)]
                     meal.recipe_name = chosen["name"]
                     meal.calories = chosen["cals"]

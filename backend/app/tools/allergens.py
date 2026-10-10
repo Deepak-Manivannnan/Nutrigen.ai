@@ -24,6 +24,12 @@ ALLERGEN_CANONICAL_TARGETS: Dict[str, List[str]] = {
     "sesame": ["sesame", "tahini", "halva"],
     "mustard": ["mustard"],
     "coconut": ["coconut"],
+    "beef": ["beef", "steak", "veal", "sirloin", "brisket", "ribeye", "ground beef"],
+    "pork": ["pork", "bacon", "ham", "pork chop", "prosciutto", "pancetta", "lard", "pork belly", "ribs", "ground pork"],
+    "turkey": ["turkey", "ground turkey", "turkey bacon", "turkey breast"],
+    "chicken": ["chicken", "ground chicken", "chicken breast", "chicken thigh", "poultry"],
+    "mutton": ["mutton", "lamb", "goat meat", "goat"],
+    "lamb": ["lamb", "mutton", "goat meat", "goat"],
 }
 
 # Known false-positive exemptions for substring / linguistic overlaps

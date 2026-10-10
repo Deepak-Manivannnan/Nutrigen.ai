@@ -238,5 +238,192 @@ async def test_multi_turn_edit_meal_slot_inherits_good_plan():
     assert matched.id == 2
     assert matched.name == "Good plan"
 
+@pytest.mark.asyncio
+async def test_user_reported_exclusion_scrub_intent():
+    from backend.app.orchestration.supervisor.intent import extract_user_intent, _extract_plan_parameters_from_text
+
+    # Test initial creation phrasing with "by excluding the beef, pork and turkey"
+    p_params = _extract_plan_parameters_from_text("create a 3 day meal plan by excluding the beef, pork and turkey")
+    assert "beef" in p_params["exclusions"]
+    assert "pork" in p_params["exclusions"]
+    assert "turkey" in p_params["exclusions"]
+
+    # Test update phrasing with "replacing the recipes which contains pork, beef, and turkey with different recipes"
+    update_msg = "I just update the recently created meal plan by replacing the recipes which contains pork, beef, and turkey with different recipes"
+    res = await extract_user_intent(update_msg)
+    assert res.intent == "edit_meal"
+    assert "pork" in res.requested_exclusions
+    assert "beef" in res.requested_exclusions
+    assert "turkey" in res.requested_exclusions
+    assert res.is_update_request is False
+    assert res.edit_details is not None
+    # Ensure dish_to_replace attribute exists on EditDetails
+    assert hasattr(res.edit_details, "dish_to_replace")
+
+def test_planner_sanitize_diet_cleans_excluded_meats():
+    from backend.app.agents.planner.agent import PlannerAgent
+    from backend.app.schemas.domain import MealPlan, DayPlan, Meal, Ingredient
+    from unittest.mock import MagicMock
+
+    llm_mock = MagicMock()
+    planner = PlannerAgent(client=llm_mock)
+
+    # Meal plan with a pork meal and beef meal
+    pork_meal = Meal(
+        meal_type="lunch",
+        recipe_name="Roasted Pork Chops with Apples",
+        calories=600.0,
+        protein_g=40.0,
+        carbs_g=30.0,
+        fat_g=20.0,
+        ingredients=[Ingredient(name="Pork Chops", amount_grams=180.0)],
+        instructions="Cook pork chops."
+    )
+    beef_meal = Meal(
+        meal_type="dinner",
+        recipe_name="Grilled Beef Sirloin Steak",
+        calories=550.0,
+        protein_g=42.0,
+        carbs_g=20.0,
+        fat_g=18.0,
+        ingredients=[Ingredient(name="Beef Steak", amount_grams=170.0)],
+        instructions="Grill steak."
+    )
+    day = DayPlan(
+        day_number=1,
+        meals=[pork_meal, beef_meal],
+        total_calories=1150.0,
+        total_protein_g=82.0,
+        total_carbs_g=50.0,
+        total_fat_g=38.0
+    )
+    plan = MealPlan(
+        name="3-Day Non-Veg Plan",
+        days=[day],
+        target_calories=2000.0,
+        average_daily_calories=2000.0,
+        diet_type="non-veg",
+        version=1
+    )
+
+    user_profile = {"diet_type": "non-veg", "allergies": ["pork", "beef", "turkey"]}
+    planner._sanitize_diet_compliance(plan, "non-veg", 2000.0, user_profile)
+
+    # Verify both dishes were sanitized and replaced with compliant alternatives
+    names = [m.recipe_name.lower() for m in plan.days[0].meals]
+    assert not any("pork" in n for n in names)
+    assert not any("beef" in n for n in names)
+    assert not any("turkey" in n for n in names)
+    assert any("chicken" in n or "fish" in n or "egg" in n or "paneer" in n for n in names)
+
+@pytest.mark.asyncio
+async def test_modify_meal_replaces_snack_on_correct_day_without_appending():
+    from backend.app.agents.planner.agent import PlannerAgent
+    from backend.app.schemas.domain import MealPlan, DayPlan, Meal, Ingredient
+    from backend.app.orchestration.supervisor.intent import EditDetails
+    from unittest.mock import AsyncMock
+
+    llm_mock = AsyncMock()
+    # Mock replacement snack
+    rep_snack = Meal(
+        meal_type="snack",
+        recipe_name="Greek Yogurt with Mixed Berries and Walnuts",
+        calories=200.0,
+        protein_g=15.0,
+        carbs_g=20.0,
+        fat_g=5.0,
+        ingredients=[Ingredient(name="Greek Yogurt", amount_grams=150.0)],
+        instructions="Mix yogurt with berries."
+    )
+    llm_mock.generate_structured.return_value = rep_snack
+    planner = PlannerAgent(client=llm_mock)
+
+    # 3-day plan where ONLY Day 2 has a snack
+    day1 = DayPlan(day_number=1, meals=[Meal(meal_type="breakfast", recipe_name="Eggs", calories=500, protein_g=30, carbs_g=40, fat_g=15, ingredients=[], instructions="Cook")], total_calories=500, total_protein_g=30, total_carbs_g=40, total_fat_g=15)
+    day2_snack = Meal(meal_type="snack", recipe_name="Old Apple Snack", calories=180, protein_g=2, carbs_g=30, fat_g=1, ingredients=[], instructions="Eat")
+    day2 = DayPlan(day_number=2, meals=[Meal(meal_type="breakfast", recipe_name="Oats", calories=500, protein_g=20, carbs_g=60, fat_g=10, ingredients=[], instructions="Cook"), day2_snack], total_calories=680, total_protein_g=22, total_carbs_g=90, total_fat_g=11)
+    day3 = DayPlan(day_number=3, meals=[Meal(meal_type="breakfast", recipe_name="Toast", calories=500, protein_g=20, carbs_g=60, fat_g=10, ingredients=[], instructions="Cook")], total_calories=500, total_protein_g=20, total_carbs_g=60, total_fat_g=10)
+
+    current_plan = MealPlan(
+        name="3-Day Veg Plan",
+        days=[day1, day2, day3],
+        target_calories=2000.0,
+        average_daily_calories=2000.0,
+        diet_type="veg",
+        version=1
+    )
+
+    # User says: "that added snack is not good, can you please replace that particularly added snack with something else"
+    # Notice: day is omitted!
+    edit_details = EditDetails(
+        meal_type="snack",
+        day=None,
+        instructions="that added snack is not good, can you please replace that particularly added snack with something else"
+    )
+
+    updated = await planner.modify_meal(
+        current_plan=current_plan,
+        edit_details=edit_details,
+        user_profile={"diet_type": "veg", "allergies": []}
+    )
+
+    # Verify Day 1 still has NO snack
+    assert not any(m.meal_type.lower() == "snack" for m in updated.days[0].meals)
+    # Verify Day 2 STILL has exactly 1 snack, and it was replaced in place
+    day2_snacks = [m for m in updated.days[1].meals if m.meal_type.lower() == "snack"]
+    assert len(day2_snacks) == 1
+    assert day2_snacks[0].recipe_name == "Greek Yogurt with Mixed Berries and Walnuts"
+
+@pytest.mark.asyncio
+async def test_missing_day_or_slot_prompts_user():
+    from backend.app.orchestration.runner import run_meal_planner
+    from backend.app.schemas.domain import MealPlan, DayPlan, Meal, Ingredient
+    from unittest.mock import AsyncMock, patch
+
+    # Mock plan in DB
+    day1 = DayPlan(day_number=1, meals=[Meal(meal_type="breakfast", recipe_name="Eggs", calories=500, protein_g=30, carbs_g=40, fat_g=15, ingredients=[], instructions="Cook"), Meal(meal_type="lunch", recipe_name="Salad", calories=600, protein_g=20, carbs_g=60, fat_g=20, ingredients=[], instructions="Cook"), Meal(meal_type="dinner", recipe_name="Soup", calories=500, protein_g=25, carbs_g=50, fat_g=15, ingredients=[], instructions="Cook")], total_calories=1600, total_protein_g=75, total_carbs_g=150, total_fat_g=50)
+    day2 = DayPlan(day_number=2, meals=[Meal(meal_type="breakfast", recipe_name="Oats", calories=500, protein_g=20, carbs_g=60, fat_g=10, ingredients=[], instructions="Cook"), Meal(meal_type="lunch", recipe_name="Rice", calories=600, protein_g=20, carbs_g=60, fat_g=20, ingredients=[], instructions="Cook"), Meal(meal_type="dinner", recipe_name="Curry", calories=500, protein_g=25, carbs_g=50, fat_g=15, ingredients=[], instructions="Cook")], total_calories=1600, total_protein_g=65, total_carbs_g=170, total_fat_g=45)
+    plan = MealPlan(name="3-Day Veg Plan", days=[day1, day2], target_calories=2000.0, average_daily_calories=1600.0, diet_type="veg", version=1)
+
+    mock_db_plan = AsyncMock()
+    mock_db_plan.id = 1
+    mock_db_plan.name = "3-Day Veg Plan"
+    mock_db_plan.days = 2
+    mock_db_plan.calorie_target = 2000.0
+    mock_db_plan.diet_type = "veg"
+    mock_db_plan.status = "draft"
+    mock_db_plan.version = 1
+    mock_db_plan.meal_plan = plan.model_dump()
+
+    with patch("backend.app.orchestration.runner.PlanRepository") as MockRepo:
+        repo_inst = AsyncMock()
+        repo_inst.get_all_by_user.return_value = [mock_db_plan]
+        MockRepo.return_value = repo_inst
+        MockRepo.to_meal_plan_domain.return_value = plan
+
+        # Case 1: Slot specified (dinner), but day is missing across 2-day plan
+        state = await run_meal_planner(
+            user_id=1,
+            user_message="I want to update my plan: swap dinner with paneer tikka",
+            user_profile={"name": "Alice", "diet_type": "veg"}
+        )
+        assert state.status == "conversational"
+        # Quick options provide choice of Day 1 or Day 2
+        labels = [opt["label"].lower() for opt in (state.quick_options or [])]
+        assert any("day 1 dinner" in l for l in labels)
+        assert any("day 2 dinner" in l for l in labels)
+
+        # Case 2: Day specified (Day 2), but meal slot is missing
+        state2 = await run_meal_planner(
+            user_id=1,
+            user_message="I want to update Day 2 of my plan with a different meal",
+            user_profile={"name": "Alice", "diet_type": "veg"}
+        )
+        assert state2.status == "conversational"
+        labels2 = [opt["label"].lower() for opt in (state2.quick_options or [])]
+        assert any("day 2 breakfast" in l for l in labels2)
+        assert any("day 2 lunch" in l for l in labels2)
+        assert any("day 2 dinner" in l for l in labels2)
+
 
 

@@ -14,6 +14,7 @@ class EditDetails(BaseModel):
     day: Optional[int] = Field(None, description="Day number to edit (e.g. 1, 2, 3)")
     meal_type: Optional[str] = Field(None, description="Meal slot to edit: breakfast, lunch, dinner, or snack")
     target_meal_calories: Optional[float] = Field(None, description="Target calories or calorie range for this specific single meal slot (e.g. 450.0). NOT daily calories!")
+    dish_to_replace: Optional[str] = Field(None, description="Specific dish name or description to replace")
     instructions: Optional[str] = Field(None, description="Instructions for replacement or modification")
 
 IntentType = Literal[
@@ -174,9 +175,18 @@ def _extract_plan_parameters_from_text(text: str) -> Dict[str, Any]:
         res["diet_type"] = "veg"
 
     # Exclusions (e.g. pork, beef, turkey, chicken, fish, dairy, eggs, etc.)
-    excl_matches = re.findall(r'\b(?:exclude|avoid|without|no|dont eat|don\'t eat)\s+([a-zA-Z0-9,\s&]+)', cl)
+    excl_pattern = (
+        r'\b(?:exclude|excluding|excludes|exclusion|exclusions|avoid|avoiding|avoids|without|no|'
+        r'dont eat|don\'t eat|do not eat|dont include|don\'t include|do not include|dont want|don\'t want|do not want|'
+        r'remove|removing|removes|except|except for|skip|skipping|free of|free from|'
+        r'replacing the recipes which contains|replacing recipes which contain|replacing meals which contain|'
+        r'replace any dishes that contain|replace dishes that contain|replace recipes that contain|'
+        r'replace dishes containing|replace recipes containing|replace meals containing|replace any meal containing)\s+([a-zA-Z0-9,\s&]+)'
+    )
+    free_pattern = r'\b([a-zA-Z0-9,\s&]+)(?:\s+|-)(?:free)\b'
+    excl_matches = re.findall(excl_pattern, cl) + re.findall(free_pattern, cl)
     for match in excl_matches:
-        tokens = re.split(r'[,&/\s]+(?:and\s+)?', match)
+        tokens = re.split(r'[,&/\s]+(?:and\s+|or\s+)?', match)
         for token in tokens:
             t = token.strip()
             if t in ["pork", "beef", "turkey", "chicken", "meat", "fish", "dairy", "diary", "egg", "eggs", "nuts", "peanuts", "shellfish", "gluten", "seafood", "mutton", "lamb"]:
@@ -542,6 +552,13 @@ async def extract_user_intent(
     if has_meal_slot and has_edit_action and not any(k in cleaned for k in ["create a 3-day", "plan a 3-day", "plan a 7-day", "generate a"]):
         m_day = re.search(r'day\s*(\d+)', cleaned)
         day_val = int(m_day.group(1)) if m_day else None
+        if not day_val and history:
+            for h in reversed(history):
+                c = (h.get("content") or "").strip().lower()
+                m_h_d = re.search(r'\b(?:for\s+|on\s+)?day\s*(\d+)\b', c)
+                if m_h_d:
+                    day_val = int(m_h_d.group(1))
+                    break
 
         m_slot = re.search(r'\b(breakfast|lunch|dinner|snack)\b', cleaned)
         m_type = m_slot.group(1) if m_slot else None
@@ -609,12 +626,16 @@ async def extract_user_intent(
         if m_id:
             target_id = int(m_id.group(1))
         plan_name = _extract_plan_name_from_text(user_message)
+        p_params = _extract_plan_parameters_from_text(user_message)
+        has_excl_instructions = bool(p_params.get("exclusions")) or any(w in cleaned for w in ["pork", "beef", "turkey", "meat", "dairy", "chicken", "fish"])
         return UserIntentExtraction(
             intent="edit_meal",
             target_plan_id=target_id,
             target_plan_name=plan_name,
-            is_update_request=True,
-            requested_calories=None
+            requested_exclusions=p_params.get("exclusions", []),
+            is_update_request=not has_excl_instructions,
+            requested_calories=None,
+            edit_details=EditDetails(instructions=user_message) if has_excl_instructions else None
         )
 
     # Fast rule check: Add snack
@@ -715,6 +736,21 @@ async def extract_user_intent(
             prompt=prompt,
             response_schema=UserIntentExtraction
         )
+        p_params = _extract_plan_parameters_from_text(user_message)
+        if p_params.get("exclusions"):
+            current_excl = list(extraction.requested_exclusions or [])
+            for exc in p_params["exclusions"]:
+                if exc not in current_excl:
+                    current_excl.append(exc)
+            extraction.requested_exclusions = current_excl
+
+        if extraction.requested_exclusions or (
+            extraction.edit_details and any(w in (extraction.edit_details.instructions or "").lower() for w in [
+                "replace", "swap", "remove", "exclude", "without", "pork", "beef", "turkey", "meat", "chicken", "fish", "dairy"
+            ])
+        ):
+            extraction.is_update_request = False
+
         return extraction
     except Exception as e:
         logger.warning(f"Error in LLM intent extraction: {e}. Applying safe fallback.")

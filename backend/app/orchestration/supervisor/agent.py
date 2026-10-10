@@ -330,7 +330,8 @@ class SupervisorAgent:
             f"2. Use your own conversational intelligence—never recite rigid boilerplate or marketing brochure text.\n"
             f"3. Explain clearly and warmly what was done or what the user needs to know based on the context above.\n"
             f"4. If in an ongoing dialogue, do NOT start with repetitive greetings ('Hey {name}' or 'Hi'). Answer directly in conversation flow.\n"
-            f"5. Maintain a supportive, encouraging, professional tone."
+            f"5. Maintain a supportive, encouraging, professional tone.\n"
+            f"6. CRITICAL: You have full access to manage all meal plans directly in the database. NEVER ask the user to 'paste the plan here', 'paste your plan', or provide plan text. You can directly inspect and update their active plans."
         )
         try:
             return await self.llm.generate_text(prompt)

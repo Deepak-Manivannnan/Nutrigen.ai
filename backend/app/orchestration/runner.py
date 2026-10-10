@@ -860,15 +860,25 @@ async def run_meal_planner(
             ]
             return state
 
-        # If user generally said "I want to update my meal plan" or selected a plan to update without specific meal dish instructions
+        # Check if user provided specific modification instructions or requested ingredient exclusions
+        has_excl = bool(intent_data.requested_exclusions and len(intent_data.requested_exclusions) > 0)
         has_specific_instructions = bool(
-            intent_data.edit_details and (
-                intent_data.edit_details.day
-                or intent_data.edit_details.meal_type
-                or intent_data.edit_details.dish_to_replace
-                or any(w in (intent_data.edit_details.instructions or "").lower() for w in ["swap", "replace", "change", "modify", "switch", "substitute"])
+            has_excl
+            or (
+                intent_data.edit_details and (
+                    getattr(intent_data.edit_details, "day", None)
+                    or getattr(intent_data.edit_details, "meal_type", None)
+                    or getattr(intent_data.edit_details, "dish_to_replace", None)
+                    or any(w in (getattr(intent_data.edit_details, "instructions", "") or "").lower() for w in [
+                        "swap", "replace", "change", "modify", "switch", "substitute", "snack", "pork", "beef", "turkey",
+                        "meat", "chicken", "fish", "dairy", "exclude", "without", "remove", "add"
+                    ])
+                )
             )
         )
+
+        if has_specific_instructions:
+            intent_data.is_update_request = False
 
         if intent_data.is_update_request or not has_specific_instructions:
             target_p = find_referenced_plan(
@@ -918,6 +928,79 @@ async def run_meal_planner(
                 ]
                 return state
 
+        # If user provided meal edit instructions, check if essential parameters are missing or ambiguous
+        if existing_plan and intent_data.edit_details:
+            cl_inst = (getattr(intent_data.edit_details, "instructions", "") or user_message).lower()
+            is_plan_wide = (
+                has_excl
+                or any(w in cl_inst for w in ["all days", "every day", "entire plan", "whole plan", "all meals", "replace recipes", "replace the recipes", "replacing the recipes", "replacing recipes"])
+                or (any(w in cl_inst for w in ["pork", "beef", "turkey", "meat", "chicken", "fish", "dairy"]) and any(w in cl_inst for w in ["replace", "exclude", "remove", "scrub", "without"]))
+            )
+
+            if not is_plan_wide:
+                target_meal_type = getattr(intent_data.edit_details, "meal_type", None)
+                if not target_meal_type:
+                    for mt in ["snack", "breakfast", "lunch", "dinner"]:
+                        if mt in cl_inst:
+                            target_meal_type = mt
+                            intent_data.edit_details.meal_type = mt
+                            break
+
+                target_day = getattr(intent_data.edit_details, "day", None)
+
+                # Smart snack day resolution: If user is referring to a snack and day is omitted
+                if target_meal_type == "snack" and target_day is None:
+                    snack_days = [d.day_number for d in existing_plan.days if any(m.meal_type.lower() == "snack" for m in d.meals)]
+                    if len(snack_days) == 1:
+                        target_day = snack_days[0]
+                        intent_data.edit_details.day = target_day
+
+                is_entire_day = any(k in cl_inst for k in ["entire day", "whole day", "all meals on day", "all 3 meals", "all 4 meals"])
+
+                # Check if meal slot is specified, but day is missing/ambiguous across a multi-day plan
+                if target_meal_type and target_day is None and len(existing_plan.days) > 1:
+                    plan_name_disp = getattr(existing_plan, "name", None) or getattr(matched_plan, "name", "your meal plan")
+                    context_prompt = (
+                        f"The user wants to replace or update their {target_meal_type} in '{plan_name_disp}', but did not specify which day. "
+                        f"In polite, natural, friendly English, ask which day's {target_meal_type} they would like to replace (e.g. Day 1, Day 2, or Day 3)."
+                    )
+                    response_text = await supervisor.generate_conversational_response(
+                        user_message=user_message,
+                        context=context_prompt,
+                        history=history,
+                        user_name=user_profile.get("name")
+                    )
+                    state.system_message = response_text
+                    state.status = "conversational"
+                    state.quick_options = [
+                        {"label": f"Day {d.day_number} {target_meal_type.capitalize()}", "value": f"Replace Day {d.day_number} {target_meal_type} in \"{plan_name_disp}\""}
+                        for d in existing_plan.days
+                    ]
+                    return state
+
+                # Check if day is specified, but meal slot is missing/ambiguous
+                if not is_entire_day and target_day and not target_meal_type:
+                    plan_name_disp = getattr(existing_plan, "name", None) or getattr(matched_plan, "name", "your meal plan")
+                    context_prompt = (
+                        f"The user wants to update Day {target_day} in '{plan_name_disp}', but did not specify which meal slot (Breakfast, Lunch, Dinner, or Snack). "
+                        f"In polite, natural, friendly English, ask which meal on Day {target_day} they would like to replace."
+                    )
+                    response_text = await supervisor.generate_conversational_response(
+                        user_message=user_message,
+                        context=context_prompt,
+                        history=history,
+                        user_name=user_profile.get("name")
+                    )
+                    state.system_message = response_text
+                    state.status = "conversational"
+                    target_day_plan = next((d for d in existing_plan.days if d.day_number == target_day), existing_plan.days[0] if existing_plan.days else None)
+                    meals_avail = target_day_plan.meals if target_day_plan else []
+                    state.quick_options = [
+                        {"label": f"Day {target_day} {m.meal_type.capitalize()}", "value": f"Replace Day {target_day} {m.meal_type} in \"{plan_name_disp}\""}
+                        for m in meals_avail
+                    ]
+                    return state
+
     # =========================================================================
     # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
     # =========================================================================
@@ -935,17 +1018,19 @@ async def run_meal_planner(
     # =========================================================================
     # Step 8: Handle New Plan (Diet Conflict Check & Calorie Guardrails)
     # =========================================================================
-    if intent_data.intent == "new_plan":
-        # Check and apply requested ingredient exclusions (e.g. pork, beef, turkey, dairy)
+    # Check and apply requested ingredient exclusions (e.g. pork, beef, turkey, dairy) for all planning/editing intents
+    if intent_data.intent in ("new_plan", "edit_meal"):
         if "allergies" not in user_profile:
             user_profile["allergies"] = []
-        for exc in intent_data.requested_exclusions:
+        for exc in (intent_data.requested_exclusions or []):
             if exc not in [str(a).lower() for a in user_profile["allergies"]]:
                 user_profile["allergies"].append(exc)
         if re.search(r'\b(diary|dairy)\b', user_message, re.IGNORECASE):
             if "dairy" not in [str(a).lower() for a in user_profile["allergies"]]:
                 user_profile["allergies"].append("dairy")
         state.user_profile["allergies"] = list(user_profile.get("allergies", []))
+
+    if intent_data.intent == "new_plan":
 
         profile_diet = str(user_profile.get("diet_type", "veg")).lower()
         req_diet = str(intent_data.requested_diet_type).lower() if intent_data.requested_diet_type else None
@@ -1050,6 +1135,7 @@ async def run_meal_planner(
     # If editing existing plan, make sure user_profile["diet_type"] reflects the existing plan's diet
     if intent_data.intent == "edit_meal" and existing_plan:
         user_profile["diet_type"] = effective_plan_diet
+        state.user_profile["diet_type"] = effective_plan_diet
 
     # =========================================================================
     # Step 9: Execute LangGraph Workflow
@@ -1085,6 +1171,7 @@ async def run_meal_planner(
                     final_state.status = "draft"
                     clean_inst = getattr(intent_data.edit_details, "instructions", "") or user_message
                     clean_inst = re.sub(r'\(Plan\s*#\d+\):?', '', clean_inst, flags=re.IGNORECASE).strip()
+                    plan_title = getattr(final_state.current_plan, "name", None) or (matched_plan.name if matched_plan else "your meal plan")
                     context_prompt = (
                         f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
                         f"The plan is now Version {new_version} Draft in the Plans tab. "

@@ -91,6 +91,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
                 f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
+                f"- For EACH meal, provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm). NEVER output generic 1-liners.\n"
             )
             if feedback:
                 plan_prompt += f"\n- Address this clinical review feedback from previous round:\n" + "\n".join(f"  * {fb}" for fb in feedback)
@@ -122,6 +123,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
                 f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
+                f"- For EACH meal, provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm). NEVER output generic 1-liners.\n"
             )
             if feedback:
                 fallback_prompt += f"\n- Address this clinical review feedback:\n" + "\n".join(f"  * {fb}" for fb in feedback)

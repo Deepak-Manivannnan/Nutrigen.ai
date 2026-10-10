@@ -92,7 +92,7 @@ export default function PlansPage() {
     const summary = `${plan.name} (${plan.days} Days)\nCalorie Target: ${plan.calorieTarget} kcal/day\nDiet: ${plan.dietType}\nStatus: ${plan.status.toUpperCase()}\n\n` +
       (plan.planDays || [])
         .map(
-          d => `Day ${d.day} (${d.label}) - ${d.totalCalories} kcal:\n` +
+          d => `Day ${d.day} - ${d.totalCalories} kcal:\n` +
             d.meals.map(m => `  • ${m.type}: ${m.name} (${m.calories} kcal | P: ${m.protein}g C: ${m.carbs}g F: ${m.fat}g)`).join('\n')
         )
         .join('\n\n');
@@ -354,7 +354,7 @@ export default function PlansPage() {
               id={`day-tab-${dayItem.day}`}
             >
               <span style={{ display: 'block', fontWeight: 600 }}>
-                Day {dayItem.day} ({dayItem.label})
+                Day {dayItem.day}
               </span>
               <span style={{ fontSize: '11px', color: isActive ? 'var(--green-700)' : 'var(--gray-400)', fontWeight: 500 }}>
                 {dayItem.totalCalories || activePlan.calorieTarget} kcal
@@ -384,7 +384,7 @@ export default function PlansPage() {
           >
             <div>
               <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--gray-900)' }}>
-                Day {currentDay.day} ({currentDay.label}) Overview
+                Day {currentDay.day} Overview
               </span>
               <span style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginLeft: 'var(--space-2)' }}>
                 4 balanced meals

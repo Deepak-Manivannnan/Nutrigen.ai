@@ -401,10 +401,112 @@ async def run_meal_planner(
         return state
 
     # =========================================================================
+    # Step 5b: Handle Approve Plan Request (via Chat)
+    # =========================================================================
+    if intent_data.intent == "approve_plan":
+        if len(all_plans) == 0:
+            msg = (
+                "You don't have any meal plans saved yet to approve! 🥗\n\n"
+                "Would you like me to create a meal plan for you first? Just ask: *\"Plan a 3-day vegetarian meal plan for 1800 kcal\"*!"
+            )
+            state.system_message = msg
+            state.status = "conversational"
+            return state
+
+        target_plan = find_referenced_plan(
+            user_message,
+            all_plans,
+            target_id=intent_data.target_plan_id,
+            target_name=intent_data.target_plan_name
+        )
+        if not target_plan:
+            drafts = [p for p in all_plans if p.status == "draft"]
+            target_plan = drafts[0] if drafts else all_plans[0]
+
+        if target_plan.status == "approved" and target_plan.grocery_list:
+            msg = (
+                f"**\"{target_plan.name}\"** is already approved! 🛒\n\n"
+                f"You can view its full itemized grocery checklist and Mandi market rates in your Grocery tab."
+            )
+            state.system_message = msg
+            state.status = "approved"
+            state.plan_id = target_plan.id
+            state.quick_options = [
+                {"label": "View Grocery List →", "value": "Show my grocery list"}
+            ]
+            return state
+
+        # Generate grocery list via Shopper Agent
+        from backend.app.agents.shopper.agent import ShopperAgent
+        try:
+            domain_plan = PlanRepository.to_meal_plan_domain(target_plan)
+            shopper = ShopperAgent()
+            grocery_basket = await shopper.generate_grocery_list(
+                meal_plan=domain_plan,
+                task_id=f"approve-{target_plan.id}"
+            )
+            target_plan.grocery_list = grocery_basket.model_dump()
+            target_plan.status = "approved"
+
+            if session:
+                repo = PlanRepository(session)
+                await repo.session.commit()
+                await repo.session.refresh(target_plan)
+            else:
+                async with AsyncSessionLocal() as temp_session:
+                    repo = PlanRepository(temp_session)
+                    p_db = await repo.get_by_id(target_plan.id)
+                    if p_db:
+                        p_db.grocery_list = grocery_basket.model_dump()
+                        p_db.status = "approved"
+                        await repo.session.commit()
+
+            cost = int(grocery_basket.total_estimated_cost or 0)
+            msg = (
+                f"I've approved **\"{target_plan.name}\"** and compiled your grocery basket with wholesale Mandi benchmarks! 🛒\n\n"
+                f"Estimated total: ₹{cost:,} across {len(grocery_basket.items)} ingredients.\n\n"
+                f"You can review the full itemized checklist in your Grocery tab!"
+            )
+            state.system_message = msg
+            state.status = "approved"
+            state.plan_id = target_plan.id
+            state.quick_options = [
+                {"label": "View Grocery List →", "value": "Show my grocery list"}
+            ]
+            return state
+        except Exception as e:
+            logger.error(f"Error approving plan in chat: {e}")
+            target_plan.status = "approved"
+            if session:
+                await session.commit()
+            msg = f"Your meal plan **\"{target_plan.name}\"** is now approved! 🛒"
+            state.system_message = msg
+            state.status = "approved"
+            return state
+
+    # =========================================================================
     # Step 6: Handle Edit / Update Plan Request
     # =========================================================================
     if intent_data.intent == "edit_meal":
+        # Safeguard: Verify user query actually contains modification language
+        has_edit_token = any(k in user_message.lower() for k in [
+            "replace", "swap", "modify", "update", "change", "switch", "substitute", "edit",
+            "breakfast", "lunch", "dinner", "snack"
+        ])
         if len(all_plans) == 0:
+            if not has_edit_token and not intent_data.is_update_request and not intent_data.edit_details:
+                # Mistakenly routed to edit_meal; re-route to conversational app_info
+                intent_data.intent = "app_info"
+                response_text = await supervisor.handle_conversational_intent(
+                    state=state,
+                    user_message=user_message,
+                    intent="app_info",
+                    history=history
+                )
+                state.system_message = response_text
+                state.status = "conversational"
+                return state
+
             msg = (
                 "You haven't created any meal plans yet to update! 🥗\n\n"
                 "Would you like me to create one for you first? Just ask: *\"Plan a 3-day 1800 kcal meal plan\"*!"
@@ -472,42 +574,17 @@ async def run_meal_planner(
     # Step 8: Handle New Plan (Diet Conflict Check & Calorie Guardrails)
     # =========================================================================
     if intent_data.intent == "new_plan":
+        # Check and apply requested ingredient exclusions (e.g. dairy / diary)
+        if "dairy" in intent_data.requested_exclusions or re.search(r'\b(diary|dairy)\b', user_message, re.IGNORECASE):
+            if "allergies" not in user_profile:
+                user_profile["allergies"] = []
+            if "dairy" not in [str(a).lower() for a in user_profile["allergies"]]:
+                user_profile["allergies"].append("dairy")
+
         profile_diet = str(user_profile.get("diet_type", "veg")).lower()
         req_diet = str(intent_data.requested_diet_type).lower() if intent_data.requested_diet_type else None
+        diet_conflict = bool(req_diet and req_diet != profile_diet and not intent_data.diet_conflict_confirmed)
 
-        # Check Diet Preference Conflict:
-        # If user explicitly requested a diet type different from profile and not yet confirmed:
-        if req_diet and req_diet != profile_diet and not intent_data.diet_conflict_confirmed:
-            req_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(req_diet, req_diet.capitalize())
-            profile_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(profile_diet, profile_diet.capitalize())
-            days_val = intent_data.requested_days or 3
-            cal_val = int(intent_data.requested_calories or 2000)
-
-            msg = (
-                f"Your profile preference is **{profile_display}**, but now you are asking for a **{req_display}** meal plan. "
-                f"Can I go ahead and create with the {req_display} meal plan, or should I take your default profile {profile_display} diet type for planning this meal?"
-            )
-            state.system_message = msg
-            state.status = "conversational"
-            state.quick_options = [
-                {"label": f"Create {req_display} Plan", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {cal_val} kcal (confirmed)"},
-                {"label": f"Use {profile_display} (Default)", "value": f"Create {days_val}-day {profile_display.lower()} meal plan for {cal_val} kcal (confirmed)"}
-            ]
-            await supervisor.log_step(
-                state=state,
-                from_agent="supervisor",
-                to_agent="user",
-                msg_type="feedback",
-                content=msg,
-                payload={"action": "diet_conflict_prompt", "profile_diet": profile_diet, "requested_diet": req_diet}
-            )
-            return state
-
-        # Resolved effective diet type for this plan
-        effective_diet = intent_data.chosen_diet_type or req_diet or profile_diet
-        user_profile["diet_type"] = effective_diet
-
-        # Calorie Guardrail Check
         req_cal = intent_data.requested_calories or user_profile.get("target_calories")
         req_days = intent_data.requested_days or 3
         is_safe, err_msg, meta = supervisor.check_input_guardrail(
@@ -516,7 +593,70 @@ async def run_meal_planner(
             requested_days=req_days,
             fixed_meals=fixed
         )
-        if not is_safe:
+
+        # Check Diet Preference Conflict:
+        if diet_conflict:
+            req_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(req_diet, req_diet.capitalize())
+            profile_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(profile_diet, profile_diet.capitalize())
+            days_val = req_days
+            cal_val = int(req_cal or 2000)
+
+            if not is_safe:
+                # Both diet conflict AND calorie safety trigger!
+                suggested = int(meta.get("suggested_target", 2250.0))
+                min_safe = int(meta.get("min_safe", 2150.0))
+                max_safe = int(meta.get("max_safe", 2350.0))
+                msg = (
+                    f"Your profile preference is **{profile_display}**, but you requested a **{req_display}** meal plan. "
+                    f"In addition, your requested target of **{cal_val:,} kcal/day** is below your maintenance range of {min_safe:,} – {max_safe:,} kcal.\n\n"
+                    f"Can I create a **{days_val}-day {req_display}** plan for you? Would you like me to plan it at your requested **{cal_val:,} kcal/day**, or at your recommended target of **{suggested:,} kcal/day**?"
+                )
+                state.system_message = msg
+                state.status = "conversational"
+                state.quick_options = [
+                    {"label": f"Plan {days_val} days at {cal_val:,} kcal", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {cal_val} kcal (confirmed)"},
+                    {"label": f"Plan {days_val} days at {suggested:,} kcal (Recommended)", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {suggested} kcal (confirmed)"}
+                ]
+                await supervisor.log_step(
+                    state=state,
+                    from_agent="supervisor",
+                    to_agent="user",
+                    msg_type="feedback",
+                    content=msg,
+                    payload={"action": "diet_and_calorie_conflict_prompt", "profile_diet": profile_diet, "requested_diet": req_diet, "calories": cal_val}
+                )
+                return state
+            else:
+                msg = (
+                    f"Your profile preference is **{profile_display}**, but now you are asking for a **{req_display}** meal plan. "
+                    f"Can I go ahead and create with the {req_display} meal plan, or should I take your default profile {profile_display} diet type for planning this meal?"
+                )
+                state.system_message = msg
+                state.status = "conversational"
+                state.quick_options = [
+                    {"label": f"Create {req_display} Plan", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {cal_val} kcal (confirmed)"},
+                    {"label": f"Use {profile_display} (Default)", "value": f"Create {days_val}-day {profile_display.lower()} meal plan for {cal_val} kcal (confirmed)"}
+                ]
+                await supervisor.log_step(
+                    state=state,
+                    from_agent="supervisor",
+                    to_agent="user",
+                    msg_type="feedback",
+                    content=msg,
+                    payload={"action": "diet_conflict_prompt", "profile_diet": profile_diet, "requested_diet": req_diet}
+                )
+                return state
+
+        # Resolved effective diet type for this plan
+        effective_diet = intent_data.chosen_diet_type or req_diet or profile_diet
+        user_profile["diet_type"] = effective_diet
+
+        # Ensure state reflects requested days and calories explicitly
+        state.days = req_days
+        state.calorie_target = req_cal
+
+        # Calorie Guardrail Check (if user did not confirm conflict)
+        if not is_safe and not intent_data.diet_conflict_confirmed:
             msg = err_msg or "The requested calorie target is outside safe clinical guidelines for your profile."
             state.system_message = msg
             state.status = "conversational"
@@ -566,7 +706,7 @@ async def run_meal_planner(
                     updated_p = await repo.update_plan(
                         plan_id=db_plan_id,
                         meal_plan=final_state.current_plan,
-                        grocery_list=final_state.grocery_list,
+                        grocery_list=None,  # Reset grocery list until user approves!
                         status="draft",  # Version X Draft upon modification!
                         increment_version=True
                     )
@@ -579,8 +719,12 @@ async def run_meal_planner(
                         f"I've updated **\"{plan_title}\"**! 🥗\n\n"
                         f"Your modification request ({clean_inst}) has been applied in place. "
                         f"The plan is now updated to **Version {new_version} Draft** in your Plans tab. "
-                        f"You can review it and click **'Approve & Generate Grocery List'** whenever you're ready!"
+                        f"You can review it and click **'Approve & Generate Grocery List'** (or reply **'Approve this plan'** here) whenever you're ready!"
                     )
+                    final_state.quick_options = [
+                        {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
+                        {"label": "Modify in chat", "value": f"I want to update \"{plan_title}\": "}
+                    ]
                     logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft.")
                 else:
                     plan_diet_str = user_profile.get("diet_type", "veg")
@@ -590,7 +734,7 @@ async def run_meal_planner(
                         days=len(final_state.current_plan.days),
                         calorie_target=final_state.current_plan.target_calories,
                         meal_plan=final_state.current_plan,
-                        grocery_list=final_state.grocery_list,
+                        grocery_list=None,  # Do not generate grocery list until user approves!
                         status="draft",  # Version 1 Draft upon initial creation!
                         name=p_name,
                         diet_type=plan_diet_str,
@@ -602,8 +746,12 @@ async def run_meal_planner(
                         f"Your **{p_name}** (**Version 1 Draft**) has been generated! 🥗\n\n"
                         f"Daily calories: {int(final_state.current_plan.target_calories):,} kcal/day distributed across "
                         f"Breakfast (30%), Lunch (40%), and Dinner (30%).\n\n"
-                        f"You can inspect the daily menu in your Plans tab and click **'Approve & Generate Grocery List'** whenever you're ready!"
+                        f"You can inspect the daily menu in your Plans tab and click **'Approve & Generate Grocery List'** (or reply **'Approve this plan'** here in Chat) whenever you're ready!"
                     )
+                    final_state.quick_options = [
+                        {"label": f"Approve {p_name}", "value": f"Approve \"{p_name}\""},
+                        {"label": "Modify in chat", "value": f"I want to update \"{p_name}\": "}
+                    ]
                     logger.info(f"[{tid}] Persisted new plan to database as Version 1 Draft.")
             else:
                 async with AsyncSessionLocal() as temp_session:
@@ -613,7 +761,7 @@ async def run_meal_planner(
                         await repo.update_plan(
                             plan_id=db_plan_id,
                             meal_plan=final_state.current_plan,
-                            grocery_list=final_state.grocery_list,
+                            grocery_list=None,
                             status="draft",
                             increment_version=True
                         )
@@ -626,8 +774,12 @@ async def run_meal_planner(
                             f"I've updated **\"{plan_title}\"**! 🥗\n\n"
                             f"Your modification request ({clean_inst}) has been applied in place. "
                             f"The plan is now updated to **Version {new_version} Draft** in your Plans tab. "
-                            f"You can review it and click **'Approve & Generate Grocery List'** whenever you're ready!"
+                            f"You can review it and click **'Approve & Generate Grocery List'** (or reply **'Approve this plan'** here) whenever you're ready!"
                         )
+                        final_state.quick_options = [
+                            {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
+                            {"label": "Modify in chat", "value": f"I want to update \"{plan_title}\": "}
+                        ]
                     else:
                         plan_diet_str = user_profile.get("diet_type", "veg")
                         p_name = f"{len(final_state.current_plan.days)}-Day {plan_diet_str.capitalize()} Plan"
@@ -636,7 +788,7 @@ async def run_meal_planner(
                             days=len(final_state.current_plan.days),
                             calorie_target=final_state.current_plan.target_calories,
                             meal_plan=final_state.current_plan,
-                            grocery_list=final_state.grocery_list,
+                            grocery_list=None,
                             status="draft",
                             name=p_name,
                             diet_type=plan_diet_str,
@@ -648,8 +800,12 @@ async def run_meal_planner(
                             f"Your **{p_name}** (**Version 1 Draft**) has been generated! 🥗\n\n"
                             f"Daily calories: {int(final_state.current_plan.target_calories):,} kcal/day distributed across "
                             f"Breakfast (30%), Lunch (40%), and Dinner (30%).\n\n"
-                            f"You can inspect the daily menu in your Plans tab and click **'Approve & Generate Grocery List'** whenever you're ready!"
+                            f"You can inspect the daily menu in your Plans tab and click **'Approve & Generate Grocery List'** (or reply **'Approve this plan'** here in Chat) whenever you're ready!"
                         )
+                        final_state.quick_options = [
+                            {"label": f"Approve {p_name}", "value": f"Approve \"{p_name}\""},
+                            {"label": "Modify in chat", "value": f"I want to update \"{p_name}\": "}
+                        ]
         except Exception as e:
             logger.error(f"[{tid}] Failed to persist plan to database: {e}")
 

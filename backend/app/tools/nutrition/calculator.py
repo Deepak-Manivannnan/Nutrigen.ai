@@ -114,14 +114,14 @@ async def normalize_single_person_plan(
             if curr_cal > 0 and (curr_cal > 1.25 * slot_target_cal or curr_cal < 0.75 * slot_target_cal):
                 scale = slot_target_cal / curr_cal
                 # Bound scaling factor reasonably
-                scale = max(0.20, min(2.5, scale))
+                scale = max(0.20, min(3.5, scale))
                 for ing in meal.ingredients:
                     scaled_amt = round(ing.amount_grams * scale, 1)
-                    # Don't let single person carb/protein portion exceed 150g or go below 10g
+                    # Allow realistic portions to achieve calorie target
                     if not is_liquid_ingredient(ing.name):
-                        ing.amount_grams = max(10.0, min(180.0, scaled_amt))
+                        ing.amount_grams = max(10.0, min(280.0, scaled_amt))
                     else:
-                        ing.amount_grams = max(5.0, min(200.0, scaled_amt))
+                        ing.amount_grams = max(5.0, min(280.0, scaled_amt))
 
             # 4. Recompute exact meal nutrition
             updated_nut = await calculate_meal_nutrition(meal)
@@ -131,18 +131,69 @@ async def normalize_single_person_plan(
             meal.fat_g = updated_nut["fat_g"]
             meal.diet_type = plan_diet
 
-            # 5. Ensure Cooking Instructions
-            if not meal.instructions or len(meal.instructions.strip()) < 20:
-                prep_ings = ", ".join(i.name for i in meal.ingredients[:3])
-                meal.instructions = (
-                    f"1. Prep and wash all fresh ingredients ({prep_ings}).\n"
-                    f"2. Heat cooking oil or a non-stick pan over medium heat.\n"
-                    f"3. Sauté primary ingredients and seasonings for 8–10 minutes until tender and cooked through.\n"
-                    f"4. Adjust salt and spices to taste. Serve warm immediately."
-                )
+            # 5. Ensure Detailed Step-by-Step Cooking Instructions
+            ins = (meal.instructions or "").strip()
+            dish_lower = (meal.recipe_name or "").lower()
+            m_type = (meal.meal_type or "").lower()
+            is_generic = (
+                not ins
+                or len(ins) < 35
+                or "consume as" in ins.lower()
+                or "eat as" in ins.lower()
+                or "snack on" in ins.lower()
+            )
+            if is_generic:
+                prep_ings = ", ".join(i.name for i in meal.ingredients[:3]) if meal.ingredients else "fresh ingredients"
+                if any(w in dish_lower for w in ["nut", "almond", "walnut", "cashew", "seed", "trail mix"]):
+                    meal.instructions = (
+                        f"1. Measure out portioned {prep_ings} into a small bowl.\n"
+                        f"2. (Optional) Heat a dry skillet over low heat and lightly toast for 2–3 minutes until fragrant and crisp.\n"
+                        f"3. Sprinkle lightly with a pinch of rock salt or cinnamon if desired.\n"
+                        f"4. Let cool to room temperature and enjoy as a wholesome, nutrient-dense snack."
+                    )
+                elif any(w in dish_lower for w in ["salad", "sprout", "chaat", "fruit", "cucumber"]):
+                    meal.instructions = (
+                        f"1. Thoroughly wash, peel, and chop {prep_ings} into bite-sized pieces.\n"
+                        f"2. Transfer to a mixing bowl and toss gently.\n"
+                        f"3. Season with fresh lemon juice, black salt, roasted cumin powder, and herbs.\n"
+                        f"4. Toss to coat evenly and serve immediately chilled or at room temperature."
+                    )
+                elif any(w in dish_lower for w in ["oats", "oatmeal", "porridge", "smoothie"]):
+                    meal.instructions = (
+                        f"1. Measure {prep_ings} and bring water or milk to a gentle simmer in a saucepan.\n"
+                        f"2. Stir in oats/grains and cook over low heat for 5–7 minutes, stirring occasionally.\n"
+                        f"3. Remove from heat once thickened to a creamy consistency.\n"
+                        f"4. Garnish with portioned nuts, seeds, or sliced fruit and serve warm."
+                    )
+                else:
+                    meal.instructions = (
+                        f"1. Rinse and prep all fresh ingredients ({prep_ings}) by dicing evenly.\n"
+                        f"2. Heat cooking oil in a pan over medium heat, add aromatic spices, and sauté until fragrant.\n"
+                        f"3. Add main ingredients and cook for 10–12 minutes with a splash of water until tender and cooked through.\n"
+                        f"4. Season with salt and spices to taste. Garnish with fresh herbs and serve warm."
+                    )
 
         # Update day totals
         day_cals = sum(m.calories for m in day.meals)
+
+        # Ensure the whole day matches target_daily_calories within ±5%
+        if day_cals > 0 and abs(day_cals - target_daily_calories) > 0.05 * target_daily_calories:
+            day_scale = target_daily_calories / day_cals
+            day_scale = max(0.5, min(3.5, day_scale))
+            for m in day.meals:
+                for ing in m.ingredients:
+                    scaled = ing.amount_grams * day_scale
+                    if not is_liquid_ingredient(ing.name):
+                        ing.amount_grams = round(max(10.0, min(320.0, scaled)), 1)
+                    else:
+                        ing.amount_grams = round(max(5.0, min(320.0, scaled)), 1)
+                re_nut = await calculate_meal_nutrition(m)
+                m.calories = re_nut["calories"]
+                m.protein_g = re_nut["protein_g"]
+                m.carbs_g = re_nut["carbs_g"]
+                m.fat_g = re_nut["fat_g"]
+            day_cals = sum(m.calories for m in day.meals)
+
         day.total_calories = round(day_cals, 1)
         day.total_protein_g = round(sum(m.protein_g for m in day.meals), 1)
         day.total_carbs_g = round(sum(m.carbs_g for m in day.meals), 1)

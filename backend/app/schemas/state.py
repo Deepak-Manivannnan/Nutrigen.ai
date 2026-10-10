@@ -44,3 +44,4 @@ class PlanState(BaseModel):
     system_message: Optional[str] = None
     deleted_plan_id: Optional[int] = None
     quick_options: Optional[List[Dict[str, str]]] = None
+    plan_id: Optional[int] = None

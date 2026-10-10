@@ -158,13 +158,13 @@ class SupervisorAgent:
         history_ctx = self._format_history_context(history)
 
         prompt = (
-            f"You are NutriGen, a personal meal planning and nutrition assistant talking with {name}.\n\n"
+            f"You are NutriGen, a helpful personal meal planning assistant talking with {name}.\n\n"
             f"{history_ctx}"
             f"The user asks: \"{user_message}\"\n\n"
-            f"Answer their question directly and conversationally in 2 to 3 sentences, just like a helpful human:\n"
-            f"- Explain clearly what you can help them with: creating custom daily meal plans, balancing calories and nutrition, checking dishes against food allergies, and estimating grocery shopping costs.\n"
-            f"- CRITICAL: Do NOT start with 'Hey {name}' or 'Hi {name}'! Jump straight into answering their question in the ongoing conversation flow.\n"
-            f"- Directly address what they asked without rigid numbered lists, bullet dumps, or marketing boilerplate."
+            f"Answer their question directly, warmly, and concisely in 1 to 2 sentences:\n"
+            f"- Do NOT recite marketing filler, promotional pitches, or phrases like 'Beyond crafting these balanced menus...'.\n"
+            f"- Jump straight into answering what was asked in a clean, professional, conversational tone.\n"
+            f"- No repetitive greetings ('Hey', 'Hi') in ongoing dialogue."
         )
         try:
             return await self.llm.generate_text(prompt)
@@ -191,7 +191,7 @@ class SupervisorAgent:
             f"You are NutriGen, a dedicated meal planning and nutrition assistant.\n\n"
             f"{history_ctx}"
             f"The user asked: \"{user_message}\"\n\n"
-            f"In 1 to 2 natural, polite sentences, explain that your focus is specifically on meal planning, nutrition, recipes, and groceries, so you cannot assist with general topics like \"{user_message}\".\n"
+            f"In 1 to 2 natural, polite sentences, explain that your focus is dedicated exclusively to meal planning, nutrition, recipes, and groceries, so you cannot assist with topics outside of food like \"{user_message}\".\n"
             f"CRITICAL: Do NOT start with 'Hey' or greetings. State the boundary directly and conversationally.\n"
             f"Do NOT use bullet points or structured lists."
         )

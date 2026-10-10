@@ -80,6 +80,24 @@ class PlannerAgent(BaseAgent[MealPlan]):
         if current_plan and current_plan.days:
             context["current_plan"] = current_plan.model_dump()
 
+        diet_rules_prompt = ""
+        if plan_diet in ("veg", "vegetarian"):
+            diet_rules_prompt = (
+                "- STRICT DIETARY RULE: 100% VEGETARIAN.\n"
+                "  * Absolutely NO meat, poultry (NO chicken, turkey), fish (NO salmon, tuna, seafood), beef, pork, or animal gelatin.\n"
+                "  * Absolutely NO eggs unless specifically eggetarian.\n"
+                "  * Every single meal (breakfast, lunch, dinner) MUST contain ONLY vegetarian plant-based foods, lentils/dal, chickpeas/chana, beans/rajma, paneer, tofu, vegetables, grains (quinoa, brown rice, oats, whole wheat roti), nuts, and seeds.\n"
+            )
+        elif plan_diet == "vegan":
+            diet_rules_prompt = (
+                "- STRICT DIETARY RULE: 100% VEGAN.\n"
+                "  * Absolutely NO animal products: NO meat, poultry, fish, seafood, eggs, dairy (milk, cheese, paneer, butter, ghee, curd, yogurt), or honey. 100% plant-based.\n"
+            )
+        else:
+            diet_rules_prompt = (
+                "- DIETARY RULE: Non-Vegetarian. Include balanced lean proteins (poultry, fish, eggs) along with fresh vegetables and whole grains.\n"
+            )
+
         meal_plan = None
         if days > 1:
             logger.info(f"[PlannerAgent] Generating {days}-day plan directly via structured output.")
@@ -87,6 +105,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"You are the Meal Planner Agent. Generate a complete {days}-day clinical meal plan for {user_profile.get('name', 'user')}.\n"
                 f"- Target calories: {calorie_target:.0f} kcal per day (±5%)\n"
                 f"- Diet type: {plan_diet}\n"
+                f"{diet_rules_prompt}"
                 f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
@@ -119,6 +138,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"You are the Meal Planner Agent. Generate a complete {days}-day clinical meal plan for {user_profile.get('name', 'user')}.\n"
                 f"- Target calories: {calorie_target:.0f} kcal per day (±5%)\n"
                 f"- Diet type: {plan_diet}\n"
+                f"{diet_rules_prompt}"
                 f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
@@ -141,6 +161,9 @@ class PlannerAgent(BaseAgent[MealPlan]):
         meal_plan.version = version
         meal_plan.diet_type = plan_diet
         meal_plan.name = plan_name
+
+        # Strict Diet Compliance Verification and Sanitization Pass
+        self._sanitize_diet_compliance(meal_plan, plan_diet, calorie_target)
 
         from backend.app.tools.nutrition.calculator import normalize_single_person_plan
         await normalize_single_person_plan(meal_plan, calorie_target)
@@ -210,4 +233,167 @@ class PlannerAgent(BaseAgent[MealPlan]):
         await normalize_single_person_plan(updated_plan, current_plan.target_calories)
 
         return updated_plan
+
+    def _sanitize_diet_compliance(self, meal_plan: MealPlan, plan_diet: str, calorie_target: float):
+        """Ensures zero non-compliant dishes exist in vegetarian or vegan plans."""
+        from backend.app.tools.diet_rules import check_diet_compliance
+        from backend.app.schemas.domain import Ingredient
+
+        dt = (plan_diet or "").strip().lower()
+        if dt not in ("veg", "vegetarian", "vegan"):
+            return
+
+        is_vegan = dt == "vegan"
+
+        fallback_veg_options = {
+            "breakfast": [
+                {
+                    "name": "Tofu Scramble with Whole Wheat Toast and Avocado" if is_vegan else "Paneer & Vegetable Bhurji with Multigrain Toast",
+                    "cals": 0.30 * calorie_target,
+                    "protein": 28.0 if is_vegan else 30.0,
+                    "carbs": 42.0,
+                    "fat": 16.0,
+                    "ingredients": [
+                        Ingredient(name="Firm Tofu" if is_vegan else "Fresh Paneer", amount_grams=150.0),
+                        Ingredient(name="Whole Wheat Bread" if is_vegan else "Multigrain Bread", amount_grams=60.0),
+                        Ingredient(name="Avocado" if is_vegan else "Green Bell Pepper", amount_grams=50.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0),
+                        Ingredient(name="Spinach", amount_grams=50.0)
+                    ],
+                    "instructions": [
+                        "1. Heat olive oil in a skillet over medium heat.",
+                        "2. Crumble " + ("firm tofu" if is_vegan else "fresh paneer") + " into the skillet with turmeric, sea salt, and black pepper.",
+                        "3. Sauté for 4-5 minutes until aromatic and lightly golden, tossing in baby spinach until wilted.",
+                        "4. Toast bread slices until crisp and serve warm alongside the scramble."
+                    ]
+                },
+                {
+                    "name": "Steel-Cut Oats with Almond Butter, Chia Seeds and Berries",
+                    "cals": 0.30 * calorie_target,
+                    "protein": 18.0,
+                    "carbs": 55.0,
+                    "fat": 14.0,
+                    "ingredients": [
+                        Ingredient(name="Rolled Oats", amount_grams=70.0),
+                        Ingredient(name="Almond Milk", amount_grams=200.0),
+                        Ingredient(name="Chia Seeds", amount_grams=15.0),
+                        Ingredient(name="Almond Butter", amount_grams=20.0),
+                        Ingredient(name="Mixed Berries", amount_grams=60.0)
+                    ],
+                    "instructions": [
+                        "1. Simmer rolled oats in almond milk over medium-low heat for 6-8 minutes until creamy.",
+                        "2. Stir in chia seeds and a dash of cinnamon.",
+                        "3. Transfer to a bowl and swirl in creamy almond butter.",
+                        "4. Top with fresh berries and serve warm."
+                    ]
+                }
+            ],
+            "lunch": [
+                {
+                    "name": "Spiced Chickpea & Spinach Bowl with Quinoa" if is_vegan else "Paneer Tikka with Roasted Broccoli and Brown Rice",
+                    "cals": 0.40 * calorie_target,
+                    "protein": 26.0 if is_vegan else 36.0,
+                    "carbs": 68.0,
+                    "fat": 18.0,
+                    "ingredients": [
+                        Ingredient(name="Boiled Chickpeas" if is_vegan else "Paneer Cubes", amount_grams=160.0),
+                        Ingredient(name="Cooked Quinoa" if is_vegan else "Steamed Brown Rice", amount_grams=140.0),
+                        Ingredient(name="Baby Spinach" if is_vegan else "Broccoli Florets", amount_grams=100.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0),
+                        Ingredient(name="Lemon Juice", amount_grams=15.0)
+                    ],
+                    "instructions": [
+                        "1. Heat olive oil in a pan and lightly bloom ground cumin and turmeric.",
+                        "2. Add " + ("chickpeas" if is_vegan else "paneer cubes") + " and sauté on medium heat until golden and fragrant.",
+                        "3. Toss in " + ("baby spinach" if is_vegan else "broccoli florets") + " and cook for 3 minutes until tender-crisp.",
+                        "4. Plate over a generous portion of warm " + ("quinoa" if is_vegan else "brown rice") + " and finish with a squeeze of fresh lemon."
+                    ]
+                },
+                {
+                    "name": "Rajma (Red Kidney Bean) Masala with Steamed Brown Rice and Cucumber Salad",
+                    "cals": 0.40 * calorie_target,
+                    "protein": 24.0,
+                    "carbs": 72.0,
+                    "fat": 12.0,
+                    "ingredients": [
+                        Ingredient(name="Kidney Beans (Rajma)", amount_grams=160.0),
+                        Ingredient(name="Brown Rice", amount_grams=140.0),
+                        Ingredient(name="Tomatoes & Onions", amount_grams=100.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0),
+                        Ingredient(name="Cucumber", amount_grams=80.0)
+                    ],
+                    "instructions": [
+                        "1. Sauté diced onions, tomatoes, ginger, and garlic in olive oil until a fragrant masala base forms.",
+                        "2. Add cooked kidney beans along with a cup of broth and simmer on low for 10 minutes.",
+                        "3. Steam brown rice until fluffy and slice crisp fresh cucumber.",
+                        "4. Ladle hot rajma masala over the rice and serve with fresh cucumber salad."
+                    ]
+                }
+            ],
+            "dinner": [
+                {
+                    "name": "Grilled Tofu with Roasted Sweet Potato and Asparagus" if is_vegan else "Palak Paneer with Whole Wheat Roti and Roasted Asparagus",
+                    "cals": 0.30 * calorie_target,
+                    "protein": 25.0 if is_vegan else 32.0,
+                    "carbs": 48.0,
+                    "fat": 16.0,
+                    "ingredients": [
+                        Ingredient(name="Firm Tofu" if is_vegan else "Paneer Cubes", amount_grams=140.0),
+                        Ingredient(name="Roasted Sweet Potato" if is_vegan else "Spinach Purée", amount_grams=140.0),
+                        Ingredient(name="Asparagus", amount_grams=90.0),
+                        Ingredient(name="Whole Wheat Roti", amount_grams=60.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0)
+                    ],
+                    "instructions": [
+                        "1. Sear " + ("cubed tofu" if is_vegan else "paneer cubes") + " in olive oil until golden on all sides.",
+                        "2. Prepare the " + ("roasted sweet potato" if is_vegan else "seasoned spinach sauce with cumin and garam masala") + ".",
+                        "3. Sauté asparagus in the pan until bright green and tender-crisp.",
+                        "4. Plate with warm whole wheat roti and serve immediately."
+                    ]
+                },
+                {
+                    "name": "Yellow Moong Dal Khichdi with Sautéed Mixed Vegetables",
+                    "cals": 0.30 * calorie_target,
+                    "protein": 22.0,
+                    "carbs": 56.0,
+                    "fat": 12.0,
+                    "ingredients": [
+                        Ingredient(name="Moong Dal", amount_grams=70.0),
+                        Ingredient(name="Brown Rice", amount_grams=60.0),
+                        Ingredient(name="Carrots & Green Peas", amount_grams=80.0),
+                        Ingredient(name="Olive Oil", amount_grams=10.0),
+                        Ingredient(name="Cumin Seeds", amount_grams=5.0)
+                    ],
+                    "instructions": [
+                        "1. Rinse moong dal and brown rice, then cook in water with turmeric and salt until soft and porridge-like.",
+                        "2. In a small pan, temper cumin seeds and a pinch of asafoetida in olive oil.",
+                        "3. Sauté carrots and green peas for 4 minutes until tender.",
+                        "4. Pour the aromatic tempering and vegetables over the hot khichdi, stir gently, and serve."
+                    ]
+                }
+            ]
+        }
+
+        for day in meal_plan.days:
+            for meal in day.meals:
+                m_type = meal.meal_type.lower()
+                ing_names = [ing.name for ing in meal.ingredients]
+                names_to_check = ing_names + [meal.recipe_name]
+                violations = check_diet_compliance(dt, names_to_check)
+                if violations:
+                    logger.warning(
+                        f"[PlannerAgent] Diet violation in '{meal.recipe_name}' for {dt}: {violations}. "
+                        f"Replacing with certified {dt} dish."
+                    )
+                    slot_key = "breakfast" if "breakfast" in m_type else ("lunch" if "lunch" in m_type else "dinner")
+                    opts = fallback_veg_options.get(slot_key, fallback_veg_options["lunch"])
+                    chosen = opts[(day.day_number - 1) % len(opts)]
+                    meal.recipe_name = chosen["name"]
+                    meal.calories = chosen["cals"]
+                    meal.protein_g = chosen["protein"]
+                    meal.carbs_g = chosen["carbs"]
+                    meal.fat_g = chosen["fat"]
+                    meal.ingredients = chosen["ingredients"]
+                    meal.instructions = "\n".join(chosen["instructions"]) if isinstance(chosen["instructions"], list) else str(chosen["instructions"])
+                    meal.source = "ai_generated"
 

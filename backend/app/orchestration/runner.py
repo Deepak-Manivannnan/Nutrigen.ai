@@ -113,8 +113,8 @@ async def run_meal_planner(
         calorie_target=intent_data.requested_calories or (existing_plan.target_calories if existing_plan else None),
         fixed_meals=fixed,
         edit_details=intent_data.edit_details,
-        current_plan=existing_plan,
-        plan_version=(existing_plan.version + 1) if existing_plan else 1,
+        current_plan=existing_plan if intent_data.intent == "edit_meal" else None,
+        plan_version=(existing_plan.version + 1) if (existing_plan and intent_data.intent == "edit_meal") else 1,
         round=1,
         max_rounds=3,
         status="drafting"
@@ -508,7 +508,7 @@ async def run_meal_planner(
                 return state
 
             msg = (
-                "You haven't created any meal plans yet to update! 🥗\n\n"
+                "You don't have an active meal plan yet to update! 🥗\n\n"
                 "Would you like me to create one for you first? Just ask: *\"Plan a 3-day 1800 kcal meal plan\"*!"
             )
             state.system_message = msg
@@ -650,6 +650,8 @@ async def run_meal_planner(
         # Resolved effective diet type for this plan
         effective_diet = intent_data.chosen_diet_type or req_diet or profile_diet
         user_profile["diet_type"] = effective_diet
+        state.user_profile["diet_type"] = effective_diet
+        state.current_plan = None
 
         # Ensure state reflects requested days and calories explicitly
         state.days = req_days
@@ -728,7 +730,9 @@ async def run_meal_planner(
                     logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft.")
                 else:
                     plan_diet_str = user_profile.get("diet_type", "veg")
+                    final_state.current_plan.diet_type = plan_diet_str
                     p_name = f"{len(final_state.current_plan.days)}-Day {plan_diet_str.capitalize()} Plan"
+                    final_state.current_plan.name = p_name
                     created_p = await repo.create_plan(
                         user_id=user_id,
                         days=len(final_state.current_plan.days),

@@ -80,7 +80,13 @@ def check_diet_compliance(diet_type: str, ingredients: List[str]) -> List[Dict[s
         return []
 
     is_vegan = dt in ("vegan",)
-    is_veg = dt in ("veg", "vegetarian") or is_vegan
+    is_eggetarian = dt in ("eggetarian",)
+    is_veg = dt in ("veg", "vegetarian") or is_vegan or is_eggetarian
+
+    EGG_KEYWORDS: Set[str] = {
+        "egg", "eggs", "scrambled egg", "scrambled eggs", "boiled egg", "boiled eggs",
+        "egg white", "egg whites", "egg yolk", "egg yolks", "mayonnaise", "mayo", "omelet", "omelette"
+    }
 
     violations = []
     for ing in ingredients:
@@ -88,11 +94,11 @@ def check_diet_compliance(diet_type: str, ingredients: List[str]) -> List[Dict[s
         if not clean:
             continue
 
-        # Check false-positive exemptions first
+        # Check false-positive exemptions first (e.g. eggplant, butternut squash, etc.)
         if any(exempt in clean for exempt in FALSE_POSITIVE_EXCLUSIONS):
             continue
 
-        # Check non-veg keywords
+        # Check non-veg keywords (meat, poultry, fish, seafood)
         matched_non_veg = None
         for term in NON_VEG_KEYWORDS:
             pattern = rf"\b{re.escape(term)}\b"
@@ -107,6 +113,22 @@ def check_diet_compliance(diet_type: str, ingredients: List[str]) -> List[Dict[s
                 "diet_type": dt
             })
             continue
+
+        # Check eggs for standard vegetarian plans (unless explicitly eggetarian)
+        if is_veg and not is_eggetarian and not is_vegan:
+            matched_egg = None
+            for term in EGG_KEYWORDS:
+                pattern = rf"\b{re.escape(term)}\b"
+                if re.search(pattern, clean):
+                    matched_egg = term
+                    break
+            if matched_egg:
+                violations.append({
+                    "ingredient": ing,
+                    "violation": f"Egg product '{matched_egg}' found in vegetarian plan",
+                    "diet_type": dt
+                })
+                continue
 
         # Check non-vegan keywords if diet is vegan
         if is_vegan:

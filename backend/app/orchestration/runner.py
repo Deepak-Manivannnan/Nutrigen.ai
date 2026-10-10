@@ -16,7 +16,8 @@ def find_referenced_plan(
     user_message: str,
     all_plans: List[Any],
     target_id: Optional[int] = None,
-    target_name: Optional[str] = None
+    target_name: Optional[str] = None,
+    fallback_to_first: bool = True
 ) -> Optional[Any]:
     """Helper to cleanly resolve referenced meal plan without exposing internal IDs."""
     if not all_plans:
@@ -27,15 +28,42 @@ def find_referenced_plan(
             return p
     if target_name:
         t_clean = target_name.strip().lower()
-        p = next((p for p in all_plans if p.name.strip().lower() == t_clean or t_clean in p.name.strip().lower()), None)
+        p = next((p for p in all_plans if p.name.strip().lower() == t_clean or t_clean in p.name.strip().lower() or p.name.strip().lower() in t_clean), None)
         if p:
             return p
     clean_msg = user_message.strip().lower()
-    for p in sorted(all_plans, key=lambda x: len(x.name), reverse=True):
-        p_name = p.name.strip().lower()
+    for p in sorted(all_plans, key=lambda x: len(str(getattr(x, "name", ""))), reverse=True):
+        p_name = str(getattr(p, "name", "")).strip().lower()
         if p_name and p_name in clean_msg:
             return p
-    return all_plans[0]
+
+    # Match by day count (e.g. "5 day meal plan", "the 5 day", "5-day")
+    m_days = re.search(r'\b(\d+)\s*(?:-| )?days?\b', clean_msg)
+    if m_days:
+        req_d = int(m_days.group(1))
+        matching_by_days = [p for p in all_plans if getattr(p, "days", None) == req_d]
+        if len(matching_by_days) == 1:
+            return matching_by_days[0]
+        elif len(matching_by_days) > 1:
+            for p in matching_by_days:
+                p_diet = (getattr(p, "diet_type", None) or "").lower()
+                if p_diet and p_diet in clean_msg:
+                    return p
+            return matching_by_days[0]
+
+    # Match by diet type (e.g. "the vegetarian plan", "the non-veg plan")
+    for diet_kw in ["vegetarian", "veg", "non-vegetarian", "non-veg", "vegan"]:
+        if diet_kw in clean_msg:
+            norm_diet = "veg" if diet_kw in ["veg", "vegetarian"] else ("non-veg" if diet_kw in ["non-veg", "non-vegetarian"] else "vegan")
+            matching_by_diet = [p for p in all_plans if (getattr(p, "diet_type", None) or "").lower() == norm_diet]
+            if len(matching_by_diet) == 1:
+                return matching_by_diet[0]
+            elif len(matching_by_diet) > 1:
+                return matching_by_diet[0]
+
+    if fallback_to_first:
+        return all_plans[0]
+    return None
 
 async def run_meal_planner(
     user_id: int,
@@ -802,18 +830,29 @@ async def run_meal_planner(
             ]
             return state
 
-        # If user generally said "I want to update my meal plan" without specific meal dish instructions
-        if intent_data.is_update_request:
+        # If user generally said "I want to update my meal plan" or selected a plan to update without specific meal dish instructions
+        has_specific_instructions = bool(
+            intent_data.edit_details and (
+                intent_data.edit_details.day
+                or intent_data.edit_details.meal_type
+                or intent_data.edit_details.dish_to_replace
+                or any(w in (intent_data.edit_details.instructions or "").lower() for w in ["swap", "replace", "change", "modify", "switch", "substitute"])
+            )
+        )
+
+        if intent_data.is_update_request or not has_specific_instructions:
             target_p = find_referenced_plan(
                 user_message,
                 all_plans,
                 target_id=intent_data.target_plan_id,
-                target_name=intent_data.target_plan_name
+                target_name=intent_data.target_plan_name,
+                fallback_to_first=False
             )
-            if target_p and (len(all_plans) == 1 or intent_data.target_plan_name or intent_data.target_plan_id):
+            if target_p or len(all_plans) == 1:
+                target_plan_to_use = target_p or all_plans[0]
                 context_prompt = (
-                    f"The user wants to update their meal plan '{target_p.name}'. "
-                    f"In friendly, conversational English, ask what they would like to update in '{target_p.name}' (e.g. swapping a meal on a specific day, adjusting ingredients, or adding a healthy snack)."
+                    f"The user wants to update their meal plan '{target_plan_to_use.name}'. "
+                    f"In friendly, conversational English, ask what they would like to update in '{target_plan_to_use.name}' (e.g. swapping a meal on a specific day, adjusting ingredients, or adding a healthy snack)."
                 )
                 response_text = await supervisor.generate_conversational_response(
                     user_message=user_message,
@@ -824,13 +863,12 @@ async def run_meal_planner(
                 state.system_message = response_text
                 state.status = "conversational"
                 state.quick_options = [
-                    {"label": "Swap breakfast", "value": f"I want to update \"{target_p.name}\": swap day 1 breakfast with oatmeal"},
-                    {"label": "Add a healthy snack", "value": f"Add a snack to \"{target_p.name}\""},
-                    {"label": "Change diet to vegetarian", "value": f"Update \"{target_p.name}\" to vegetarian"}
+                    {"label": "Swap breakfast", "value": f"I want to update \"{target_plan_to_use.name}\": swap day 1 breakfast with oatmeal"},
+                    {"label": "Add a healthy snack", "value": f"Add a snack to \"{target_plan_to_use.name}\""},
+                    {"label": "Change diet to vegetarian", "value": f"Update \"{target_plan_to_use.name}\" to vegetarian"}
                 ]
                 return state
             else:
-                plan_bullets = [f"• **\"{p.name}\"** ({p.days}-day, {p.diet_type}, {int(p.calorie_target)} kcal)" for p in all_plans]
                 context_prompt = (
                     f"The user wants to update a meal plan, and they have multiple plans: {', '.join(p.name for p in all_plans)}. "
                     f"In friendly, conversational English, ask which meal plan they would like to update."

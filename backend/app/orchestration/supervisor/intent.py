@@ -219,11 +219,11 @@ def _scan_history_for_plan_context(history: Optional[List[Dict[str, Any]]]) -> D
                     ctx["exclusions"].append(exc)
         elif role == "assistant":
             if ctx["recommended_calories"] is None:
-                m_rec = re.search(r'recommended target of\s*(\d[\d,]*)\s*kcal', content, re.IGNORECASE)
+                m_rec = re.search(r'recommended target of\s*\*?\*?(\d[\d,]*)\*?\*?\s*kcal', content, re.IGNORECASE)
                 if not m_rec:
-                    m_rec = re.search(r'(\d[\d,]*)\s*kcal instead', content, re.IGNORECASE)
+                    m_rec = re.search(r'\*?\*?(\d[\d,]*)\*?\*?\s*kcal instead', content, re.IGNORECASE)
                 if not m_rec:
-                    m_rec = re.search(r'target of\s*(\d[\d,]*)\s*kcal', content, re.IGNORECASE)
+                    m_rec = re.search(r'target of\s*\*?\*?(\d[\d,]*)\*?\*?\s*kcal', content, re.IGNORECASE)
                 if m_rec:
                     ctx["recommended_calories"] = float(m_rec.group(1).replace(",", ""))
 
@@ -267,22 +267,40 @@ async def extract_user_intent(
             elif h.get("role") == "user" and not prev_user_content:
                 prev_user_content = (h.get("content") or "").strip()
 
-    # 1. Check if previous assistant message asked for Diet Preference Conflict confirmation
-    if ("your profile preference is" in last_asst_content and "can i go ahead" in last_asst_content) or \
-       ("your profile preference is" in last_asst_content and "create a" in last_asst_content) or \
-       ("your profile preference is" in last_asst_content and "default profile" in last_asst_content):
+    # 1. Check if previous assistant message asked for Diet Preference Conflict confirmation or combined Diet+Calorie Conflict
+    has_diet_prompt = (
+        ("your profile preference is" in last_asst_content and "can i go ahead" in last_asst_content) or \
+        ("your profile preference is" in last_asst_content and "create a" in last_asst_content) or \
+        ("your profile preference is" in last_asst_content and "default profile" in last_asst_content) or \
+        ("your profile preference is" in last_asst_content and ("recommended target" in last_asst_content or "maintenance range" in last_asst_content))
+    )
+    if has_diet_prompt:
         hist_ctx = _scan_history_for_plan_context(history)
         curr_p = _extract_plan_parameters_from_text(user_message)
 
         inherited_days = curr_p["days"] or hist_ctx["days"] or 3
-        inherited_cal = curr_p["calories"] or hist_ctx["recommended_calories"] or hist_ctx["calories"]
+        
+        # Check if user accepted advised / recommended calories
+        wants_advised = any(w in cleaned for w in [
+            "advised calorie", "advised range", "recommended target", "recommended calorie",
+            "recommended range", "advised", "recommended", "balanced plan"
+        ]) or ("remining" in cleaned and "calorie" in cleaned) or ("reminding" in cleaned and "calorie" in cleaned)
+
+        if wants_advised and hist_ctx["recommended_calories"]:
+            inherited_cal = hist_ctx["recommended_calories"]
+        elif wants_advised:
+            inherited_cal = 2250.0
+        else:
+            inherited_cal = curr_p["calories"] or hist_ctx["recommended_calories"] or hist_ctx["calories"]
+
         inherited_excl = list(set(curr_p["exclusions"] + hist_ctx["exclusions"]))
 
         veg_phrases = [
             "create vegetarian plan", "veg plan", "go with veg", "vegetarian", "yes, create with veg",
             "create veg", "no create a vegetarian meal", "create a vegetarian meal", "vegetarian meal",
             "no i want veg meal plan", "i want veg meal plan", "veg meal plan", "veg meal", "want veg",
-            "make it veg", "veg foods", "with veg", "use veg", "veg only", "no veg", "go with vegetarian"
+            "make it veg", "veg foods", "with veg", "use veg", "veg only", "no veg", "go with vegetarian",
+            "create a veg plan", "create veg plan", "veg"
         ]
         if any(w in cleaned for w in veg_phrases):
             return UserIntentExtraction(
@@ -319,6 +337,21 @@ async def extract_user_intent(
                 requested_exclusions=inherited_excl
             )
 
+        affirmative_or_choice = any(w in cleaned for w in [
+            "yes", "sure", "ok", "okay", "proceed", "go ahead", "please"
+        ]) or wants_advised
+        if affirmative_or_choice:
+            inherited_diet = curr_p["diet_type"] or hist_ctx["diet_type"] or "veg"
+            return UserIntentExtraction(
+                intent="new_plan",
+                diet_conflict_confirmed=True,
+                chosen_diet_type=inherited_diet,
+                requested_diet_type=inherited_diet,
+                requested_days=inherited_days,
+                requested_calories=inherited_cal,
+                requested_exclusions=inherited_excl
+            )
+
     # 2. Check if previous assistant message asked for Calorie Guardrail confirmation / recommended target
     is_calorie_guardrail_prompt = (
         ("safe range" in last_asst_content or "maintenance range" in last_asst_content or "recommended target" in last_asst_content)
@@ -329,7 +362,19 @@ async def extract_user_intent(
         curr_p = _extract_plan_parameters_from_text(user_message)
 
         inherited_days = curr_p["days"] or hist_ctx["days"] or 3
-        inherited_cal = curr_p["calories"] or hist_ctx["recommended_calories"] or hist_ctx["calories"]
+
+        wants_advised = any(w in cleaned for w in [
+            "advised calorie", "advised range", "recommended target", "recommended calorie",
+            "recommended range", "advised", "recommended", "balanced plan"
+        ]) or ("remining" in cleaned and "calorie" in cleaned) or ("reminding" in cleaned and "calorie" in cleaned)
+
+        if wants_advised and hist_ctx["recommended_calories"]:
+            inherited_cal = hist_ctx["recommended_calories"]
+        elif wants_advised:
+            inherited_cal = 2250.0
+        else:
+            inherited_cal = curr_p["calories"] or hist_ctx["recommended_calories"] or hist_ctx["calories"]
+
         inherited_diet = curr_p["diet_type"] or hist_ctx["diet_type"]
         inherited_excl = list(set(curr_p["exclusions"] + hist_ctx["exclusions"]))
 
@@ -339,8 +384,8 @@ async def extract_user_intent(
             "plan", "veg", "vegetarian", "non-veg", "vegan", "recommended", "balanced plan"
         ])
         if affirmative_or_modifying:
-            # Check if this confirmation also explicitly confirms diet conflict
-            is_confirmed_tag = "(confirmed)" in cleaned or "confirmed" in cleaned
+            # If user previously requested/discussed a specific diet or confirms, maintain confirmed status
+            is_confirmed_tag = "(confirmed)" in cleaned or "confirmed" in cleaned or bool(inherited_diet) or any(w in cleaned for w in ["yes", "yeah", "sure", "ok", "okay", "proceed"])
             return UserIntentExtraction(
                 intent="new_plan",
                 diet_conflict_confirmed=is_confirmed_tag,
@@ -350,6 +395,44 @@ async def extract_user_intent(
                 requested_calories=inherited_cal,
                 requested_exclusions=inherited_excl
             )
+
+    # 3. Check if previous assistant message asked which meal plan to update
+    is_pending_update_selection = (
+        ("which one would you like to update" in last_asst_content
+         or "which one you'd like to update" in last_asst_content
+         or "which plan would you like to update" in last_asst_content
+         or "which meal plan would you like to update" in last_asst_content
+         or "which one would you prefer to update" in last_asst_content
+         or "which one do you want to update" in last_asst_content)
+    )
+    if is_pending_update_selection:
+        target_id = None
+        m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
+        if m_id:
+            target_id = int(m_id.group(1))
+        plan_name = _extract_plan_name_from_text(user_message)
+        
+        # Check if user already provided specific slot edit instructions in this reply
+        meal_slot_keywords = ["breakfast", "lunch", "dinner", "snack"]
+        has_slot = any(k in cleaned for k in meal_slot_keywords)
+        has_action = any(k in cleaned for k in ["replace", "swap", "change", "modify", "switch", "substitute"])
+        has_specific = has_slot and has_action
+        
+        edit_dt = None
+        if has_specific:
+            m_day = re.search(r'day\s*(\d+)', cleaned)
+            d_val = int(m_day.group(1)) if m_day else None
+            m_slot = re.search(r'\b(breakfast|lunch|dinner|snack)\b', cleaned)
+            s_val = m_slot.group(1) if m_slot else None
+            edit_dt = EditDetails(day=d_val, meal_type=s_val, instructions=user_message)
+            
+        return UserIntentExtraction(
+            intent="edit_meal",
+            target_plan_id=target_id,
+            target_plan_name=plan_name or user_message.strip(),
+            is_update_request=not has_specific,
+            edit_details=edit_dt
+        )
 
     # 2. Check if previous assistant message asked for Snack rebalance options
     if "snack" in last_asst_content and any(w in last_asst_content for w in ["exceed", "calorie", "target", "rebalance", "low-calorie", "light"]):

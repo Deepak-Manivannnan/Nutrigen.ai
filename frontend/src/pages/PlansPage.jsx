@@ -411,6 +411,7 @@ export default function PlansPage() {
           >
             {currentDay.meals?.map((meal, mIdx) => {
               const MealIcon = MEAL_ICONS[meal.type] || Sunrise;
+              const isExpanded = !!expandedInstructions[`meal-${currentDay.day}-${mIdx}`];
               return (
                 <div
                   key={mIdx}
@@ -422,11 +423,12 @@ export default function PlansPage() {
                     justifyContent: 'space-between',
                     position: 'relative',
                     transition: 'all var(--transition-fast)',
-                    height: 'fit-content',
+                    minHeight: isExpanded ? 'auto' : '290px',
+                    height: isExpanded ? 'auto' : '290px',
                   }}
                   id={`meal-card-${currentDay.day}-${mIdx}`}
                 >
-                  <div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-3)' }}>
                       <span
                         style={{
@@ -451,12 +453,12 @@ export default function PlansPage() {
                       </span>
                     </div>
 
-                    <h3 style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--gray-900)', marginBottom: 'var(--space-3)', lineHeight: 1.4 }}>
+                    <h3 style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--gray-900)', marginBottom: 'var(--space-3)', lineHeight: 1.4, minHeight: '40px' }}>
                       {meal.name}
                     </h3>
 
                     {meal.ingredients && (
-                      <p style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginBottom: 'var(--space-3)', lineHeight: 1.5 }}>
+                      <p style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginBottom: 'var(--space-3)', lineHeight: 1.5, minHeight: '38px' }}>
                         <strong>Ingredients:</strong>{' '}
                         {Array.isArray(meal.ingredients)
                           ? meal.ingredients
@@ -468,7 +470,7 @@ export default function PlansPage() {
                     )}
 
                     {/* Cooking Instructions Dropdown */}
-                    <div style={{ marginBottom: 'var(--space-3)' }}>
+                    <div style={{ marginBottom: 'var(--space-3)', marginTop: isExpanded ? '0' : 'auto' }}>
                       <button
                         type="button"
                         onClick={() => toggleInstructions(`meal-${currentDay.day}-${mIdx}`)}

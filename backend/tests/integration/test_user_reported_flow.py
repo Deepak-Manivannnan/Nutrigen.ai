@@ -410,3 +410,157 @@ async def test_plan_versioning_draft_to_approved_lifecycle():
         assert db_plan.version == 2
         assert db_plan.status == "approved"
 
+
+@pytest.mark.asyncio
+async def test_user_reported_combined_conflict_immediate_generation():
+    """
+    Tests Issue 1:
+    User asks for 5-day veg plan at 1800 kcal (conflicting with non-veg profile and 2150-2350 maintenance).
+    Assistant asks combined diet + calorie conflict question offering recommended 2250 kcal.
+    User accepts: 'oops i forgot about my calorie range thanks for remining and u can create a veg plan with my advised calorie range'
+    Assistant MUST immediately generate the 5-day vegetarian plan at 2250 kcal without re-prompting.
+    """
+    await init_db()
+    user_profile = {
+        "name": "Deepak",
+        "age": 28,
+        "sex": "male",
+        "height_cm": 175,
+        "weight_kg": 72,
+        "activity_level": "medium",
+        "goal": "maintain",
+        "diet_type": "non-veg",
+        "allergies": [],
+        "dislikes": []
+    }
+    user_id = 4
+    async with AsyncSessionLocal() as session:
+        p_repo = PlanRepository(session)
+        existing_plans = await p_repo.get_all_by_user(user_id)
+        for p in existing_plans:
+            await p_repo.delete_plan(p.id)
+
+    history = []
+
+    # Turn 1: User requests 5-day veg plan with 1800 kcal/day
+    msg1 = "okay can u create a veg meal plan for 5 days with 1800kcal/day"
+    state1 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg1,
+        user_profile=user_profile,
+        history=history
+    )
+    assert state1.status == "conversational"
+    assert "vegetarian" in state1.system_message.lower()
+    assert "1,800" in state1.system_message or "1800" in state1.system_message
+    assert "recommended target of" in state1.system_message.lower()
+
+    history.append({"role": "user", "content": msg1})
+    history.append({"role": "assistant", "content": state1.system_message})
+
+    # Turn 2: User confirms advised calorie range and veg plan
+    msg2 = "oops i forgot about my calorie range thanks for remining and u can create a veg plan with my advised calorie range"
+    state2 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg2,
+        user_profile=user_profile,
+        history=history
+    )
+    # Must immediately draft the plan, NOT ask another question!
+    assert state2.status in ("draft", "drafting", "reviewing"), f"Expected drafted plan, got {state2.status}: {state2.system_message}"
+    assert state2.current_plan is not None
+    assert len(state2.current_plan.days) == 5
+    assert state2.current_plan.diet_type == "veg"
+    assert state2.current_plan.target_calories >= 2000
+
+
+@pytest.mark.asyncio
+async def test_user_reported_update_plan_selection_flow():
+    """
+    Tests Issue 2:
+    User has multiple plans (5-Day Veg Plan and 3-Day Non-veg Plan).
+    User says 'hey i want to update a meal plan' -> Assistant asks which one.
+    User answers 'the 5 day meal plan'.
+    Assistant MUST ask what they want to update in '5-Day Veg Plan', and NEVER trigger LangGraph/create a new plan.
+    """
+    await init_db()
+    user_profile = {
+        "name": "Deepak",
+        "age": 28,
+        "sex": "male",
+        "height_cm": 175,
+        "weight_kg": 72,
+        "activity_level": "medium",
+        "goal": "maintain",
+        "diet_type": "non-veg",
+        "allergies": [],
+        "dislikes": []
+    }
+    user_id = 5
+    async with AsyncSessionLocal() as session:
+        p_repo = PlanRepository(session)
+        existing_plans = await p_repo.get_all_by_user(user_id)
+        for p in existing_plans:
+            await p_repo.delete_plan(p.id)
+
+    # Pre-create two plans in database for user
+    from backend.app.schemas.domain import MealPlan, DayPlan, Meal, Ingredient
+    dummy_meals = [
+        Meal(meal_type="breakfast", recipe_name="Poha", calories=400, protein_g=10, carbs_g=60, fat_g=10, ingredients=[Ingredient(name="Poha", amount_grams=100, unit="g")]),
+        Meal(meal_type="lunch", recipe_name="Dal Rice", calories=700, protein_g=25, carbs_g=90, fat_g=15, ingredients=[Ingredient(name="Rice", amount_grams=150, unit="g")]),
+        Meal(meal_type="dinner", recipe_name="Roti Dal", calories=500, protein_g=20, carbs_g=70, fat_g=12, ingredients=[Ingredient(name="Roti", amount_grams=100, unit="g")]),
+    ]
+    plan_5d = MealPlan(
+        name="5-Day Veg Plan",
+        diet_type="veg",
+        target_calories=2250,
+        days=[DayPlan(day_number=i, meals=dummy_meals, total_calories=1600, total_protein_g=55, total_carbs_g=220, total_fat_g=37) for i in range(1, 6)]
+    )
+    plan_3d = MealPlan(
+        name="3-Day Non-veg Plan",
+        diet_type="non-veg",
+        target_calories=2250,
+        days=[DayPlan(day_number=i, meals=dummy_meals, total_calories=1600, total_protein_g=55, total_carbs_g=220, total_fat_g=37) for i in range(1, 4)]
+    )
+
+    async with AsyncSessionLocal() as session:
+        p_repo = PlanRepository(session)
+        created1 = await p_repo.create_plan(user_id=user_id, days=5, calorie_target=2250, meal_plan=plan_5d, status="draft", name="5-Day Veg Plan", diet_type="veg")
+        created2 = await p_repo.create_plan(user_id=user_id, days=3, calorie_target=2250, meal_plan=plan_3d, status="approved", name="3-Day Non-veg Plan", diet_type="non-veg")
+
+    history = []
+
+    # Turn 1: User says 'hey i want to update a meal plan'
+    msg1 = "hey i want to update a meal plan"
+    state1 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg1,
+        user_profile=user_profile,
+        history=history
+    )
+    assert state1.status == "conversational"
+    assert "which" in state1.system_message.lower()
+
+    history.append({"role": "user", "content": msg1})
+    history.append({"role": "assistant", "content": state1.system_message})
+
+    # Turn 2: User responds 'the 5 day meal plan'
+    msg2 = "the 5 day meal plan"
+    state2 = await run_meal_planner(
+        user_id=user_id,
+        user_message=msg2,
+        user_profile=user_profile,
+        history=history
+    )
+    # Must ask what they would like to update in the 5-day plan
+    assert state2.status == "conversational"
+    assert "5-day veg plan" in state2.system_message.lower() or "5-day" in state2.system_message.lower()
+    assert "what" in state2.system_message.lower() or "like to update" in state2.system_message.lower() or "change" in state2.system_message.lower()
+
+    # Verify no new plan was inserted into the database!
+    async with AsyncSessionLocal() as session:
+        p_repo = PlanRepository(session)
+        plans_after = await p_repo.get_all_by_user(user_id)
+        assert len(plans_after) == 2, f"Expected 2 plans, but found {len(plans_after)} plans in database!"
+
+

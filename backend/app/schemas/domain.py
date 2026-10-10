@@ -4,6 +4,7 @@ from typing import List, Optional, Literal
 class Ingredient(BaseModel):
     name: str
     amount_grams: float
+    unit: Optional[str] = "g"
     notes: Optional[str] = None
 
 class Meal(BaseModel):

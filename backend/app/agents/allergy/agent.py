@@ -42,38 +42,71 @@ class AllergyAgent(BaseAgent[AllergyReport]):
     ) -> AllergyReport:
         clean_allergies = [a.strip().lower() for a in user_allergies if a.strip()]
         
-        # If user has no allergies, automatically pass without requiring unnecessary model loops
-        if not clean_allergies:
+        plan_diet = getattr(plan, "diet_type", "veg") or "veg"
+        from backend.app.tools.diet_rules import check_diet_compliance
+
+        # Check for immediate deterministic diet violations across all days and meals
+        deterministic_diet_violations = []
+        for day in plan.days:
+            for meal in day.meals:
+                ing_names = [ing.name for ing in meal.ingredients]
+                names_to_check = ing_names + [meal.recipe_name]
+                d_viols = check_diet_compliance(plan_diet, names_to_check)
+                for dv in d_viols:
+                    deterministic_diet_violations.append(AllergyViolation(
+                        day_number=day.day_number,
+                        meal_type=meal.meal_type,
+                        ingredient=dv["ingredient"],
+                        allergen=f"Dietary Violation ({plan_diet.capitalize()})",
+                        reason=dv["violation"]
+                    ))
+
+        # If user has no allergies and no diet violations, return clean report
+        if not clean_allergies and not deterministic_diet_violations:
             return AllergyReport(
                 passed=True,
                 violations=[],
                 investigated_items=[],
-                summary="User profile specifies zero allergies. Plan is allergen-safe."
+                summary="User profile specifies zero allergies and plan complies with diet constraints."
             )
 
         task_instruction = (
-            f"Review this {len(plan.days)}-day meal plan for allergic hazards.\n"
+            f"Review this {len(plan.days)}-day meal plan for allergic hazards and dietary violations.\n"
             f"User's allergies: {clean_allergies}\n"
+            f"Plan diet type: {plan_diet}\n"
             f"Use `check_allergens` for direct allergen verification, investigate compound, derivative, or unclear items using culinary intelligence, "
-            f"and issue a hard veto (`passed: false`) if ANY allergen is present."
+            f"and issue a hard veto (`passed: false`) if ANY allergen or diet-violating ingredient is present."
         )
 
         context = {
             "task_id": task_id,
             "user_allergies": clean_allergies,
+            "plan_diet": plan_diet,
             "plan": plan.model_dump()
         }
 
-        report: AllergyReport = await self.run(task_instruction, context)
+        report: AllergyReport
+        if clean_allergies:
+            report = await self.run(task_instruction, context)
+        else:
+            report = AllergyReport(passed=True, violations=[], investigated_items=[], summary="Allergies clear.")
 
         # Hybrid Architecture Layer 1: Deterministic Code Guarantee
+        # Append deterministic diet violations
+        for dv in deterministic_diet_violations:
+            existing = any(
+                viol.day_number == dv.day_number and viol.ingredient.lower() == dv.ingredient.lower()
+                for viol in report.violations
+            )
+            if not existing:
+                report.violations.append(dv)
+
         # Enforce hard veto for any directly matched or compound allergen regardless of LLM reasoning
         for day in plan.days:
             for meal in day.meals:
                 ing_names = [ing.name for ing in meal.ingredients]
                 db_violations = await check_allergens_tool(clean_allergies, ing_names)
                 for v in db_violations:
-                    # Check if already present in violations list
                     existing = any(
                         viol.day_number == day.day_number and viol.ingredient.lower() == v["ingredient"].lower()
                         for viol in report.violations
@@ -89,6 +122,6 @@ class AllergyAgent(BaseAgent[AllergyReport]):
 
         if report.violations:
             report.passed = False
-            report.summary = f"Allergy safety check failed with {len(report.violations)} violation(s). Hard veto enforced."
+            report.summary = f"Safety check failed with {len(report.violations)} violation(s). Hard veto enforced."
 
         return report

@@ -140,19 +140,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
         meal_plan.diet_type = plan_diet
         meal_plan.name = plan_name
 
-        # Calculate daily totals & averages and tag meal diet_type
-        total_cal = 0.0
-        for day in meal_plan.days:
-            for m in day.meals:
-                if not getattr(m, "diet_type", None):
-                    m.diet_type = plan_diet
-            day_cal = sum(m.calories for m in day.meals)
-            if day.total_calories <= 0.0:
-                day.total_calories = round(day_cal, 1)
-            total_cal += day.total_calories
-
-        if meal_plan.days:
-            meal_plan.average_daily_calories = round(total_cal / len(meal_plan.days), 1)
+        from backend.app.tools.nutrition.calculator import normalize_single_person_plan
+        await normalize_single_person_plan(meal_plan, calorie_target)
 
         return meal_plan
 
@@ -190,8 +179,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
             f"IMPORTANT RULES:\n"
             f"1. Keep ALL OTHER DAYS and meals in the plan EXACTLY identical to the existing plan.\n"
             f"2. Replace only Day {target_day} {target_meal_type} with a recipe matching the user's instructions.\n"
-            f"3. Strictly adhere to the plan's diet type '{plan_diet}' and exclude allergies {user_profile.get('allergies', [])}.\n"
-            f"4. Recalculate Day {target_day} total calories to be close to the target {current_plan.target_calories:.0f} kcal (±5%).\n"
+            f"3. Strictly adhere to the plan's diet type '{plan_diet}' (FOR VEGETARIAN: ZERO MEAT/CHICKEN/TURKEY/FISH/SEAFOOD) and exclude allergies {user_profile.get('allergies', [])}.\n"
+            f"4. Portions must be for a single person. Recalculate Day {target_day} total calories to be close to the target {current_plan.target_calories:.0f} kcal (±5%).\n"
             f"5. Set version = {current_plan.version + 1}.\n"
         )
 
@@ -210,17 +199,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
         updated_plan.diet_type = plan_diet
         updated_plan.name = getattr(current_plan, "name", None) or f"{len(updated_plan.days)}-Day {plan_diet.capitalize()} Plan"
 
-        total_cal = 0.0
-        for day in updated_plan.days:
-            for m in day.meals:
-                if not getattr(m, "diet_type", None):
-                    m.diet_type = plan_diet
-            day_cal = sum(m.calories for m in day.meals)
-            day.total_calories = round(day_cal, 1)
-            total_cal += day.total_calories
-
-        if updated_plan.days:
-            updated_plan.average_daily_calories = round(total_cal / len(updated_plan.days), 1)
+        from backend.app.tools.nutrition.calculator import normalize_single_person_plan
+        await normalize_single_person_plan(updated_plan, current_plan.target_calories)
 
         return updated_plan
 

@@ -33,6 +33,14 @@ async def verify_output_safety(
         reasons = [f"{v['ingredient']} ({v['reason']})" for v in violations]
         return False, [f"Critical safety failure in output guardrail: Allergen detected: {', '.join(reasons)}"], {}
 
+    # Check diet compliance (e.g. Vegetarian/Vegan)
+    plan_diet = getattr(plan, "diet_type", "veg") or "veg"
+    from backend.app.tools.diet_rules import check_diet_compliance
+    diet_violations = check_diet_compliance(plan_diet, all_ingredients)
+    if diet_violations:
+        d_reasons = [f"{dv['ingredient']} ({dv['violation']})" for dv in diet_violations]
+        return False, [f"Critical safety failure in output guardrail: Dietary violation detected: {', '.join(d_reasons)}"], {}
+
     # 2. Check for AI fallbacks that need transparency tags
     ai_recipes_count = 0
     for day in plan.days:

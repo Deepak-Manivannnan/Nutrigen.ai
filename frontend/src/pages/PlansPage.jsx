@@ -12,6 +12,9 @@ import {
   Plus,
   Trash2,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  ChefHat,
   Sun,
   Sunrise,
   Sunset,
@@ -46,6 +49,31 @@ export default function PlansPage() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
+  const [expandedInstructions, setExpandedInstructions] = useState({});
+
+  const LIQUID_KEYWORDS = ['oil', 'milk', 'juice', 'water', 'sauce', 'vinegar', 'broth', 'stock', 'syrup', 'honey', 'dressing', 'buttermilk'];
+  function isLiquid(name) {
+    if (!name) return false;
+    const lower = name.toLowerCase();
+    return LIQUID_KEYWORDS.some(k => lower.includes(k));
+  }
+
+  function formatIngredient(ing) {
+    if (!ing) return '';
+    if (typeof ing === 'string') return ing;
+    const name = ing.name || '';
+    const amt = Math.round(ing.amount_grams || ing.amount || 0);
+    if (!amt) return name;
+    const unit = ing.unit || (isLiquid(name) ? 'ml' : 'g');
+    return `${name} (${amt}${unit})`;
+  }
+
+  function toggleInstructions(mealKey) {
+    setExpandedInstructions(prev => ({
+      ...prev,
+      [mealKey]: !prev[mealKey]
+    }));
+  }
 
   // Active plan lookup
   const activePlan = plans.find(p => p.id === activePlanId) || plans[0] || null;
@@ -426,22 +454,68 @@ export default function PlansPage() {
                     </h3>
 
                     {meal.ingredients && (
-                      <p style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginBottom: 'var(--space-4)', lineHeight: 1.5 }}>
+                      <p style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginBottom: 'var(--space-3)', lineHeight: 1.5 }}>
                         <strong>Ingredients:</strong>{' '}
                         {Array.isArray(meal.ingredients)
                           ? meal.ingredients
-                            .map(ing => {
-                              if (typeof ing === 'string') return ing;
-                              if (ing && typeof ing === 'object') {
-                                return ing.name ? `${ing.name}${ing.amount_grams ? ` (${Math.round(ing.amount_grams)}g)` : ''}` : '';
-                              }
-                              return '';
-                            })
+                            .map(formatIngredient)
                             .filter(Boolean)
                             .join(', ')
                           : String(meal.ingredients)}
                       </p>
                     )}
+
+                    {/* Cooking Instructions Dropdown */}
+                    <div style={{ marginBottom: 'var(--space-3)' }}>
+                      <button
+                        type="button"
+                        onClick={() => toggleInstructions(`meal-${currentDay.day}-${mIdx}`)}
+                        className="btn btn-ghost btn-xs"
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '11px',
+                          color: 'var(--green-700)',
+                          background: 'var(--green-50)',
+                          border: '1px solid var(--green-200)',
+                          borderRadius: 'var(--radius-md)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                        }}
+                        id={`cooking-instructions-btn-${currentDay.day}-${mIdx}`}
+                      >
+                        <ChefHat size={12} />
+                        Cooking Instructions
+                        {expandedInstructions[`meal-${currentDay.day}-${mIdx}`] ? (
+                          <ChevronUp size={12} />
+                        ) : (
+                          <ChevronDown size={12} />
+                        )}
+                      </button>
+
+                      {expandedInstructions[`meal-${currentDay.day}-${mIdx}`] && (
+                        <div
+                          style={{
+                            marginTop: 'var(--space-2)',
+                            padding: 'var(--space-3)',
+                            background: 'var(--gray-50)',
+                            border: '1px solid var(--gray-200)',
+                            borderRadius: 'var(--radius-md)',
+                            fontSize: '11.5px',
+                            color: 'var(--gray-700)',
+                            lineHeight: 1.6,
+                            whiteSpace: 'pre-line',
+                          }}
+                        >
+                          <div style={{ fontWeight: 600, color: 'var(--green-800)', marginBottom: '3px', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <span>👨‍🍳</span> Step-by-Step Guidance:
+                          </div>
+                          {meal.instructions || "1. Prep all fresh ingredients and seasonings.\n2. Heat a pan over medium heat with a splash of oil.\n3. Cook ingredients until thoroughly tender and fragrant.\n4. Season to taste and serve warm."}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div>

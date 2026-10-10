@@ -48,4 +48,38 @@ async def init_db():
             except Exception:
                 pass
 
+    # Sanitize any existing plans in database to enforce vegetarian rules & single-person portions
+    try:
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+        from backend.app.db.models import Plan
+        from backend.app.db.repositories.plans import PlanRepository
+        from backend.app.tools.nutrition.calculator import normalize_single_person_plan
+
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(Plan).options(selectinload(Plan.meals)))
+            existing_plans = res.scalars().all()
+            for p in existing_plans:
+                p_diet = (p.diet_type or "veg").lower()
+                needs_update = False
+                for m in (p.meals or []):
+                    rec_name = (m.recipe_name or "").lower()
+                    if (p_diet in ("veg", "vegetarian", "vegan") and any(term in rec_name for term in ["turkey", "chicken", "beef", "pork", "bacon", "fish", "meat"])) or (m.calories and m.calories > 1000):
+                        needs_update = True
+                        break
+
+                if needs_update:
+                    domain_p = PlanRepository.to_meal_plan_domain(p)
+                    await normalize_single_person_plan(domain_p, p.calorie_target or 1850.0)
+                    repo = PlanRepository(session)
+                    await repo.update_plan(
+                        plan_id=p.id,
+                        meal_plan=domain_p,
+                        grocery_list=None,
+                        status=p.status or "approved",
+                        increment_version=False
+                    )
+    except Exception:
+        pass
+
 

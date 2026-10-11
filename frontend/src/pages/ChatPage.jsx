@@ -209,6 +209,9 @@ export default function ChatPage() {
         refreshPlans();
       } else if (chatRes.intent === 'delete_plan') {
         refreshPlans();
+      } else if (chatRes.intent === 'edit_meal') {
+        // Refresh plans to sync grocery list clearing and draft status after edit
+        refreshPlans();
       }
 
       let createdPlan = null;

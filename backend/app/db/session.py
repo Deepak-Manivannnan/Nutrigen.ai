@@ -41,6 +41,11 @@ async def init_db():
             "ALTER TABLE plans ADD COLUMN version INT NOT NULL DEFAULT 1",
             "ALTER TABLE plans ADD COLUMN diet_type VARCHAR(50) DEFAULT 'veg'",
             "ALTER TABLE plan_meals ADD COLUMN diet_type VARCHAR(50) DEFAULT 'veg'",
+            "ALTER TABLE users ADD COLUMN bmr FLOAT",
+            "ALTER TABLE users ADD COLUMN tdee FLOAT",
+            "ALTER TABLE users ADD COLUMN min_safe_calories FLOAT",
+            "ALTER TABLE users ADD COLUMN max_safe_calories FLOAT",
+            "ALTER TABLE users ADD COLUMN suggested_target_calories FLOAT",
         ]
         for stmt in migrations:
             try:

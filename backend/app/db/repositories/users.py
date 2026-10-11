@@ -4,6 +4,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.models import User, UserAllergy
 from backend.app.schemas.api import ProfileCreate, ProfileUpdate
+from backend.app.guardrails.calorie_rules import calculate_mifflin_st_jeor
 
 class UserRepository:
     def __init__(self, session: AsyncSession):
@@ -30,6 +31,9 @@ class UserRepository:
 
         await self.session.commit()
         await self.session.refresh(user)
+
+        # Calculate and persist calorie range after user is created
+        await self._calculate_and_persist_calories(user)
         return await self.get_by_id(user.id)
 
     async def get_by_id(self, user_id: int) -> Optional[User]:
@@ -74,6 +78,24 @@ class UserRepository:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
+    async def _calculate_and_persist_calories(self, user: User) -> None:
+        """Calculate and persist calorie range for a user based on their profile."""
+        cal_info = calculate_mifflin_st_jeor(
+            age=user.age,
+            sex=user.sex,
+            height_cm=user.height_cm,
+            weight_kg=user.weight_kg,
+            activity_level=user.activity_level,
+            goal=user.goal or "maintain"
+        )
+        user.bmr = cal_info["bmr"]
+        user.tdee = cal_info["tdee"]
+        user.min_safe_calories = cal_info["min_safe_calories"]
+        user.max_safe_calories = cal_info["max_safe_calories"]
+        user.suggested_target_calories = cal_info["suggested_target"]
+        await self.session.commit()
+        await self.session.refresh(user)
+
     async def update(self, user_id: int, updates: ProfileUpdate) -> Optional[User]:
         user = await self.get_by_id(user_id)
         if not user:
@@ -93,4 +115,10 @@ class UserRepository:
 
         await self.session.commit()
         await self.session.refresh(user)
+
+        # Recalculate and persist calorie range if relevant fields were updated
+        calorie_fields = {"age", "sex", "height_cm", "weight_kg", "activity_level", "goal"}
+        if any(field in updates.model_fields_set for field in calorie_fields):
+            await self._calculate_and_persist_calories(user)
+
         return user

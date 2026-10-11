@@ -34,6 +34,9 @@ async def create_user_profile(
         diet_type=user.diet_type,
         dislikes=user.dislikes or [],
         allergies=allergies,
+        min_safe_calories=user.min_safe_calories,
+        max_safe_calories=user.max_safe_calories,
+        suggested_target_calories=user.suggested_target_calories,
         created_at=user.created_at,
         updated_at=user.updated_at
     )
@@ -64,6 +67,9 @@ async def get_current_profile(
         diet_type=user.diet_type,
         dislikes=user.dislikes or [],
         allergies=allergies,
+        min_safe_calories=user.min_safe_calories,
+        max_safe_calories=user.max_safe_calories,
+        suggested_target_calories=user.suggested_target_calories,
         created_at=user.created_at,
         updated_at=user.updated_at
     )
@@ -91,6 +97,9 @@ async def get_user_profile(
         diet_type=user.diet_type,
         dislikes=user.dislikes or [],
         allergies=allergies,
+        min_safe_calories=user.min_safe_calories,
+        max_safe_calories=user.max_safe_calories,
+        suggested_target_calories=user.suggested_target_calories,
         created_at=user.created_at,
         updated_at=user.updated_at
     )
@@ -129,6 +138,9 @@ async def update_user_profile(
         diet_type=user.diet_type,
         dislikes=user.dislikes or [],
         allergies=allergies,
+        min_safe_calories=user.min_safe_calories,
+        max_safe_calories=user.max_safe_calories,
+        suggested_target_calories=user.suggested_target_calories,
         created_at=user.created_at,
         updated_at=user.updated_at
     )
@@ -142,6 +154,19 @@ async def get_user_calorie_range(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found")
 
+    # Return persisted calorie data if available, otherwise calculate
+    if user.min_safe_calories is not None and user.max_safe_calories is not None and user.suggested_target_calories is not None:
+        return CalorieRangeResponse(
+            bmr=user.bmr if user.bmr is not None else 0,
+            tdee=user.tdee if user.tdee is not None else 0,
+            min_safe_calories=user.min_safe_calories,
+            max_safe_calories=user.max_safe_calories,
+            suggested_target=user.suggested_target_calories,
+            is_eligible=True,
+            message=None
+        )
+
+    # Fallback to calculation if not persisted yet
     result = calculate_mifflin_st_jeor(
         age=user.age,
         sex=user.sex,

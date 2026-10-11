@@ -35,7 +35,10 @@ async def chat_interaction(
         "goal": user.goal,
         "diet_type": user.diet_type,
         "dislikes": user.dislikes or [],
-        "allergies": [a.allergen for a in user.allergies]
+        "allergies": [a.allergen for a in user.allergies],
+        "min_safe_calories": user.min_safe_calories,
+        "max_safe_calories": user.max_safe_calories,
+        "suggested_target_calories": user.suggested_target_calories,
     }
 
     try:

@@ -37,15 +37,30 @@ def validate_input_request(
     diet_type = str(user_profile["diet_type"]).lower()
     allergies = [str(a).lower() for a in user_profile.get("allergies", [])]
 
-    cal_info = calculate_mifflin_st_jeor(age, sex, height, weight, activity, goal)
+    # Use persisted calorie data if available, otherwise calculate
+    min_safe = user_profile.get("min_safe_calories")
+    max_safe = user_profile.get("max_safe_calories")
+    suggested_target = user_profile.get("suggested_target_calories")
+
+    if min_safe is None or max_safe is None or suggested_target is None:
+        # Fallback to calculation if not persisted yet
+        cal_info = calculate_mifflin_st_jeor(age, sex, height, weight, activity, goal)
+        min_safe = cal_info["min_safe_calories"]
+        max_safe = cal_info["max_safe_calories"]
+        suggested_target = cal_info["suggested_target"]
+    else:
+        # Build cal_info from persisted data for consistent return format
+        cal_info = {
+            "min_safe_calories": min_safe,
+            "max_safe_calories": max_safe,
+            "suggested_target": suggested_target
+        }
 
     # 1. Days check
     days = requested_days if (requested_days and 1 <= requested_days <= 14) else 7
 
     # 3. Calorie range check
-    min_safe = cal_info["min_safe_calories"]
-    max_safe = cal_info["max_safe_calories"]
-    target_cal = requested_calories if requested_calories is not None else cal_info["suggested_target"]
+    target_cal = requested_calories if requested_calories is not None else suggested_target
 
     if target_cal < min_safe or target_cal > max_safe:
         relation = "below" if target_cal < min_safe else "above"
@@ -69,12 +84,12 @@ def validate_input_request(
         return (
             False,
             f"Your requested target of {int(target_cal):,} kcal/day is not within the safe range for your goal. {goal_guidance}\n\n"
-            f"Would you like me to create a balanced plan at your recommended target of {int(cal_info['suggested_target']):,} kcal instead?",
+            f"Would you like me to create a balanced plan at your recommended target of {int(suggested_target):,} kcal instead?",
             {
                 "cal_info": cal_info,
                 "days": days,
                 "calorie_target": target_cal,
-                "suggested_target": cal_info["suggested_target"],
+                "suggested_target": suggested_target,
                 "min_safe": min_safe,
                 "max_safe": max_safe
             }

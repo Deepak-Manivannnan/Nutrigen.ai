@@ -21,6 +21,12 @@ class User(Base):
     goal = Column(String(20), nullable=True, default="maintain")
     diet_type = Column(String(20), nullable=False)
     dislikes = Column(JSON, default=list)
+    # Persisted calorie calculation results
+    bmr = Column(Float, nullable=True)
+    tdee = Column(Float, nullable=True)
+    min_safe_calories = Column(Float, nullable=True)
+    max_safe_calories = Column(Float, nullable=True)
+    suggested_target_calories = Column(Float, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 

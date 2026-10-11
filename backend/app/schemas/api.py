@@ -46,6 +46,9 @@ class ProfileResponse(BaseModel):
     diet_type: str
     dislikes: List[str]
     allergies: List[str]
+    min_safe_calories: Optional[float] = None
+    max_safe_calories: Optional[float] = None
+    suggested_target_calories: Optional[float] = None
     created_at: datetime
     updated_at: datetime
 

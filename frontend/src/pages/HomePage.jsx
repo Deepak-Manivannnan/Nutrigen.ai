@@ -10,6 +10,13 @@ import thumb3 from '../assets/plan_thumb_3.png';
 
 function calorieRange(profile) {
   if (!profile) return '2,000–2,200 kcal';
+  // Use persisted calorie data from backend if available
+  if (profile.min_safe_calories !== undefined && profile.max_safe_calories !== undefined && profile.suggested_target_calories !== undefined) {
+    const low = Math.round(profile.min_safe_calories);
+    const high = Math.round(profile.max_safe_calories);
+    return `${low.toLocaleString()}–${high.toLocaleString()} kcal`;
+  }
+  // Fallback for backward compatibility
   const { age, sex, height_cm, weight_kg, activity_level, goal } = profile;
   if (!age || !height_cm || !weight_kg) return '2,000–2,200 kcal';
   // Mifflin-St Jeor

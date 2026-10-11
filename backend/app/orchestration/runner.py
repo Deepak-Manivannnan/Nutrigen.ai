@@ -802,12 +802,14 @@ async def run_meal_planner(
             return state
         except Exception as e:
             logger.error(f"Error approving plan in chat: {e}")
-            target_plan.status = "approved"
-            if session:
-                await session.commit()
+            # Do NOT mark as approved - grocery generation failed
+            # Keep plan as draft so user can retry via Plans tab or chat
             context_prompt = (
-                f"Successfully approved meal plan '{target_plan.name}'. "
-                f"In polite, natural English, let the user know their meal plan is approved. Ensure you mention that the plan is approved."
+                f"Failed to generate grocery list for meal plan '{target_plan.name}' due to an error: {str(e)}. "
+                f"The meal plan remains in draft status. "
+                f"In polite, natural English, explain to the user that the meal plan was NOT approved because the grocery list could not be generated. "
+                f"Tell them they can retry by clicking 'Approve & Generate Grocery List' in the Plans tab, or by asking you again in chat. "
+                f"Do NOT say the plan was approved."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -816,7 +818,11 @@ async def run_meal_planner(
                 user_name=user_profile.get("name")
             )
             state.system_message = response_text
-            state.status = "approved"
+            state.status = "draft"  # Plan remains draft
+            state.quick_options = [
+                {"label": "Retry Approval in Plans Tab", "value": "Approve my meal plan"},
+                {"label": "Retry in Chat", "value": "approve this plan"}
+            ]
             return state
 
     # =========================================================================

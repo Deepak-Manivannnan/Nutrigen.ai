@@ -6,7 +6,7 @@ import {
   Clock,
   ShieldCheck,
   BarChart2,
-  MessageSquare,
+  
   ShoppingCart,
   Copy,
   Plus,
@@ -82,10 +82,6 @@ export default function PlansPage() {
     approvePlan(planId);
   }
 
-  function handleModifyInChat(plan) {
-    navigate('/app/chat', { state: { prefill: `I want to update "${plan.name}": ` } });
-    addToast(`Ready to update "${plan.name}" in chat`, 'default');
-  }
 
   function handleExportPlan(plan) {
     if (!plan) return;
@@ -302,13 +298,6 @@ export default function PlansPage() {
               <Copy size={14} /> Copy Summary
             </button>
 
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={() => handleModifyInChat(activePlan)}
-              id="modify-plan-chat-btn"
-            >
-              <MessageSquare size={14} /> Modify in Chat
-            </button>
 
             {activePlan.status === 'approved' ? (
               <button

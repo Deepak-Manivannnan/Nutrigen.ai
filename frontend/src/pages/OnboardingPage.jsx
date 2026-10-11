@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
-import { ChevronRight, ChevronLeft, Check } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Check, AlertCircle } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 const STEPS = [
@@ -69,21 +69,36 @@ function OptionBtn({ options, value, onChange, multi = false }) {
 }
 
 const INITIAL_FORM = {
-  name: '', age: '', sex: 'female', height_cm: '', weight_kg: '',
+  age: '', sex: 'female', height_cm: '', weight_kg: '',
   activity_level: 'medium', goal: 'maintain',
   diet_type: 'non-veg', dislikes: [], allergies: [],
   fixed_breakfast: '', fixed_lunch: '', fixed_dinner: '',
 };
 
+const PREDEFINED_ALLERGIES = ['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish'];
+
+function isPredefinedAllergy(allergy) {
+  return PREDEFINED_ALLERGIES.some(p => p.toLowerCase() === allergy.toLowerCase());
+}
+
 export default function OnboardingPage() {
   const navigate = useNavigate();
-  const { createProfile, addToast } = useApp();
+  const { createProfile, addToast, user } = useApp();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState(INITIAL_FORM);
+  const [ageError, setAgeError] = useState('');
 
   function set(key, val) { setForm(p => ({ ...p, [key]: val })); }
 
   function handleNext() {
+    if (step === 1) {
+      const ageVal = Number(form.age);
+      if (!form.age || isNaN(ageVal) || ageVal < 18) {
+        setAgeError('Age must be 18 or above.');
+        return;
+      }
+      setAgeError('');
+    }
     if (step < 6) setStep(s => s + 1);
   }
   function handleBack() {
@@ -93,6 +108,7 @@ export default function OnboardingPage() {
   function handleFinish() {
     const profileData = {
       ...form,
+      name: user?.name || '',  // Include name from signup
       age: Number(form.age),
       height_cm: Number(form.height_cm),
       weight_kg: Number(form.weight_kg),
@@ -108,7 +124,10 @@ export default function OnboardingPage() {
   }
 
   function canProceed() {
-    if (step === 1) return form.name && form.age && form.height_cm && form.weight_kg;
+    if (step === 1) {
+      const ageVal = Number(form.age);
+      return form.age && !isNaN(ageVal) && ageVal >= 18 && form.height_cm && form.weight_kg && form.sex;
+    }
     return true;
   }
 
@@ -147,15 +166,23 @@ export default function OnboardingPage() {
                   <h2 className="onboarding-step-title">Basic information</h2>
                   <p className="onboarding-step-desc">Let's start with some basic details.</p>
                   <div className="onboarding-form">
-                    <div className="grid-2">
-                      <div className="form-group">
-                        <label className="form-label">Name</label>
-                        <input className="form-input" placeholder="Sarah Kumar" value={form.name} onChange={e => set('name', e.target.value)} id="onboard-name" />
-                      </div>
-                      <div className="form-group">
-                        <label className="form-label">Age</label>
-                        <input className="form-input" type="number" placeholder="28" value={form.age} onChange={e => set('age', e.target.value)} id="onboard-age" />
-                      </div>
+                    <div className="form-group">
+                      <label className="form-label">Age</label>
+                      <input
+                        className={`form-input${ageError ? ' form-input-error' : ''}`}
+                        type="number"
+                        placeholder="28"
+                        value={form.age}
+                        onChange={e => { set('age', e.target.value); setAgeError(''); }}
+                        id="onboard-age"
+                        min="18"
+                      />
+                      {ageError && (
+                        <div className="form-error" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                          <AlertCircle size={13} />
+                          {ageError}
+                        </div>
+                      )}
                     </div>
                     <div className="form-group">
                       <label className="form-label">Gender</label>
@@ -246,9 +273,12 @@ export default function OnboardingPage() {
                       <label className="form-label">Other allergies</label>
                       <p className="form-hint">Add any additional allergies not listed above.</p>
                       <TagInput
-                        tags={form.allergies.filter(a => !['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish'].includes(a))}
-                        onAdd={t => set('allergies', [...form.allergies, t])}
-                        onRemove={t => set('allergies', form.allergies.filter(a => a !== t))}
+                        tags={form.allergies.filter(a => !isPredefinedAllergy(a))}
+                        onAdd={t => {
+                          const exists = form.allergies.some(a => a.toLowerCase() === t.toLowerCase());
+                          if (!exists) set('allergies', [...form.allergies, t]);
+                        }}
+                        onRemove={t => set('allergies', form.allergies.filter(a => a.toLowerCase() !== t.toLowerCase()))}
                         placeholder="e.g. sesame, mustard"
                       />
                     </div>
@@ -289,7 +319,7 @@ export default function OnboardingPage() {
                   <p className="onboarding-step-desc">Everything looks good? You can always edit later.</p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
                     {[
-                      { label: 'Name', value: form.name },
+                      { label: 'Name', value: user?.name || '—' },
                       { label: 'Age / Gender', value: `${form.age} years · ${form.sex}` },
                       { label: 'Height / Weight', value: `${form.height_cm} cm · ${form.weight_kg} kg` },
                       { label: 'Activity Level', value: { low: 'Low', medium: 'Moderate', high: 'High' }[form.activity_level] },

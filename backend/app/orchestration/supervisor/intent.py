@@ -797,6 +797,7 @@ async def extract_user_intent(
         "    * intent is ALWAYS 'edit_meal' (NEVER 'new_plan')!\n"
         "    * requested_calories MUST BE NULL! (requested_calories represents entire daily target, NOT single meal slot).\n"
         "    * edit_details: set day (e.g. 2), meal_type ('breakfast'), target_meal_calories (450.0), and instructions.\n"
+        "• requested_diet_type: (MUST extract if user mentions diet preference: 'vegetarian'/'veg' -> 'veg', 'vegan' -> 'vegan', 'non-vegetarian'/'non-veg' -> 'non-veg')\n"
         "• target_plan_name: (string name if user mentions a plan by name like 'Good Meal' or in quotes)\n"
         "• target_plan_id: (integer plan id if user explicitly writes '#2' or 'Plan 2')\n"
         "• is_update_request: (true ONLY if user generally asks 'I want to update my meal plan' without specific meal slot details)\n"

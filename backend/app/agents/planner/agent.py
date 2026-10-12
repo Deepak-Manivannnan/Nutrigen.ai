@@ -343,46 +343,62 @@ class PlannerAgent(BaseAgent[MealPlan]):
             old_meal = target_day_plan.meals[meal_idx] if meal_idx is not None else None
             old_dish = old_meal.recipe_name if old_meal else "existing dish"
 
-            slot_cal = target_meal_cal or (
-                old_meal.calories if old_meal and old_meal.calories > 100
-                else (current_plan.target_calories * (0.3 if target_meal_type in ("breakfast", "dinner") else 0.4))
-            )
-
-            meal_prompt = (
-                f"You are the Meal Planner Agent. Generate a single replacement {target_meal_type} meal for Day {target_day}.\n"
-                f"- Meal type: {target_meal_type}\n"
-                f"- Replaces previous dish: '{old_dish}'\n"
-                f"- User modification request: '{instructions}'\n"
-                f"- Target calories: ~{int(slot_cal)} kcal (±5%)\n"
-                f"- Diet type: {plan_diet} (FOR VEGETARIAN: ZERO MEAT/CHICKEN/FISH/SEAFOOD, FOR VEGAN: ZERO ANIMAL PRODUCTS)\n"
-                f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
-                f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
-                f"- Provide realistic single-person ingredients with exact amount_grams.\n"
-                f"- Provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm).\n"
-            )
-            try:
-                replacement_meal: Meal = await self.llm.generate_structured(
-                    prompt=meal_prompt,
-                    response_schema=Meal
-                )
-                replacement_meal.meal_type = target_meal_type
-                replacement_meal.diet_type = plan_diet
-                replacement_meal.source = "user_specified"
-
+            # Get operation type from edit_details (default: replace)
+            operation = getattr(edit_details, "operation", None) or "replace"
+            
+            # Handle remove operation
+            if operation == "remove" or any(k in cl_inst for k in ["remove", "delete", "drop"]):
                 if meal_idx is not None:
-                    target_day_plan.meals[meal_idx] = replacement_meal
+                    removed_meal = target_day_plan.meals.pop(meal_idx)
+                    logger.info(f"[PlannerAgent] Removed meal '{removed_meal.recipe_name}' ({target_meal_type}) from Day {target_day}")
                 else:
-                    if any(k in cl_inst for k in ["add", "include", "put"]):
-                        target_day_plan.meals.append(replacement_meal)
-                    elif target_day_plan.meals:
-                        target_day_plan.meals[-1] = replacement_meal
-
+                    logger.warning(f"[PlannerAgent] Remove requested but meal_idx not found for {target_meal_type} on Day {target_day}")
+                
                 target_day_plan.total_calories = round(sum(m.calories for m in target_day_plan.meals), 1)
                 target_day_plan.total_protein_g = round(sum(m.protein_g for m in target_day_plan.meals), 1)
                 target_day_plan.total_carbs_g = round(sum(m.carbs_g for m in target_day_plan.meals), 1)
                 target_day_plan.total_fat_g = round(sum(m.fat_g for m in target_day_plan.meals), 1)
-            except Exception as e:
-                logger.error(f"[PlannerAgent] Error generating replacement meal: {e}")
+            else:
+                slot_cal = target_meal_cal or (
+                    old_meal.calories if old_meal and old_meal.calories > 100
+                    else (current_plan.target_calories * (0.3 if target_meal_type in ("breakfast", "dinner") else 0.4))
+                )
+
+                meal_prompt = (
+                    f"You are the Meal Planner Agent. Generate a single replacement {target_meal_type} meal for Day {target_day}.\n"
+                    f"- Meal type: {target_meal_type}\n"
+                    f"- Replaces previous dish: '{old_dish}'\n"
+                    f"- User modification request: '{instructions}'\n"
+                    f"- Target calories: ~{int(slot_cal)} kcal (±5%)\n"
+                    f"- Diet type: {plan_diet} (FOR VEGETARIAN: ZERO MEAT/CHICKEN/FISH/SEAFOOD, FOR VEGAN: ZERO ANIMAL PRODUCTS)\n"
+                    f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                    f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
+                    f"- Provide realistic single-person ingredients with exact amount_grams.\n"
+                    f"- Provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm).\n"
+                )
+                try:
+                    replacement_meal: Meal = await self.llm.generate_structured(
+                        prompt=meal_prompt,
+                        response_schema=Meal
+                    )
+                    replacement_meal.meal_type = target_meal_type
+                    replacement_meal.diet_type = plan_diet
+                    replacement_meal.source = "user_specified"
+
+                    if meal_idx is not None:
+                        target_day_plan.meals[meal_idx] = replacement_meal
+                    else:
+                        if any(k in cl_inst for k in ["add", "include", "put"]) or operation == "add":
+                            target_day_plan.meals.append(replacement_meal)
+                        elif target_day_plan.meals:
+                            target_day_plan.meals[-1] = replacement_meal
+
+                    target_day_plan.total_calories = round(sum(m.calories for m in target_day_plan.meals), 1)
+                    target_day_plan.total_protein_g = round(sum(m.protein_g for m in target_day_plan.meals), 1)
+                    target_day_plan.total_carbs_g = round(sum(m.carbs_g for m in target_day_plan.meals), 1)
+                    target_day_plan.total_fat_g = round(sum(m.fat_g for m in target_day_plan.meals), 1)
+                except Exception as e:
+                    logger.error(f"[PlannerAgent] Error generating replacement meal: {e}")
 
         # Recalculate average daily calories across all days
         if updated_plan.days:

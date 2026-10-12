@@ -16,6 +16,7 @@ class EditDetails(BaseModel):
     target_meal_calories: Optional[float] = Field(None, description="Target calories or calorie range for this specific single meal slot (e.g. 450.0). NOT daily calories!")
     dish_to_replace: Optional[str] = Field(None, description="Specific dish name or description to replace")
     instructions: Optional[str] = Field(None, description="Instructions for replacement or modification")
+    operation: Optional[str] = Field(None, description="Operation type: 'replace' (default), 'add', or 'remove'")
 
 IntentType = Literal[
     "chat",         # Greetings, pleasantries, polite conversation
@@ -24,12 +25,11 @@ IntentType = Literal[
     "out_of_scope", # Non-food, non-meal-planning questions (iPhones, Apple CEO, AI, paracetamol, etc.)
     "explain",      # Nutrition / calorie / diet questions
     "new_plan",     # Explicit request to create/plan meals
-    "edit_meal",    # User wants to swap/edit a meal, or general request to update a plan
+    "edit_meal",    # User wants to swap/edit/add/remove a meal, or general request to update a plan
     "approve_plan", # User wants to approve a plan and generate its grocery list
     "grocery_only", # User wants only grocery list / mandi prices
     "delete_plan",  # Request to delete a meal plan or confirming plan deletion
     "rename_plan",  # Request to rename a meal plan
-    "add_snack"     # Request to add a snack to a meal plan
 ]
 
 class UserIntentExtraction(BaseModel):
@@ -93,17 +93,9 @@ class UserIntentExtraction(BaseModel):
         default=False,
         description="True if user generally asks 'I want to update my meal plan' without specific meal edit details."
     )
-    snack_rebalance_choice: Optional[str] = Field(
-        None,
-        description="'low_calorie' or 'rebalance' if user answered snack choice prompt."
-    )
     target_day: Optional[int] = Field(
         None,
         description="Day number targeted for meal edit or snack (e.g. Day 3 -> 3)."
-    )
-    snack_dish: Optional[str] = Field(
-        None,
-        description="Optional dish name for snack if specified by user."
     )
 
     @field_validator("requested_exclusions", mode="before")
@@ -182,8 +174,10 @@ NutriGen's domain is STRICTLY LIMITED to:
    - "Okay go ahead and create it", "Create the plan", "Yes, make it"
    - CRITICAL: "Create it", "go ahead and create" after a proposal = new_plan, NOT approve_plan
 
-7. **edit_meal**: User explicitly asks to MODIFY, SWAP, REPLACE, or UPDATE a meal dish in an EXISTING plan
+7. **edit_meal**: User explicitly asks to MODIFY, SWAP, REPLACE, ADD, or REMOVE a meal dish/slot in an EXISTING plan
    - "Replace day 2 breakfast with oatmeal", "Swap lunch with paneer tikka"
+   - "Add a snack to day 3", "Include an evening snack in day 2"
+   - "Remove the snack from day 3", "Delete the snack meal on day 2"
    - "Update Good Meal: remove dairy from all days"
    - "I want to update my meal plan" (general, no specifics) → is_update_request = true
    - NEVER select for "delete a meal" or "delete meal" without specific day+slot!
@@ -200,8 +194,6 @@ NutriGen's domain is STRICTLY LIMITED to:
     - CRITICAL: "delete a meal" without specific day+slot = delete_plan, NEVER edit_meal!
 
 11. **rename_plan**: Requesting to rename a meal plan ("Rename Plan 1 to High Protein", "Rename my meal plan")
-
-12. **add_snack**: Asking to add/include a snack meal in a plan ("Add a snack to day 3", "Can I have an evening snack?")
 
 ---
 
@@ -238,6 +230,7 @@ NutriGen's domain is STRICTLY LIMITED to:
 - target_meal_calories: SLOT calories only (e.g. "400-500 kcal" → 450.0, "500 kcal" → 500.0)
 - instructions: Full user message for context
 - dish_to_replace: Specific dish mentioned ("replace paneer tikka")
+- operation: "add" (for "add a snack"), "remove" (for "remove the snack"), "replace" (default for "replace/swap/change")
 
 **explain_query**: For explain intent, the specific question
 
@@ -258,14 +251,8 @@ NutriGen's domain is STRICTLY LIMITED to:
 - True ONLY if general "update my meal plan" WITHOUT specific meal slot details
 - False if specific instructions given (replace, swap, exclusions, etc.)
 
-**snack_rebalance_choice**: For add_snack after prompt
-- "low calorie snack", "light snack" → "low_calorie"
-- "rebalance", "rebalance all 4 meals" → "rebalance"
-
 **target_day**: Day number for edits/snacks
 - "for day 3", "on day 2" → 3, 2
-
-**snack_dish**: Specific snack dish if mentioned
 
 ---
 
@@ -286,7 +273,9 @@ Use history to resolve:
 | "Create it" / "Go ahead and create" | new_plan | Creating NEW plan |
 | "Approve it" / "Approve this plan" | approve_plan | Finalizing EXISTING draft |
 | "Delete a meal" | delete_plan | No day+slot = delete whole plan |
-| "Replace day 2 breakfast" | edit_meal | Specific slot edit |
+| "Replace day 2 breakfast" | edit_meal | Specific slot edit (replace) |
+| "Add a snack to day 3" | edit_meal + operation=add | Add snack meal |
+| "Remove the snack from day 2" | edit_meal + operation=remove | Remove snack meal |
 | "I want to update my plan" | edit_meal + is_update_request=true | General, no specifics |
 | "Why 1800 kcal?" | explain | Nutrition question |
 | "What's my profile?" | profile_info | Profile inquiry |
@@ -325,7 +314,8 @@ async def extract_user_intent(
                 extraction.edit_details.meal_type,
                 extraction.edit_details.target_meal_calories,
                 extraction.edit_details.dish_to_replace,
-                extraction.edit_details.instructions
+                extraction.edit_details.instructions,
+                extraction.edit_details.operation
             ]
         ):
             extraction.edit_details = None

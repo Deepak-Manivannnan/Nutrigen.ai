@@ -91,8 +91,9 @@ export default function OnboardingPage() {
   function handleNext() {
     if (step === 1) {
       const ageVal = Number(form.age);
-      if (!form.age || isNaN(ageVal) || ageVal < 18) {
-        setAgeError('Age must be 18 or above.');
+      // Allow proceeding to next step if all basic fields are filled
+      // Age validation happens in real-time and at form submission
+      if (!form.age || !form.sex || !form.height_cm || !form.weight_kg) {
         return;
       }
       setAgeError('');
@@ -123,19 +124,32 @@ export default function OnboardingPage() {
 
   function canProceed() {
     if (step === 1) {
-      const ageVal = Number(form.age);
-      return form.age && !isNaN(ageVal) && ageVal >= 18 && form.height_cm && form.weight_kg && form.sex;
+      // Next button enabled when all 4 basic fields have any input
+      // Age validation happens separately in real-time and at form submission
+      return form.age && form.sex && form.height_cm && form.weight_kg;
     }
     return true;
   }
 
   function handleFinish() {
+    // Validate age at form submission
+    const ageVal = Number(form.age);
+    if (!form.age || isNaN(ageVal) || ageVal < 18) {
+      setAgeError('Age should be 18 or above.');
+      return;
+    }
+
     const profileData = {
       ...form,
       name: user?.name || '',
       age: Number(form.age),
       height_cm: Number(form.height_cm),
       weight_kg: Number(form.weight_kg),
+      fixed_meals: {
+        breakfast: form.fixed_breakfast,
+        lunch: form.fixed_lunch,
+        dinner: form.fixed_dinner,
+      },
     };
     createProfile(profileData);
     addToast('Profile created! Welcome to Nutrigen.ai 🎉', 'success');
@@ -184,7 +198,17 @@ export default function OnboardingPage() {
                         type="number"
                         placeholder="28"
                         value={form.age}
-                        onChange={e => { set('age', e.target.value); setAgeError(''); }}
+                        onChange={e => { 
+                          set('age', e.target.value); 
+                          // Clear error when user starts typing
+                          if (ageError) setAgeError(''); 
+                        }}
+                        onBlur={e => {
+                          const ageVal = Number(e.target.value);
+                          if (e.target.value && (isNaN(ageVal) || ageVal < 18)) {
+                            setAgeError('Age should be 18 or above.');
+                          }
+                        }}
                         id="onboard-age"
                         min="18"
                       />

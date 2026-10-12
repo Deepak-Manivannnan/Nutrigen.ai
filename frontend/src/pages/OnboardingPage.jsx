@@ -12,7 +12,23 @@ const STEPS = [
   { id: 5, label: 'Review' },
 ];
 
-function TagInput({ tags, onAdd, onRemove, placeholder }) {
+function AlphaOnlyInput({ value, onChange, placeholder, id, ...props }) {
+  const handleChange = (e) => {
+    const filtered = e.target.value.replace(/[^a-zA-Z\s,]/g, '');
+    onChange(filtered);
+  };
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={handleChange}
+      id={id}
+      {...props}
+    />
+  );
+}
+
+function TagInput({ tags, onAdd, onRemove, placeholder, allowAlphaOnly = false }) {
   const [input, setInput] = useState('');
 
   function handleKeyDown(e) {
@@ -22,6 +38,15 @@ function TagInput({ tags, onAdd, onRemove, placeholder }) {
       if (val && !tags.includes(val)) onAdd(val);
       setInput('');
     }
+  }
+
+  const handleChange = (e) => {
+    let val = e.target.value;
+    if (allowAlphaOnly) {
+      // Only allow alphabetic characters, spaces, commas, and hyphens
+      val = val.replace(/[^a-zA-Z\s,-]/g, '');
+    }
+    setInput(val);
   }
 
   return (
@@ -36,7 +61,7 @@ function TagInput({ tags, onAdd, onRemove, placeholder }) {
         className="tag-raw-input"
         placeholder={tags.length === 0 ? placeholder : ''}
         value={input}
-        onChange={e => setInput(e.target.value)}
+        onChange={handleChange}
         onKeyDown={handleKeyDown}
       />
     </div>
@@ -191,37 +216,38 @@ export default function OnboardingPage() {
                   <h2 className="onboarding-step-title">Basic information</h2>
                   <p className="onboarding-step-desc">Let's start with some basic details.</p>
                   <div className="onboarding-form">
-                    <div className="form-group">
-                      <label className="form-label">Age</label>
-                      <input
-                        className={`form-input${ageError ? ' form-input-error' : ''}`}
-                        type="number"
-                        placeholder="28"
-                        value={form.age}
-                        onChange={e => { 
-                          set('age', e.target.value); 
-                          // Clear error when user starts typing
-                          if (ageError) setAgeError(''); 
-                        }}
-                        onBlur={e => {
-                          const ageVal = Number(e.target.value);
-                          if (e.target.value && (isNaN(ageVal) || ageVal < 18)) {
-                            setAgeError('Age should be 18 or above.');
-                          }
-                        }}
-                        id="onboard-age"
-                        min="18"
-                      />
-                      {ageError && (
-                        <div className="form-error" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                          <AlertCircle size={13} />
-                          {ageError}
-                        </div>
-                      )}
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Gender</label>
-                      <OptionBtn options={[{ value: 'female', label: 'Female' }, { value: 'male', label: 'Male' }, { value: 'other', label: 'Other' }]} value={form.sex} onChange={v => set('sex', v)} />
+                    <div className="grid-2">
+                      <div className="form-group">
+                        <label className="form-label">Age</label>
+                        <input
+                          className={`form-input${ageError ? ' form-input-error' : ''}`}
+                          type="number"
+                          placeholder="28"
+                          value={form.age}
+                          onChange={e => { 
+                            set('age', e.target.value); 
+                            if (ageError) setAgeError(''); 
+                          }}
+                          onBlur={e => {
+                            const ageVal = Number(e.target.value);
+                            if (e.target.value && (isNaN(ageVal) || ageVal < 18)) {
+                              setAgeError('Age should be 18 or above.');
+                            }
+                          }}
+                          id="onboard-age"
+                          min="18"
+                        />
+                        {ageError && (
+                          <div className="form-error" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                            <AlertCircle size={13} />
+                            {ageError}
+                          </div>
+                        )}
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Gender</label>
+                        <OptionBtn options={[{ value: 'female', label: 'Female' }, { value: 'male', label: 'Male' }, { value: 'other', label: 'Other' }]} value={form.sex} onChange={v => set('sex', v)} />
+                      </div>
                     </div>
                     <div className="grid-2">
                       <div className="form-group">
@@ -283,6 +309,7 @@ export default function OnboardingPage() {
                         onAdd={t => set('dislikes', [...form.dislikes, t])}
                         onRemove={t => set('dislikes', form.dislikes.filter(d => d !== t))}
                         placeholder="e.g. broccoli, bitter gourd"
+                        allowAlphaOnly
                       />
                     </div>
                   </div>

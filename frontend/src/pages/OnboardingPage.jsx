@@ -9,8 +9,7 @@ const STEPS = [
   { id: 2, label: 'Lifestyle' },
   { id: 3, label: 'Diet' },
   { id: 4, label: 'Allergies' },
-  { id: 5, label: 'Fixed meals' },
-  { id: 6, label: 'Review' },
+  { id: 5, label: 'Review' },
 ];
 
 function TagInput({ tags, onAdd, onRemove, placeholder }) {
@@ -72,7 +71,6 @@ const INITIAL_FORM = {
   age: '', sex: 'female', height_cm: '', weight_kg: '',
   activity_level: 'medium', goal: 'maintain',
   diet_type: 'non-veg', dislikes: [], allergies: [],
-  fixed_breakfast: '', fixed_lunch: '', fixed_dinner: '',
 };
 
 const PREDEFINED_ALLERGIES = ['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish'];
@@ -99,7 +97,7 @@ export default function OnboardingPage() {
       }
       setAgeError('');
     }
-    if (step < 6) setStep(s => s + 1);
+    if (step < 5) setStep(s => s + 1);
   }
   function handleBack() {
     if (step > 1) setStep(s => s - 1);
@@ -129,6 +127,19 @@ export default function OnboardingPage() {
       return form.age && !isNaN(ageVal) && ageVal >= 18 && form.height_cm && form.weight_kg && form.sex;
     }
     return true;
+  }
+
+  function handleFinish() {
+    const profileData = {
+      ...form,
+      name: user?.name || '',
+      age: Number(form.age),
+      height_cm: Number(form.height_cm),
+      weight_kg: Number(form.weight_kg),
+    };
+    createProfile(profileData);
+    addToast('Profile created! Welcome to Nutrigen.ai 🎉', 'success');
+    navigate('/app/home');
   }
 
   return (
@@ -291,28 +302,7 @@ export default function OnboardingPage() {
                 </>
               )}
 
-              {/* Step 5: Fixed Meals */}
-              {step === 5 && (
-                <>
-                  <h2 className="onboarding-step-title">Fixed meals <span style={{ fontSize: 14, fontWeight: 400, color: 'var(--gray-400)' }}>(optional)</span></h2>
-                  <p className="onboarding-step-desc">If you always have specific meals at certain times, tell us and we'll keep them fixed in your plan.</p>
-                  <div className="onboarding-form">
-                    {[
-                      { key: 'fixed_breakfast', label: '🌅 Fixed Breakfast', placeholder: 'e.g. 3 boiled eggs with brown bread' },
-                      { key: 'fixed_lunch', label: '☀️ Fixed Lunch', placeholder: 'e.g. dal rice with salad' },
-                      { key: 'fixed_dinner', label: '🌙 Fixed Dinner', placeholder: 'Leave blank if flexible' },
-                    ].map(f => (
-                      <div key={f.key} className="form-group">
-                        <label className="form-label">{f.label}</label>
-                        <input className="form-input" placeholder={f.placeholder} value={form[f.key]} onChange={e => set(f.key, e.target.value)} />
-                      </div>
-                    ))}
-                    <p className="form-hint">Fixed meals will be locked in your plan. You can change them later through Chat.</p>
-                  </div>
-                </>
-              )}
-
-              {/* Step 6: Review */}
+              {/* Step 5: Review */}
               {step === 6 && (
                 <>
                   <h2 className="onboarding-step-title">Review your profile</h2>
@@ -350,7 +340,7 @@ export default function OnboardingPage() {
                 <ChevronLeft size={14} />
                 {step === 1 ? 'Back to home' : 'Back'}
               </button>
-              {step < 6 ? (
+              {step < 5 ? (
                 <button className="btn btn-primary btn-sm" onClick={handleNext} disabled={!canProceed()} id="onboard-next">
                   Next <ChevronRight size={14} />
                 </button>

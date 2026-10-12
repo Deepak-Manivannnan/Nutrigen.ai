@@ -835,65 +835,69 @@ async def run_meal_planner(
 
         req_cal = intent_data.requested_calories or user_profile.get("target_calories")
         req_days = intent_data.requested_days or settings.default_plan_days
+
+        # Guardrail check with diet conflict detection
         is_safe, err_msg, meta = supervisor.check_input_guardrail(
             user_profile=user_profile,
             requested_calories=req_cal,
             requested_days=req_days,
-            fixed_meals=fixed
+            fixed_meals=fixed,
+            requested_diet_type=intent_data.requested_diet_type
         )
 
-        # Check Diet Preference Conflict:
-        if diet_conflict:
-            req_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(req_diet, req_diet.capitalize())
-            profile_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(profile_diet, profile_diet.capitalize())
-            days_val = req_days
+        # Handle diet conflict from guardrail (LLM generates natural prompt)
+        if meta and meta.get("action") == "diet_conflict":
+            profile_diet = meta.get("profile_diet", "veg")
+            requested_diet = meta.get("requested_diet", "veg")
             cal_val = int(req_cal or 2000)
+            days_val = req_days
+            is_calorie_unsafe = not is_safe
 
-            if not is_safe:
-                # Both diet conflict AND calorie safety trigger!
+            # Use LLM to generate natural conflict resolution prompt
+            conflict_prompt = await supervisor.generate_diet_conflict_prompt(
+                user_name=user_profile.get("name", "there"),
+                profile_diet=profile_diet,
+                requested_diet=requested_diet,
+                cal_val=cal_val,
+                days_val=days_val,
+                is_calorie_unsafe=is_calorie_unsafe,
+                meta=meta,
+                history=history
+            )
+            state.system_message = conflict_prompt
+            state.status = "conversational"
+            
+            # Quick options for one-click resolution
+            req_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(requested_diet, requested_diet.capitalize())
+            profile_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(profile_diet, profile_diet.capitalize())
+            if is_calorie_unsafe:
                 suggested = int(meta.get("suggested_target", 2250.0))
-                min_safe = int(meta.get("min_safe", 2150.0))
-                max_safe = int(meta.get("max_safe", 2350.0))
-                msg = (
-                    f"Your profile preference is **{profile_display}**, but you requested a **{req_display}** meal plan. "
-                    f"In addition, your requested target of **{cal_val:,} kcal/day** is below your maintenance range of {min_safe:,} – {max_safe:,} kcal.\n\n"
-                    f"Can I create a **{days_val}-day {req_display}** plan for you? Would you like me to plan it at your requested **{cal_val:,} kcal/day**, or at your recommended target of **{suggested:,} kcal/day**?"
-                )
-                state.system_message = msg
-                state.status = "conversational"
                 state.quick_options = [
-                    {"label": f"Plan {days_val} days at {cal_val:,} kcal", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {cal_val} kcal (confirmed)"},
+                    {"label": f"Plan {days_val} days at {cal_val:,} kcal ({req_display})", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {cal_val} kcal (confirmed)"},
                     {"label": f"Plan {days_val} days at {suggested:,} kcal (Recommended)", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {suggested} kcal (confirmed)"}
                 ]
-                await supervisor.log_step(
-                    state=state,
-                    from_agent="supervisor",
-                    to_agent="user",
-                    msg_type="feedback",
-                    content=msg,
-                    payload={"action": "diet_and_calorie_conflict_prompt", "profile_diet": profile_diet, "requested_diet": req_diet, "calories": cal_val}
-                )
-                return state
             else:
-                msg = (
-                    f"Your profile preference is **{profile_display}**, but now you are asking for a **{req_display}** meal plan. "
-                    f"Can I go ahead and create with the {req_display} meal plan, or should I take your default profile {profile_display} diet type for planning this meal?"
-                )
-                state.system_message = msg
-                state.status = "conversational"
                 state.quick_options = [
                     {"label": f"Create {req_display} Plan", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {cal_val} kcal (confirmed)"},
                     {"label": f"Use {profile_display} (Default)", "value": f"Create {days_val}-day {profile_display.lower()} meal plan for {cal_val} kcal (confirmed)"}
                 ]
-                await supervisor.log_step(
-                    state=state,
-                    from_agent="supervisor",
-                    to_agent="user",
-                    msg_type="feedback",
-                    content=msg,
-                    payload={"action": "diet_conflict_prompt", "profile_diet": profile_diet, "requested_diet": req_diet}
-                )
-                return state
+            
+            await supervisor.log_step(
+                state=state,
+                from_agent="supervisor",
+                to_agent="user",
+                msg_type="feedback",
+                content=conflict_prompt,
+                payload={"action": "diet_conflict_prompt", "profile_diet": profile_diet, "requested_diet": requested_diet}
+            )
+            return state
+
+        # If user confirmed diet conflict, proceed with chosen diet
+        if intent_data.diet_conflict_confirmed and intent_data.chosen_diet_type:
+            effective_diet = intent_data.chosen_diet_type
+        else:
+            # No conflict or not confirmed - use effective diet logic
+            effective_diet = intent_data.chosen_diet_type or req_diet or profile_diet
 
         # Resolved effective diet type for this plan
         effective_diet = intent_data.chosen_diet_type or req_diet or profile_diet

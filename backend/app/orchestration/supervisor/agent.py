@@ -111,6 +111,75 @@ class SupervisorAgent:
             return ""
         return "Conversation history:\n" + "\n".join(lines) + "\n\n"
 
+    async def generate_diet_conflict_prompt(
+        self,
+        user_name: str,
+        profile_diet: str,
+        requested_diet: str,
+        cal_val: int,
+        days_val: int,
+        is_calorie_unsafe: bool,
+        meta: Dict[str, Any],
+        history: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """
+        Generates a natural, conversational prompt for diet conflict resolution.
+        Uses LLM intelligence instead of hardcoded templates.
+        """
+        name = (user_name or "").strip() or "there"
+        history_ctx = self._format_history_context(history)
+        
+        profile_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(profile_diet, profile_diet.capitalize())
+        requested_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(requested_diet, requested_diet.capitalize())
+        
+        if is_calorie_unsafe:
+            suggested = int(meta.get("suggested_target", 2250.0))
+            min_safe = int(meta.get("min_safe", 2150.0))
+            max_safe = int(meta.get("max_safe", 2350.0))
+            prompt = (
+                f"You are NutriGen, a helpful meal planning companion talking with {name}.\n\n"
+                f"{history_ctx}"
+                f"Situation: The user's profile diet preference is **{profile_display}**, but they just requested a **{requested_display}** meal plan "
+                f"for {days_val} days at {cal_val:,} kcal/day.\n\n"
+                f"Additionally, {cal_val:,} kcal/day is below their safe maintenance range of {min_safe:,}–{max_safe:,} kcal. "
+                f"The recommended target is {suggested:,} kcal/day.\n\n"
+                f"Your task: Explain both conflicts (diet + calories) naturally in 2-3 sentences. "
+                f"Ask whether they want to: (1) proceed with {requested_display} at {cal_val:,} kcal, "
+                f"or (2) use the recommended {suggested:,} kcal with {requested_display} diet, "
+                f"or (3) use their profile {profile_display} diet.\n"
+                f"CRITICAL: Do NOT start with 'Hey {name}' or greetings. Be direct, warm, and clear. "
+                f"Present options naturally without bullet points."
+            )
+        else:
+            prompt = (
+                f"You are NutriGen, a helpful meal planning companion talking with {name}.\n\n"
+                f"{history_ctx}"
+                f"Situation: The user's profile diet preference is **{profile_display}**, but they just requested a **{requested_display}** meal plan "
+                f"for {days_val} days at {cal_val:,} kcal/day.\n\n"
+                f"Your task: Explain the diet preference mismatch naturally in 2-3 sentences. "
+                f"Ask whether they want to: (1) proceed with {requested_display}, "
+                f"or (2) use their profile {profile_display} diet.\n"
+                f"CRITICAL: Do NOT start with 'Hey {name}' or greetings. Be direct, warm, and clear. "
+                f"Present options naturally without bullet points."
+            )
+        
+        try:
+            return await self.llm.generate_text(prompt)
+        except Exception as e:
+            # Fallback to simple template if LLM fails
+            if is_calorie_unsafe:
+                suggested = int(meta.get("suggested_target", 2250.0))
+                return (
+                    f"Your profile preference is {profile_display}, but you requested a {requested_display} meal plan at {cal_val:,} kcal/day. "
+                    f"That's below your safe range ({min_safe:,}–{max_safe:,} kcal). "
+                    f"Would you like me to create the {requested_display} plan at {cal_val:,} kcal, "
+                    f"or at the recommended {suggested:,} kcal, or use your {profile_display} profile instead?"
+                )
+            return (
+                f"Your profile preference is {profile_display}, but you requested a {requested_display} meal plan. "
+                f"Would you like me to proceed with {requested_display} or use your {profile_display} profile diet instead?"
+            )
+
     async def generate_chat_response(
         self,
         user_name: str,

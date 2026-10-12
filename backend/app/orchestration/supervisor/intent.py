@@ -308,15 +308,14 @@ async def extract_user_intent(
             response_schema=UserIntentExtraction
         )
         # Post-process: convert empty EditDetails to None for consistency
-        if extraction.edit_details and all(
-            v is None for v in [
-                extraction.edit_details.day,
-                extraction.edit_details.meal_type,
-                extraction.edit_details.target_meal_calories,
-                extraction.edit_details.dish_to_replace,
-                extraction.edit_details.instructions,
-                extraction.edit_details.operation
-            ]
+        # Consider empty if all fields are None OR if operation is default 'replace' with no actual edit params
+        ed = extraction.edit_details
+        if ed and (
+            all(v is None for v in [
+                ed.day, ed.meal_type, ed.target_meal_calories, ed.dish_to_replace, ed.instructions
+            ]) or (ed.operation == "replace" and all(v is None for v in [
+                ed.day, ed.meal_type, ed.target_meal_calories, ed.dish_to_replace
+            ]))
         ):
             extraction.edit_details = None
         

@@ -6,7 +6,8 @@ def validate_input_request(
     user_profile: Dict[str, Any],
     requested_calories: Optional[float],
     requested_days: Optional[int],
-    fixed_meals: Optional[Dict[str, Any]] = None
+    fixed_meals: Optional[Dict[str, Any]] = None,
+    requested_diet_type: Optional[str] = None
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """
     Input guardrail:
@@ -15,6 +16,7 @@ def validate_input_request(
     3. Compares requested calories with Mifflin-St Jeor safe range.
        If out of range, blocks and provides the clinically safe range.
     4. Checks fixed meals against diet type and allergies.
+    5. Checks requested diet type vs profile diet type.
     """
     required_fields = ["age", "sex", "height_cm", "weight_kg", "activity_level", "diet_type"]
     for field in required_fields:
@@ -37,19 +39,17 @@ def validate_input_request(
     diet_type = str(user_profile["diet_type"]).lower()
     allergies = [str(a).lower() for a in user_profile.get("allergies", [])]
 
-    # Use persisted calorie data if available, otherwise calculate
+    # Calculate calorie info first (needed for diet conflict response)
     min_safe = user_profile.get("min_safe_calories")
     max_safe = user_profile.get("max_safe_calories")
     suggested_target = user_profile.get("suggested_target_calories")
 
     if min_safe is None or max_safe is None or suggested_target is None:
-        # Fallback to calculation if not persisted yet
         cal_info = calculate_mifflin_st_jeor(age, sex, height, weight, activity, goal)
         min_safe = cal_info["min_safe_calories"]
         max_safe = cal_info["max_safe_calories"]
         suggested_target = cal_info["suggested_target"]
     else:
-        # Build cal_info from persisted data for consistent return format
         cal_info = {
             "min_safe_calories": min_safe,
             "max_safe_calories": max_safe,
@@ -59,8 +59,31 @@ def validate_input_request(
     # 1. Days check
     days = requested_days if (requested_days and 1 <= requested_days <= settings.max_plan_days) else settings.default_plan_days
 
-    # 3. Calorie range check
+    # 3. Calorie range check (to get target_cal)
     target_cal = requested_calories if requested_calories is not None else suggested_target
+
+    # 2. Diet conflict check: requested diet vs profile diet
+    if requested_diet_type:
+        req_diet = str(requested_diet_type).lower()
+        valid_diets = {"veg", "non-veg", "vegan", "vegetarian"}
+        if req_diet in valid_diets and req_diet != diet_type:
+            profile_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(diet_type, diet_type.capitalize())
+            requested_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(req_diet, req_diet.capitalize())
+            return (
+                False,
+                f"Diet conflict: your profile preference is **{profile_display}**, but you requested a **{requested_display}** meal plan.",
+                {
+                    "action": "diet_conflict",
+                    "profile_diet": diet_type,
+                    "requested_diet": req_diet,
+                    "cal_info": cal_info,
+                    "days": days,
+                    "calorie_target": target_cal,
+                    "suggested_target": suggested_target,
+                    "min_safe": min_safe,
+                    "max_safe": max_safe
+                }
+            )
 
     if target_cal < min_safe or target_cal > max_safe:
         relation = "below" if target_cal < min_safe else "above"
@@ -143,4 +166,3 @@ async def check_out_of_scope_query(user_message: str) -> Tuple[bool, Optional[st
     if extraction.intent == "out_of_scope":
         return True, f"Query '{user_message}' is outside the domain of meal planning and nutrition."
     return False, None
-

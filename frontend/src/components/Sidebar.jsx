@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Home, MessageSquare, ClipboardList, ShoppingCart, User, ChevronUp, LogOut, Edit3, X, Check } from 'lucide-react';
 import { useApp } from '../context/AppContext';
@@ -257,12 +257,33 @@ function EditProfileModal({ onClose }) {
     diet_type: profile?.diet_type || 'veg',
   });
 
+  const [errors, setErrors] = useState({
+    age: '',
+  });
+
   const [selectedAllergies, setSelectedAllergies] = useState(
     Array.isArray(profile?.allergies) ? [...profile.allergies] : []
   );
   const [customAllergyInput, setCustomAllergyInput] = useState('');
 
   const COMMON_ALLERGENS = ['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish'];
+
+  // Validation function
+  const validateForm = useCallback(() => {
+    const newErrors = { age: '' };
+    
+    // Age validation
+    const ageValue = Number(form.age);
+    if (form.age !== '' && (isNaN(ageValue) || ageValue < 18)) {
+      newErrors.age = 'Age must be 18 or above';
+    }
+    
+    setErrors(newErrors);
+    return Object.values(newErrors).every(e => e === '');
+  }, [form.age]);
+
+  // Check if form has any errors
+  const hasErrors = Object.values(errors).some(e => e !== '');
 
   function toggleAllergen(allergen) {
     setSelectedAllergies(prev => {
@@ -279,19 +300,25 @@ function EditProfileModal({ onClose }) {
     if ((e.key === 'Enter' || e.key === ',') && customAllergyInput.trim()) {
       e.preventDefault();
       const val = customAllergyInput.trim().replace(/,$/, '');
-      if (val && !selectedAllergies.some(a => a.toLowerCase() === val.toLowerCase())) {
-        setSelectedAllergies(prev => [...prev, val]);
+      // Only allow alphabetic characters, spaces, hyphens
+      const filteredVal = val.replace(/[^a-zA-Z\s-]/g, '');
+      if (filteredVal && !selectedAllergies.some(a => a.toLowerCase() === filteredVal.toLowerCase())) {
+        setSelectedAllergies(prev => [...prev, filteredVal]);
       }
       setCustomAllergyInput('');
     }
   }
 
-  function removeAllergy(allergy) {
-    setSelectedAllergies(prev => prev.filter(a => a.toLowerCase() !== allergy.toLowerCase()));
+  function handleCustomAllergyChange(e) {
+    // Only allow alphabetic characters, spaces, hyphens, commas
+    const filtered = e.target.value.replace(/[^a-zA-Z\s,-]/g, '');
+    setCustomAllergyInput(filtered);
   }
 
   function handleSave(e) {
     e.preventDefault();
+    if (!validateForm()) return;
+    
     updateProfile({
       ...form,
       age: Number(form.age),
@@ -314,18 +341,34 @@ function EditProfileModal({ onClose }) {
           <div className="modal-body">
             {[
               { key: 'name', label: 'Name', type: 'text' },
-              { key: 'age', label: 'Age', type: 'number' },
+              { key: 'age', label: 'Age', type: 'number', error: errors.age },
               { key: 'height_cm', label: 'Height (cm)', type: 'number' },
               { key: 'weight_kg', label: 'Weight (kg)', type: 'number' },
             ].map(f => (
               <div className="form-group" key={f.key}>
                 <label className="form-label">{f.label}</label>
                 <input
-                  className="form-input"
+                  className={`form-input${f.error ? ' form-input-error' : ''}`}
                   type={f.type}
                   value={form[f.key]}
-                  onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))}
+                  onChange={e => {
+                    setForm(p => ({ ...p, [f.key]: e.target.value }));
+                    if (f.key === 'age') {
+                      const ageValue = Number(e.target.value);
+                      if (e.target.value !== '' && (isNaN(ageValue) || ageValue < 18)) {
+                        setErrors(prev => ({ ...prev, age: 'Age must be 18 or above' }));
+                      } else {
+                        setErrors(prev => ({ ...prev, age: '' }));
+                      }
+                    }
+                  }}
+                  onBlur={validateForm}
                 />
+                {f.error && (
+                  <div className="form-error" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, color: 'var(--red-600)', fontSize: 'var(--text-xs)' }}>
+                    {f.error}
+                  </div>
+                )}
               </div>
             ))}
             <div className="form-group">
@@ -353,25 +396,9 @@ function EditProfileModal({ onClose }) {
               </select>
             </div>
 
-            {/* Allergies with interactive chips & unselect */}
+            {/* Allergies & Restrictions */}
             <div className="form-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <label className="form-label" style={{ margin: 0 }}>Allergies &amp; Restrictions</label>
-                {selectedAllergies.length > 0 ? (
-                  <button
-                    type="button"
-                    style={{ fontSize: 12, color: 'var(--red-600)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                    onClick={() => setSelectedAllergies([])}
-                    id="clear-all-allergies-btn"
-                  >
-                    Clear all (Set to None)
-                  </button>
-                ) : (
-                  <span style={{ fontSize: 12, color: 'var(--green-600)', fontWeight: 500 }}>
-                    ✓ None selected
-                  </span>
-                )}
-              </div>
+              <label className="form-label" style={{ margin: 0 }}>Allergies & Restrictions</label>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
                 {COMMON_ALLERGENS.map(item => {
                   const isChecked = selectedAllergies.some(a => a.toLowerCase() === item.toLowerCase());
@@ -394,26 +421,27 @@ function EditProfileModal({ onClose }) {
                 type="text"
                 placeholder="Type other allergy and press Enter..."
                 value={customAllergyInput}
-                onChange={e => setCustomAllergyInput(e.target.value)}
+                onChange={e => {
+                  // Only allow alphabetic characters, spaces, hyphens, commas
+                  const filtered = e.target.value.replace(/[^a-zA-Z\s,-]/g, '');
+                  setCustomAllergyInput(filtered);
+                }}
                 onKeyDown={handleAddCustomAllergy}
                 style={{ fontSize: 13 }}
                 id="custom-allergy-input"
               />
-              {selectedAllergies.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                  {selectedAllergies.map(a => (
-                    <span key={a} className="tag-chip" style={{ fontSize: 12, padding: '3px 8px' }}>
-                      {a}
-                      <button type="button" className="tag-chip-remove" onClick={() => removeAllergy(a)}>×</button>
-                    </span>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-outline btn-sm" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn btn-primary btn-sm" id="save-profile-btn">Save Changes</button>
+            <button 
+              type="submit" 
+              className={`btn btn-primary btn-sm${hasErrors ? ' disabled' : ''}`}
+              id="save-profile-btn"
+              disabled={hasErrors}
+            >
+              Save Changes
+            </button>
           </div>
         </form>
       </div>

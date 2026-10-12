@@ -1,30 +1,9 @@
-import React from 'react';
-import { Navigate, Outlet } from 'react-router-dom';
-import { useApp } from '../context/AppContext';
+import React, { useState } from 'react';
+import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import ToastContainer from './ToastContainer';
 import { Logo } from './Logo';
 import { Menu } from 'lucide-react';
-
-export function ProtectedRoute() {
-  const { user } = useApp();
-  
-  if (!user) {
-    return <Navigate to="/signin" replace />;
-  }
-  
-  return <Outlet />;
-}
-
-export function PublicOnlyRoute({ children }) {
-  const { user } = useApp();
-  
-  if (user) {
-    return <Navigate to="/app/home" replace />;
-  }
-  
-  return children;
-}
 
 export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);

@@ -44,7 +44,6 @@ app.include_router(plans_router, prefix="/api")
 app.include_router(trace_router, prefix="/api")
 app.include_router(streaming_router, prefix="/api")
 
-@app.get("/health")
 @app.get("/api/health")
 async def health_check():
     return {

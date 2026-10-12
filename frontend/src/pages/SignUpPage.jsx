@@ -49,7 +49,7 @@ export default function SignUpPage() {
       const data = await res.json();
       await signIn(data);
       addToast('Account created! Complete your profile.', 'success');
-      navigate('/onboarding', { replace: true });
+      navigate('/onboarding');
     } catch (err) {
       setError(err.message || 'Unable to sign up. Please try again.');
     } finally {

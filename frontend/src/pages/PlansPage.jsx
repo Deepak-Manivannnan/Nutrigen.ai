@@ -91,7 +91,6 @@ export default function PlansPage() {
   const navigate = useNavigate();
   const {
     plans,
-    plansLoading,
     activePlanId,
     setActivePlanId,
     approvePlan,
@@ -161,23 +160,6 @@ export default function PlansPage() {
     addToast('Sample 7-day meal plan created!', 'success');
   }
 
-  // Handle loading state
-  if (plansLoading) {
-    return (
-      <div className="page-content" id="plans-page">
-        <div className="page-header">
-          <h1 className="page-title">Weekly Meal Plans</h1>
-          <p className="page-subtitle">Review, adjust, and approve your agent-generated meal plans.</p>
-        </div>
-        <div className="card empty-state" style={{ padding: '60px var(--space-6)' }}>
-          <div className="empty-icon">📋</div>
-          <h2 className="empty-title">Loading meal plans...</h2>
-          <p className="empty-desc">Loading your meal plans from the database...</p>
-        </div>
-      </div>
-    );
-  }
-
   if (!activePlan || plans.length === 0) {
     return (
       <div className="page-content" id="plans-page">
@@ -190,7 +172,7 @@ export default function PlansPage() {
           <div className="empty-icon">📋</div>
           <h2 className="empty-title">No meal plans found</h2>
           <p className="empty-desc">
-            You don't have any meal plans yet. Start a conversation with our multi-agent assistant to generate your first personalized plan.
+            You don't have an active meal plan yet. Start a conversation with our multi-agent assistant to generate your first personalized plan.
           </p>
           <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
             <button

@@ -1027,7 +1027,8 @@ async def run_meal_planner(
     # =========================================================================
     # Step 10: Persist Plan to Database & Format Friendly Response
     # =========================================================================
-    if final_state.current_plan and final_state.status in ("reviewing", "approved"):
+    # Persist plan if it exists and status indicates completion (reviewing/approved/escalated/failed)
+    if final_state.current_plan and final_state.status in ("reviewing", "approved", "escalated", "failed"):
         try:
             if session:
                 repo = PlanRepository(session)
@@ -1035,16 +1036,17 @@ async def run_meal_planner(
                     is_edit_previously_approved = bool(matched_plan and getattr(matched_plan, "status", None) == "approved")
                     new_version = (existing_plan.version or 1) + 1 if is_edit_previously_approved else (existing_plan.version or 1)
                     final_state.current_plan.version = new_version
+                    persist_status = final_state.status if final_state.status in ("escalated", "failed") else "draft"
                     updated_p = await repo.update_plan(
                         plan_id=db_plan_id,
                         meal_plan=final_state.current_plan,
                         grocery_list=None,  # Reset grocery list until user approves!
-                        status="draft",  # Version X Draft upon modification!
+                        status=persist_status,
                         increment_version=is_edit_previously_approved
                     )
                     final_state.plan_id = db_plan_id
                     final_state.plan_version = new_version
-                    final_state.status = "draft"
+                    final_state.status = persist_status
                     clean_inst = getattr(intent_data.edit_details, "instructions", "") or user_message
                     clean_inst = re.sub(r'\(Plan\s*#\d+\):?', '', clean_inst, flags=re.IGNORECASE).strip()
                     plan_title = getattr(final_state.current_plan, "name", None) or (matched_plan.name if matched_plan else "your meal plan")
@@ -1076,16 +1078,16 @@ async def run_meal_planner(
                         calorie_target=final_state.current_plan.target_calories,
                         meal_plan=final_state.current_plan,
                         grocery_list=None,  # Do not generate grocery list until user approves!
-                        status="draft",  # Version 1 Draft upon initial creation!
+                        status=persist_status,
                         name=p_name,
                         diet_type=plan_diet_str,
                         version=1
                     )
                     final_state.plan_id = created_p.id
                     final_state.plan_version = 1
-                    final_state.status = "draft"
+                    final_state.status = persist_status
                     context_prompt = (
-                        f"Successfully generated new meal plan '{p_name}' (Version 1 Draft) with a target of {int(final_state.current_plan.target_calories):,} kcal/day across {len(final_state.current_plan.days)} days. "
+                        f"Successfully generated new meal plan '{p_name}' (Version 1 {persist_status.capitalize()}) with a target of {int(final_state.current_plan.target_calories):,} kcal/day across {len(final_state.current_plan.days)} days. "
                         f"In natural, polite, friendly conversational English, let the user know their meal plan has been created and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready."
                     )
                     final_state.system_message = await supervisor.generate_conversational_response(
@@ -1102,6 +1104,7 @@ async def run_meal_planner(
             else:
                 async with AsyncSessionLocal() as temp_session:
                     repo = PlanRepository(temp_session)
+                    persist_status = final_state.status if final_state.status in ("escalated", "failed") else "draft"
                     if intent_data.intent == "edit_meal" and existing_plan and db_plan_id:
                         is_edit_previously_approved = bool(matched_plan and getattr(matched_plan, "status", None) == "approved")
                         new_version = (existing_plan.version or 1) + 1 if is_edit_previously_approved else (existing_plan.version or 1)
@@ -1110,12 +1113,12 @@ async def run_meal_planner(
                             plan_id=db_plan_id,
                             meal_plan=final_state.current_plan,
                             grocery_list=None,
-                            status="draft",
+                            status=persist_status,
                             increment_version=is_edit_previously_approved
                         )
                         final_state.plan_id = db_plan_id
                         final_state.plan_version = new_version
-                        final_state.status = "draft"
+                        final_state.status = persist_status
                         clean_inst = getattr(intent_data.edit_details, "instructions", "") or user_message
                         clean_inst = re.sub(r'\(Plan\s*#\d+\):?', '', clean_inst, flags=re.IGNORECASE).strip()
                         plan_title = getattr(final_state.current_plan, "name", "your meal plan")
@@ -1141,22 +1144,23 @@ async def run_meal_planner(
                         display_diet = "Non-Veg" if plan_diet_str == "non-veg" else plan_diet_str.capitalize()
                         p_name = getattr(final_state, "plan_name", None) or getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
                         final_state.current_plan.name = p_name
+                        persist_status = final_state.status if final_state.status in ("escalated", "failed") else "draft"
                         created_p = await repo.create_plan(
                             user_id=user_id,
                             days=len(final_state.current_plan.days),
                             calorie_target=final_state.current_plan.target_calories,
                             meal_plan=final_state.current_plan,
                             grocery_list=None,
-                            status="draft",
+                            status=persist_status,
                             name=p_name,
                             diet_type=plan_diet_str,
                             version=1
                         )
                         final_state.plan_id = created_p.id
                         final_state.plan_version = 1
-                        final_state.status = "draft"
+                        final_state.status = persist_status
                         context_prompt = (
-                            f"Successfully generated new meal plan '{p_name}' (Version 1 Draft) with a target of {int(final_state.current_plan.target_calories):,} kcal/day across {len(final_state.current_plan.days)} days. "
+                            f"Successfully generated new meal plan '{p_name}' (Version 1 {persist_status.capitalize()}) with a target of {int(final_state.current_plan.target_calories):,} kcal/day across {len(final_state.current_plan.days)} days. "
                             f"In natural, polite, friendly conversational English, let the user know their meal plan has been created and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready."
                         )
                         final_state.system_message = await supervisor.generate_conversational_response(

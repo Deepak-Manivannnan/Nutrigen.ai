@@ -894,16 +894,11 @@ async def run_meal_planner(
     # Step 8: Handle New Plan (Diet Conflict Check & Calorie Guardrails)
     # =========================================================================
     # Check and apply requested ingredient exclusions (e.g. pork, beef, turkey, dairy) for all planning/editing intents
+    # Exclusions are separate from allergies - they only apply to the current meal plan, not permanently stored
     if intent_data.intent in ("new_plan", "edit_meal"):
-        if "allergies" not in user_profile:
-            user_profile["allergies"] = []
-        for exc in (intent_data.requested_exclusions or []):
-            if exc not in [str(a).lower() for a in user_profile["allergies"]]:
-                user_profile["allergies"].append(exc)
-        if re.search(r'\b(diary|dairy)\b', user_message, re.IGNORECASE):
-            if "dairy" not in [str(a).lower() for a in user_profile["allergies"]]:
-                user_profile["allergies"].append("dairy")
+        # Exclusions are passed to planner separately, not added to user profile allergies
         state.user_profile["allergies"] = list(user_profile.get("allergies", []))
+        # Exclusions will be passed to planner via state.intent_data.requested_exclusions
 
     if intent_data.intent == "new_plan":
 

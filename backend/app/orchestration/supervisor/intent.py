@@ -51,7 +51,7 @@ class UserIntentExtraction(BaseModel):
     )
     requested_exclusions: List[str] = Field(
         default_factory=list,
-        description="Ingredients or food categories to exclude (e.g. ['dairy'] if 'dont have dairy/diary foods')."
+        description="Ingredients or food categories to exclude (e.g. ['dairy'] if 'dont have dairy foods')."
     )
     diet_conflict_confirmed: bool = Field(
         default=False,
@@ -108,7 +108,7 @@ class UserIntentExtraction(BaseModel):
         res = []
         for item in v:
             item_clean = str(item).strip().lower()
-            if item_clean in ("diary", "dairy foods", "dairy products", "dairy food", "diary foods"):
+            if item_clean in ("dairy foods", "dairy products", "dairy food"):
                 res.append("dairy")
             else:
                 res.append(item_clean)
@@ -213,7 +213,7 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 **requested_exclusions**: Extract ingredients to avoid/exclude
 - "no dairy", "without pork", "exclude beef", "dairy-free", "avoid nuts"
-- Normalize: "diary" → "dairy", "egg" → "eggs"
+- Normalize: "egg" → "eggs"
 
 **diet_conflict_confirmed** + **chosen_diet_type**: 
 - True only if user explicitly CONFIRMS/CHOSES diet after a conflict prompt

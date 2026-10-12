@@ -49,7 +49,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
         version: int = 1,
         task_id: Optional[str] = None,
         current_plan: Optional[MealPlan] = None,
-        plan_name: Optional[str] = None
+        plan_name: Optional[str] = None,
+        exclusions: Optional[List[str]] = None
     ) -> MealPlan:
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
         plan_name = plan_name or getattr(current_plan, "name", None) or f"{days}-Day {plan_diet.capitalize()} Plan"
@@ -74,7 +75,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 "name": user_profile.get("name"),
                 "diet_type": plan_diet,
                 "dislikes": user_profile.get("dislikes", []),
-                "allergies": user_profile.get("allergies", [])
+                "allergies": user_profile.get("allergies", []),
+                "exclusions": exclusions or []
             },
             "fixed_meals": fixed_meals or {},
             "version": version
@@ -83,6 +85,11 @@ class PlannerAgent(BaseAgent[MealPlan]):
             context["current_plan"] = current_plan.model_dump()
 
         diet_rules_prompt = ""
+        # Combine allergies and exclusions for all diet types
+        allergies_list = [str(a).lower() for a in user_profile.get("allergies", [])]
+        exclusions_list = [str(e).lower() for e in (exclusions or [])]
+        all_exclusions = list(set(allergies_list + exclusions_list))
+
         if plan_diet in ("veg", "vegetarian"):
             diet_rules_prompt = (
                 "- STRICT DIETARY RULE: 100% VEGETARIAN.\n"
@@ -90,29 +97,34 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 "  * Absolutely NO eggs unless specifically eggetarian.\n"
                 "  * Every single meal (breakfast, lunch, dinner) MUST contain ONLY vegetarian plant-based foods, lentils/dal, chickpeas/chana, beans/rajma, paneer, tofu, vegetables, grains (quinoa, brown rice, oats, whole wheat roti), nuts, and seeds.\n"
             )
+            if all_exclusions:
+                diet_rules_prompt += f"\n  * ADDITIONAL EXCLUSIONS: Zero {', '.join(all_exclusions)}. Do NOT include any recipe or ingredient containing {', '.join(all_exclusions)}."
         elif plan_diet == "vegan":
             diet_rules_prompt = (
                 "- STRICT DIETARY RULE: 100% VEGAN.\n"
                 "  * Absolutely NO animal products: NO meat, poultry, fish, seafood, eggs, dairy (milk, cheese, paneer, butter, ghee, curd, yogurt), or honey. 100% plant-based.\n"
             )
+            if all_exclusions:
+                diet_rules_prompt += f"\n  * ADDITIONAL EXCLUSIONS: Zero {', '.join(all_exclusions)}. Do NOT include any recipe or ingredient containing {', '.join(all_exclusions)}."
         else:
-            allergies_list = [str(a).lower() for a in user_profile.get("allergies", [])]
+            # Non-vegetarian: build allowed proteins based on exclusions
             allowed_proteins = ["eggs"]
-            if "chicken" not in allergies_list and "poultry" not in allergies_list:
+            if "chicken" not in all_exclusions and "poultry" not in all_exclusions:
                 allowed_proteins.append("chicken")
-            if "fish" not in allergies_list and "seafood" not in allergies_list:
+            if "fish" not in all_exclusions and "seafood" not in all_exclusions:
                 allowed_proteins.append("fish")
-            if "turkey" not in allergies_list and "poultry" not in allergies_list:
+            if "turkey" not in all_exclusions and "poultry" not in all_exclusions:
                 allowed_proteins.append("turkey")
-            if "beef" not in allergies_list and "meat" not in allergies_list:
+            if "beef" not in all_exclusions and "meat" not in all_exclusions:
                 allowed_proteins.append("lean beef")
-            if "pork" not in allergies_list and "meat" not in allergies_list:
+            if "pork" not in all_exclusions and "meat" not in all_exclusions:
                 allowed_proteins.append("pork")
 
-            excl_text = f" ABSOLUTE HARD REQUIREMENT: Zero {', '.join(allergies_list)}. Do NOT include any recipe or ingredient containing {', '.join(allergies_list)}." if allergies_list else ""
             diet_rules_prompt = (
-                f"- DIETARY RULE: Non-Vegetarian. Primary allowed protein sources: {', '.join(allowed_proteins)}.{excl_text}\n"
+                f"- DIETARY RULE: Non-Vegetarian. Primary allowed protein sources: {', '.join(allowed_proteins)}."
             )
+            if all_exclusions:
+                diet_rules_prompt += f"\n  * ADDITIONAL EXCLUSIONS: Zero {', '.join(all_exclusions)}. Do NOT include any recipe or ingredient containing {', '.join(all_exclusions)}."
 
         meal_plan = None
         if days > 1:
@@ -123,6 +135,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Diet type: {plan_diet}\n"
                 f"{diet_rules_prompt}"
                 f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                f"- Exclude ingredients: {exclusions or []}\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
                 f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
@@ -156,6 +169,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Diet type: {plan_diet}\n"
                 f"{diet_rules_prompt}"
                 f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                f"- Exclude ingredients: {exclusions or []}\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
                 f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
@@ -417,7 +431,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
         return updated_plan
 
 
-    def _sanitize_diet_compliance(self, meal_plan: MealPlan, plan_diet: str, calorie_target: float, user_profile: Optional[Dict[str, Any]] = None):
+    def _sanitize_diet_compliance(self, meal_plan: MealPlan, plan_diet: str, calorie_target: float, user_profile: Optional[Dict[str, Any]] = None, exclusions: Optional[List[str]] = None):
         """Ensures zero non-compliant dishes exist in vegetarian, vegan, or allergy/exclusion restricted plans."""
         from backend.app.tools.diet_rules import check_diet_compliance
         from backend.app.schemas.domain import Ingredient
@@ -427,8 +441,11 @@ class PlannerAgent(BaseAgent[MealPlan]):
         is_veg = dt in ("veg", "vegetarian", "vegan")
         is_vegan = dt == "vegan"
         allergies = [str(a).lower() for a in (user_profile.get("allergies", []) if user_profile else [])]
+        exclusions = [str(e).lower() for e in (exclusions or [])]
+        # Combine allergies and exclusions for violation checking
+        all_exclusions = list(set(allergies + exclusions))
 
-        if not is_veg and not allergies:
+        if not is_veg and not all_exclusions:
             return
 
         fallback_veg_options = {
@@ -700,7 +717,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                         violates_diet = True
 
                 violates_allergy = False
-                for exc in allergies:
+                for exc in all_exclusions:
                     targets = ALLERGEN_CANONICAL_TARGETS.get(exc, [exc])
                     if any(t in meal_full_text for t in targets):
                         violates_allergy = True
@@ -716,12 +733,12 @@ class PlannerAgent(BaseAgent[MealPlan]):
                     if is_veg:
                         opts = fallback_veg_options.get(slot_key, fallback_veg_options["lunch"])
                     else:
-                        # Non-veg: find fallback dishes that don't violate requested allergies
+                        # Non-veg: find fallback dishes that don't violate requested allergies/exclusions
                         candidate_opts = fallback_non_veg_options.get(slot_key, fallback_non_veg_options["lunch"])
                         opts = []
                         for opt in candidate_opts:
                             opt_text = (opt["name"] + " " + " ".join(i.name for i in opt["ingredients"])).lower()
-                            if not any(t in opt_text for exc in allergies for t in ALLERGEN_CANONICAL_TARGETS.get(exc, [exc])):
+                            if not any(t in opt_text for exc in all_exclusions for t in ALLERGEN_CANONICAL_TARGETS.get(exc, [exc])):
                                 opts.append(opt)
                         if not opts:
                             opts = fallback_veg_options.get(slot_key, fallback_veg_options["lunch"])

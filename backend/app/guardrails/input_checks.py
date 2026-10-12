@@ -57,7 +57,7 @@ def validate_input_request(
         }
 
     # 1. Days check
-    days = requested_days if (requested_days and 1 <= requested_days <= 14) else 7
+    days = requested_days if (requested_days and 1 <= requested_days <= settings.max_plan_days) else settings.default_plan_days
 
     # 3. Calorie range check
     target_cal = requested_calories if requested_calories is not None else suggested_target

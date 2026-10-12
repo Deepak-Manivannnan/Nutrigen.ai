@@ -209,7 +209,7 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 **requested_days**: 
 - "tomorrow" → 1, "for 3 days" → 3, "for a week" → 7, "5-day" → 5
-- Null if not mentioned
+- If not mentioned → default 7 days (configurable, max 14 days)
 
 **requested_calories** (DAILY TOTAL ONLY):
 - "1800 kcal", "1900 calories", "2000 cal" → 1800.0, 1900.0, 2000.0

@@ -9,6 +9,7 @@ from backend.app.orchestration.supervisor.agent import SupervisorAgent
 from backend.app.db.repositories.plans import PlanRepository
 from backend.app.db.session import AsyncSessionLocal
 from backend.app.observability.logging import get_logger
+from backend.app.config import settings
 
 logger = get_logger("orchestration.runner")
 
@@ -172,7 +173,7 @@ async def run_meal_planner(
         user_id=user_id,
         user_profile=user_profile,
         intent=intent_data.intent,
-        days=intent_data.requested_days or (len(existing_plan.days) if existing_plan else None),
+        days=intent_data.requested_days or (len(existing_plan.days) if existing_plan else settings.default_plan_days),
         calorie_target=intent_data.requested_calories or (existing_plan.target_calories if existing_plan else None),
         fixed_meals=fixed,
         edit_details=intent_data.edit_details,
@@ -1044,7 +1045,7 @@ async def run_meal_planner(
         diet_conflict = bool(req_diet and req_diet != profile_diet and not intent_data.diet_conflict_confirmed)
 
         req_cal = intent_data.requested_calories or user_profile.get("target_calories")
-        req_days = intent_data.requested_days or 3
+        req_days = intent_data.requested_days or settings.default_plan_days
         is_safe, err_msg, meta = supervisor.check_input_guardrail(
             user_profile=user_profile,
             requested_calories=req_cal,

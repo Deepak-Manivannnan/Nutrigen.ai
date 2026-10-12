@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     min_calories_adult: int = 1200
     max_calories_adult: int = 4000
     min_age_allowed: int = 18
+    default_plan_days: int = 7
+    max_plan_days: int = 14
 
     # Retail markup over wholesale mandi prices (e.g. 25% markup)
     mandi_retail_markup_factor: float = 1.25

@@ -39,9 +39,9 @@ export default function SignInPage() {
       signIn(data);
       addToast(`Welcome back, ${data.name}!`, 'success');
       if (data.has_profile) {
-        navigate('/app/home');
+        navigate('/app/home', { replace: true });
       } else {
-        navigate('/onboarding');
+        navigate('/onboarding', { replace: true });
       }
     } catch (err) {
       setError(err.message || 'Unable to sign in. Please check your credentials.');

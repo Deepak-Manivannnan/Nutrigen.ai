@@ -47,8 +47,8 @@ function getStoredUser() {
 export function AppProvider({ children }) {
   // Auth & profile state
   const stored = getStoredUser();
-  const [user, setUser] = useState(stored ? { id: stored.id, name: stored.name, email: stored.email } : DEFAULT_USER);
-  const [profile, setProfile] = useState(stored?.profile || DEFAULT_PROFILE);
+  const [user, setUser] = useState(stored ? { id: stored.id, name: stored.name, email: stored.email } : null);
+  const [profile, setProfile] = useState(stored?.profile || null);
 
   // App navigation badges
   const [plansBadge, setPlansBadge] = useState(false);
@@ -56,6 +56,7 @@ export function AppProvider({ children }) {
 
   // Plans data
   const [plans, setPlans] = useState([]);
+  const [plansLoading, setPlansLoading] = useState(true);
   const [activePlanId, setActivePlanId] = useState(null);
 
   // Grocery data
@@ -314,6 +315,7 @@ export function AppProvider({ children }) {
     plansBadge, setPlansBadge,
     groceryBadge, setGroceryBadge,
     plans, addPlan, setPlans, approvePlan, deletePlan, renamePlan, refreshPlans,
+    plansLoading,
     activePlanId, setActivePlanId,
     groceryList, setGrocery,
     messages, addMessage, clearMessages,

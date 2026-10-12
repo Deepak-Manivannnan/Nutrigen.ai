@@ -1,7 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
-import AppLayout from './components/AppLayout';
+import AppLayout, { ProtectedRoute, PublicOnlyRoute } from './components/AppLayout';
 import LandingPage from './pages/LandingPage';
 import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
@@ -18,12 +18,12 @@ export default function App() {
         <Routes>
           {/* Public & Auth Routes */}
           <Route path="/" element={<LandingPage />} />
-          <Route path="/signin" element={<SignInPage />} />
-          <Route path="/signup" element={<SignUpPage />} />
-          <Route path="/onboarding" element={<OnboardingPage />} />
+          <Route path="/signin" element={<PublicOnlyRoute><SignInPage /></PublicOnlyRoute>} />
+          <Route path="/signup" element={<PublicOnlyRoute><SignUpPage /></PublicOnlyRoute>} />
+          <Route path="/onboarding" element={<PublicOnlyRoute><OnboardingPage /></PublicOnlyRoute>} />
 
           {/* Authenticated Application Routes */}
-          <Route path="/app" element={<AppLayout />}>
+          <Route path="/app" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
             <Route index element={<Navigate to="/app/home" replace />} />
             <Route path="home" element={<HomePage />} />
             <Route path="chat" element={<ChatPage />} />

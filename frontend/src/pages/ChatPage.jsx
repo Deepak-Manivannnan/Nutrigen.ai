@@ -135,7 +135,7 @@ function StatusIndicator({ text }) {
   );
 }
 
-function ClearChatConfirm({ onConfirm, onCancel }) {
+function ClearChatConfirm({ onConfirm, onCancel, isAgentRunning }) {
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onCancel()}>
       <div className="modal confirm-dialog">
@@ -145,7 +145,15 @@ function ClearChatConfirm({ onConfirm, onCancel }) {
         </div>
         <div className="confirm-footer">
           <button className="btn btn-outline btn-sm" onClick={onCancel}>Cancel</button>
-          <button className="btn btn-danger btn-sm" onClick={onConfirm} id="confirm-clear">Clear chat</button>
+          <button 
+            className="btn btn-danger btn-sm" 
+            onClick={onConfirm} 
+            id="confirm-clear"
+            disabled={isAgentRunning}
+            style={isAgentRunning ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
+          >
+            Clear chat
+          </button>
         </div>
       </div>
     </div>
@@ -278,7 +286,13 @@ export default function ChatPage() {
           <span className="chat-title">Chat</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
             {hasContent && (
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowClear(true)} id="clear-chat-btn">
+              <button 
+                className="btn btn-ghost btn-sm" 
+                onClick={() => setShowClear(true)} 
+                id="clear-chat-btn"
+                disabled={isAgentRunning}
+                style={isAgentRunning ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
+              >
                 <Trash2 size={13} /> Clear chat
               </button>
             )}
@@ -356,6 +370,7 @@ export default function ChatPage() {
             addToast('Chat cleared', 'default');
           }}
           onCancel={() => setShowClear(false)}
+          isAgentRunning={isAgentRunning}
         />
       )}
     </div>

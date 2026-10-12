@@ -1,8 +1,9 @@
 import re
 import uuid
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.app.schemas.state import PlanState
+from backend.app.schemas.state import PlanState, PendingWorkflow
 from backend.app.orchestration.graph import create_meal_planner_graph
 from backend.app.orchestration.supervisor.intent import extract_user_intent, EditDetails
 from backend.app.orchestration.supervisor.agent import SupervisorAgent
@@ -184,6 +185,45 @@ async def run_meal_planner(
         max_rounds=3,
         status="drafting"
     )
+
+    # =========================================================================
+    # Handle Pending Workflow: Check for pending workflow and handle resume/cancel/out_of_scope
+    # =========================================================================
+    # Check if there's a pending workflow in the state (from previous request via history)
+    pending_workflow = state.pending_workflow
+    
+    # Handle resume_request intent - user wants to continue the pending workflow
+    if intent_data.intent == "resume_request" and pending_workflow:
+        # Restore the pending workflow context
+        state.pending_workflow = pending_workflow
+        # Set intent to continue the original workflow
+        if pending_workflow.original_intent:
+            intent_data.intent = pending_workflow.original_intent
+        # Clear the cancel flag if they're resuming
+        state.system_message = None
+    
+    # Handle cancel_request intent - user wants to cancel the pending workflow
+    elif intent_data.intent == "cancel_request" and pending_workflow:
+        # Clear the pending workflow
+        state.pending_workflow = None
+        context_prompt = (
+            "The user wants to cancel the pending meal plan creation and start fresh. "
+            "In friendly, polite English, confirm that the previous meal plan creation has been cancelled "
+            "and ask what they'd like to do instead (create a new plan, modify existing, etc.)."
+        )
+        response_text = await supervisor.generate_conversational_response(
+            user_message=user_message,
+            context=context_prompt,
+            history=history,
+            user_name=user_profile.get("name")
+        )
+        state.system_message = response_text
+        state.status = "conversational"
+        state.quick_options = [
+            {"label": "Create new meal plan", "value": "Create a new meal plan"},
+            {"label": "View existing plans", "value": "Show my meal plans"}
+        ]
+        return state
 
     supervisor = SupervisorAgent()
 
@@ -879,7 +919,40 @@ async def run_meal_planner(
     # =========================================================================
     # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
     # =========================================================================
+    # =========================================================================
+    # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
+    # =========================================================================
     if intent_data.intent in ("chat", "app_info", "out_of_scope", "explain"):
+        # If there's a pending workflow and the user sends an out_of_scope message,
+        # respond to the off-topic question but also prompt to continue/cancel the pending workflow
+        if intent_data.intent == "out_of_scope" and state.pending_workflow:
+            # User asked an off-topic question while a workflow is pending
+            # First, respond to the off-topic question
+            off_topic_response = await supervisor.handle_conversational_intent(
+                state=state,
+                user_message=user_message,
+                intent="out_of_scope",
+                history=history
+            )
+            # Then prompt to continue or cancel the pending workflow
+            pending = state.pending_workflow
+            workflow_desc = "meal plan creation" if pending.original_intent == "new_plan" else "meal plan update"
+            resume_prompt = (
+                f"\n\nWe were in the middle of {workflow_desc} for you. "
+                f"Would you like to continue {workflow_desc}, or would you like to start a new plan instead?"
+            )
+            # Combine the responses
+            combined_response = f"{off_topic_response}{resume_prompt}"
+            state.system_message = combined_response
+            state.status = "conversational"
+            # Provide quick options for resume/cancel
+            state.quick_options = [
+                {"label": "Resume", "value": "Continue creating the plan"},
+                {"label": "New Plan", "value": "Create a new plan instead"}
+            ]
+            # Preserve the pending workflow
+            return state
+        
         response_text = await supervisor.handle_conversational_intent(
             state=state,
             user_message=user_message,
@@ -968,6 +1041,8 @@ async def run_meal_planner(
         # If user confirmed diet conflict, proceed with chosen diet
         if intent_data.diet_conflict_confirmed and intent_data.chosen_diet_type:
             effective_diet = intent_data.chosen_diet_type
+            # Clear pending workflow as conflict is resolved
+            state.pending_workflow = None
         else:
             # No conflict or not confirmed - use effective diet logic
             effective_diet = intent_data.chosen_diet_type or req_diet or profile_diet
@@ -1006,6 +1081,25 @@ async def run_meal_planner(
                 content=msg,
                 payload={"action": "guardrail_block", "calories": req_cal, "suggested": suggested}
             )
+            # Store pending workflow for potential off-topic interruption
+            state.pending_workflow = PendingWorkflow(
+                workflow_type="new_plan",
+                pending_conflicts=["calorie_guardrail"],
+                asked_questions=[msg],
+                extracted_info={
+                    "effective_diet": effective_diet,
+                    "req_cal": req_cal,
+                    "suggested": suggested,
+                    "min_safe": min_safe,
+                    "max_safe": max_safe,
+                    "req_days": req_days,
+                },
+                next_expected_decision="calorie_guardrail_resolution",
+                original_intent="new_plan",
+                original_message=user_message,
+                user_profile_at_start=user_profile.copy(),
+                created_at=datetime.utcnow().isoformat()
+            )
             return state
 
     # If editing existing plan, make sure user_profile["diet_type"] reflects the existing plan's diet
@@ -1023,6 +1117,10 @@ async def run_meal_planner(
         final_state = result
     else:
         final_state = PlanState.model_validate(result)
+
+    # Clear pending workflow on successful workflow completion
+    if final_state.current_plan and final_state.status in ("reviewing", "approved"):
+        final_state.pending_workflow = None
 
     # =========================================================================
     # Step 10: Persist Plan to Database & Format Friendly Response

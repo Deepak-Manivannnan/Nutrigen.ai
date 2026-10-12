@@ -76,3 +76,5 @@ class ChatResponse(BaseModel):
     plan_id: Optional[int] = None
     intent: Optional[str] = None
     is_workflow: bool = False
+    pending_workflow: Optional[Dict[str, Any]] = None
+    quick_options: Optional[List[Dict[str, str]]] = None

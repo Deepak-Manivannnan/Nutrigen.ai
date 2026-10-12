@@ -78,6 +78,7 @@ async def chat_interaction(
         intent=final_state.intent,
         is_workflow=is_wf,
         deleted_plan_id=final_state.deleted_plan_id,
-        quick_options=final_state.quick_options
+        quick_options=final_state.quick_options,
+        pending_workflow=final_state.pending_workflow.model_dump() if final_state.pending_workflow else None
     )
 

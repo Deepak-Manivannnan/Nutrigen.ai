@@ -19,6 +19,18 @@ IntentType = Literal[
     "add_snack",
 ]
 
+class PendingWorkflow(BaseModel):
+    """Stores pending meal plan creation workflow state"""
+    workflow_type: Literal["new_plan", "edit_meal"] = "new_plan"
+    pending_conflicts: List[str] = Field(default_factory=list)
+    asked_questions: List[str] = Field(default_factory=list)
+    extracted_info: Dict[str, Any] = Field(default_factory=dict)
+    next_expected_decision: Optional[str] = None
+    original_intent: Optional[str] = None
+    original_message: Optional[str] = None
+    user_profile_at_start: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+
 class PlanState(BaseModel):
     task_id: str
     user_id: int
@@ -46,3 +58,6 @@ class PlanState(BaseModel):
     deleted_plan_id: Optional[int] = None
     quick_options: Optional[List[Dict[str, str]]] = None
     plan_id: Optional[int] = None
+    
+    # New field for handling off-topic messages during active meal-planning workflow
+    pending_workflow: Optional[PendingWorkflow] = None

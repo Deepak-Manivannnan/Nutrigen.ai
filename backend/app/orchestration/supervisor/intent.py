@@ -30,6 +30,9 @@ IntentType = Literal[
     "grocery_only", # User wants only grocery list / mandi prices
     "delete_plan",  # Request to delete a meal plan or confirming plan deletion
     "rename_plan",  # Request to rename a meal plan
+    "add_snack",    # Request to add a snack to a meal plan
+    "resume_request", # User wants to resume a pending meal planning workflow
+    "cancel_request", # User wants to cancel a pending meal planning workflow
 ]
 
 class UserIntentExtraction(BaseModel):
@@ -195,6 +198,16 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 11. **rename_plan**: Requesting to rename a meal plan ("Rename Plan 1 to High Protein", "Rename my meal plan")
 
+12. **add_snack**: Requesting to add a snack to a meal plan ("Add a snack to day 3", "Can I have an evening snack?")
+
+13. **resume_request**: User wants to resume a pending meal planning workflow
+    - "Continue creating the plan", "Resume the plan", "Let's continue", "Yes, continue"
+    - "I want to continue creating the plan", "Go ahead with the plan"
+
+14. **cancel_request**: User wants to cancel a pending meal planning workflow
+    - "Cancel the plan", "Stop the plan", "Create a new plan instead"
+    - "Forget the plan", "Start over", "New plan instead"
+
 ---
 
 ### PARAMETER EXTRACTION RULES
@@ -263,6 +276,7 @@ Use history to resolve:
 - Missing parameters (inherit days/calories/diet from previous turns)
 - Confirmation flows (diet conflict, calorie guardrail, delete confirmation)
 - Plan references ("update it" → which plan was discussed?)
+- **Pending workflow context**: If there's a pending workflow (diet conflict, calorie guardrail, edit confirmation pending), the user's response may be an answer to the pending question. Check if the user is answering a pending question, requesting to resume, or canceling the workflow.
 
 ---
 
@@ -281,6 +295,8 @@ Use history to resolve:
 | "What's my profile?" | profile_info | Profile inquiry |
 | "What can you do?" | app_info | Capability question |
 | "What is AI?" | out_of_scope | Outside domain |
+| "Continue the plan" / "Resume" | resume_request | Resume pending workflow |
+| "Cancel the plan" / "New plan instead" | cancel_request | Cancel pending workflow |
 
 ---
 

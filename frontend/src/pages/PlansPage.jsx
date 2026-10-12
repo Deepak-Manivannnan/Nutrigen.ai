@@ -21,6 +21,8 @@ import {
   Apple,
   Edit3,
   Check,
+  Calendar,
+  CalendarClock,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { generateDemoPlan } from '../utils/workflowSimulator';
@@ -31,6 +33,59 @@ const MEAL_ICONS = {
   Dinner: Sunset,
   Snack: Apple,
 };
+
+function formatTimestamp(ts) {
+  if (!ts) return null;
+  const date = new Date(ts);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  
+  if (diffDays <= 3) {
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays === 2) return '2 days ago';
+    if (diffDays === 3) return '3 days ago';
+  }
+  // Absolute date for >3 days
+  return date.toLocaleDateString('en-US', { 
+    year: 'numeric', 
+    month: 'short', 
+    day: 'numeric' 
+  });
+}
+
+function formatAbsoluteDate(ts) {
+  if (!ts) return null;
+  const date = new Date(ts);
+  return date.toLocaleDateString('en-US', { 
+    year: 'numeric', 
+    month: 'short', 
+    day: 'numeric' 
+  });
+}
+
+function getPlanTimestamps(plan) {
+  const created = plan.createdAt || plan.created_at;
+  const updated = plan.updatedAt || plan.updated_at;
+  
+  if (!updated || updated === created) {
+    // Never updated - show created as relative (≤3d) or absolute (>3d)
+    return {
+      createdLabel: 'Created',
+      createdValue: formatTimestamp(created),
+      showUpdated: false,
+    };
+  }
+  // Updated - created is absolute, updated is relative (≤3d) or absolute (>3d)
+  return {
+    createdLabel: 'Created on',
+    createdValue: formatAbsoluteDate(created),
+    updatedLabel: 'Updated',
+    updatedValue: formatTimestamp(updated),
+    showUpdated: true,
+  };
+}
 
 export default function PlansPage() {
   const navigate = useNavigate();
@@ -175,6 +230,7 @@ export default function PlansPage() {
         <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-6)', overflowX: 'auto', paddingBottom: 4 }}>
           {plans.map(p => {
             const isSelected = p.id === activePlan.id;
+            const statusLabel = p.status === 'approved' ? `Version ${p.version || 1}` : 'Draft';
             return (
               <button
                 key={p.id}
@@ -185,7 +241,7 @@ export default function PlansPage() {
                 className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-outline'}`}
                 style={{ borderRadius: 'var(--radius-full)' }}
               >
-                {p.name} · Version {p.version || 1} {p.status === 'approved' ? 'Approved' : 'Draft'}
+                {p.name} · {statusLabel}
               </button>
             );
           })}
@@ -262,17 +318,34 @@ export default function PlansPage() {
               <span className={`badge ${activePlan.status === 'approved' ? 'badge-green' : 'badge-gray'}`}>
                 {activePlan.status === 'approved' ? (
                   <>
-                    <CheckCircle2 size={12} /> Version {activePlan.version || 1} Approved
+                    <CheckCircle2 size={12} /> Version {activePlan.version || 1}
                   </>
                 ) : (
                   <>
-                    <Clock size={12} /> Version {activePlan.version || 1} Draft
+                    <Clock size={12} /> Draft
                   </>
                 )}
               </span>
             </div>
 
-            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-600)', margin: 0 }}>
+            {/* Timestamps */}
+            {(() => {
+              const ts = getPlanTimestamps(activePlan);
+              return (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-4)', marginTop: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--gray-500)' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Calendar size={10} /> {ts.createdLabel} {ts.createdValue}
+                  </span>
+                  {ts.showUpdated && (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <CalendarClock size={10} /> {ts.updatedLabel} {ts.updatedValue}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-600)', margin: 'var(--space-2) 0 0 0' }}>
               {activePlan.days} days plan · {activePlan.dietType} · Target {activePlan.calorieTarget?.toLocaleString()} kcal/day
             </p>
 
@@ -314,7 +387,7 @@ export default function PlansPage() {
                 id="approve-plan-btn"
                 style={{ background: 'var(--green-600)' }}
               >
-                <CheckCircle2 size={14} /> Approve &amp; Generate Grocery List
+                <CheckCircle2 size={14} /> Approve
               </button>
             )}
 
@@ -556,3 +629,5 @@ export default function PlansPage() {
     </div>
   );
 }
+
+

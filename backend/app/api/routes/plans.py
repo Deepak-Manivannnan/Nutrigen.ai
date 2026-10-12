@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from backend.app.db.models import Plan
+from backend.app.db.models import Plan, ist_now
 from backend.app.db.repositories.plans import PlanRepository
 from backend.app.api.deps import get_plan_repository
 
@@ -124,10 +124,23 @@ async def approve_plan(
     """
     Human-in-the-loop: User reviews the generated meal plan and approves it.
     Generates/finalizes the grocery list via Shopper Agent, and updates status from 'draft' to 'approved'.
+    Idempotent: if already approved, returns existing plan without regenerating grocery.
     """
     plan = await plan_repo.get_by_id(plan_id)
     if not plan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+
+    # Idempotency: if already approved, return existing plan
+    if plan.status == "approved" and plan.grocery_list:
+        return serialize_plan(plan)
+
+    # Prevent concurrent approval
+    if plan.status == "approving":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Plan approval already in progress")
+
+    # Set to approving to prevent duplicate approvals
+    plan.status = "approving"
+    await plan_repo.session.commit()
 
     # Generate grocery list via Shopper Agent
     from backend.app.agents.shopper.agent import ShopperAgent
@@ -140,9 +153,15 @@ async def approve_plan(
         )
         plan.grocery_list = grocery_list.model_dump()
     except Exception as e:
+        plan.status = "draft"  # Revert on failure
+        await plan_repo.session.commit()
         logger.warning(f"Error generating grocery list on approve for plan #{plan_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate grocery list")
 
+    # Mark as approved with timestamp
     plan.status = "approved"
+    plan.approved_at = ist_now()
+    plan.updated_at = ist_now()
     await plan_repo.session.commit()
     await plan_repo.session.refresh(plan)
     return serialize_plan(plan)

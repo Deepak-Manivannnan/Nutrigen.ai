@@ -501,10 +501,31 @@ async def run_meal_planner(
     # Step 5b: Handle Approve Plan Request (via Chat)
     # =========================================================================
     if intent_data.intent == "approve_plan":
+        # Check for draft plans that can be approved
+        draft_plans = [p for p in all_plans if p.status == "draft"]
+        
         if len(all_plans) == 0:
             context_prompt = (
                 "The user asked to approve their meal plan, but they currently have 0 meal plans saved in their account. "
                 "In friendly, polite English, let them know they don't have any meal plans saved yet to approve, and invite them to create one first."
+            )
+            response_text = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=user_profile.get("name")
+            )
+            state.system_message = response_text
+            state.status = "conversational"
+            return state
+
+        # If no draft plans exist, all plans are already approved
+        if len(draft_plans) == 0:
+            context_prompt = (
+                "The user asked to approve a meal plan, but all their plans are already approved. "
+                "In friendly, natural English, inform them there is no plan pending approval. "
+                "All plans have been created and updated, and grocery lists are ready. "
+                "They can check details in the Plans and Grocery tabs."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -523,14 +544,15 @@ async def run_meal_planner(
             target_name=intent_data.target_plan_name
         )
         if not target_plan:
-            drafts = [p for p in all_plans if p.status == "draft"]
-            target_plan = drafts[0] if drafts else all_plans[0]
+            target_plan = draft_plans[0]
 
+        # Check if already approved
         if target_plan.status == "approved" and target_plan.grocery_list:
             context_prompt = (
-                f"The meal plan '{target_plan.name}' is already approved! "
-                f"In polite, natural English, inform the user that '{target_plan.name}' is already approved, and that they can view its full itemized grocery checklist and Mandi market rates in their Grocery tab. "
-                f"CRITICAL: You must explicitly include the exact phrase 'already approved' in your response."
+                f"The meal plan '{target_plan.name}' is already approved (Version {target_plan.version}). "
+                f"In polite, natural English, inform the user that this plan is already approved, "
+                f"and they can view its full itemized grocery checklist and Mandi market rates in the Grocery tab. "
+                f"Do NOT use the word 'approved' as a label - just mention it's Version {target_plan.version}."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -546,9 +568,41 @@ async def run_meal_planner(
             ]
             return state
 
+        # Check if already approving (prevent duplicate)
+        if target_plan.status == "approving":
+            context_prompt = (
+                f"The meal plan '{target_plan.name}' is currently being approved. "
+                f"In polite English, let the user know the approval is in progress and to wait a moment."
+            )
+            response_text = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=user_profile.get("name")
+            )
+            state.system_message = response_text
+            state.status = "conversational"
+            return state
+
         # Generate grocery list via Shopper Agent
         from backend.app.agents.shopper.agent import ShopperAgent
+        from backend.app.db.models import ist_now
         try:
+            # Mark as approving to prevent concurrent approvals
+            if session:
+                repo = PlanRepository(session)
+                p_db = await repo.get_by_id(target_plan.id)
+                if p_db:
+                    p_db.status = "approving"
+                    await repo.session.commit()
+            else:
+                async with AsyncSessionLocal() as temp_session:
+                    repo = PlanRepository(temp_session)
+                    p_db = await repo.get_by_id(target_plan.id)
+                    if p_db:
+                        p_db.status = "approving"
+                        await repo.session.commit()
+
             domain_plan = PlanRepository.to_meal_plan_domain(target_plan)
             shopper = ShopperAgent()
             grocery_basket = await shopper.generate_grocery_list(
@@ -557,11 +611,19 @@ async def run_meal_planner(
             )
             target_plan.grocery_list = grocery_basket.model_dump()
             target_plan.status = "approved"
+            target_plan.approved_at = ist_now()
+            target_plan.updated_at = ist_now()
 
             if session:
                 repo = PlanRepository(session)
-                await repo.session.commit()
-                await repo.session.refresh(target_plan)
+                p_db = await repo.get_by_id(target_plan.id)
+                if p_db:
+                    p_db.grocery_list = grocery_basket.model_dump()
+                    p_db.status = "approved"
+                    p_db.approved_at = ist_now()
+                    p_db.updated_at = ist_now()
+                    await repo.session.commit()
+                    await repo.session.refresh(p_db)
             else:
                 async with AsyncSessionLocal() as temp_session:
                     repo = PlanRepository(temp_session)
@@ -569,13 +631,16 @@ async def run_meal_planner(
                     if p_db:
                         p_db.grocery_list = grocery_basket.model_dump()
                         p_db.status = "approved"
+                        p_db.approved_at = ist_now()
+                        p_db.updated_at = ist_now()
                         await repo.session.commit()
 
             cost = int(grocery_basket.total_estimated_cost or 0)
             context_prompt = (
-                f"Successfully approved meal plan '{target_plan.name}' and compiled an itemized grocery checklist with {len(grocery_basket.items)} ingredients based on wholesale Mandi benchmarks totaling approximately ₹{cost:,}. "
+                f"Successfully approved meal plan '{target_plan.name}' (now Version {target_plan.version + 1}). "
+                f"Compiled an itemized grocery checklist with {len(grocery_basket.items)} ingredients based on wholesale Mandi benchmarks totaling approximately ₹{cost:,}. "
                 f"In polite, warm, conversational English, let the user know their meal plan is approved and their grocery list is ready to review in the Grocery tab. "
-                f"Ensure you mention that the plan is approved."
+                f"Mention they can view the approved plan (Version {target_plan.version + 1}) in the Plans tab."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -591,14 +656,27 @@ async def run_meal_planner(
             ]
             return state
         except Exception as e:
+            # Revert status on failure
+            if session:
+                repo = PlanRepository(session)
+                p_db = await repo.get_by_id(target_plan.id)
+                if p_db:
+                    p_db.status = "draft"
+                    await repo.session.commit()
+            else:
+                async with AsyncSessionLocal() as temp_session:
+                    repo = PlanRepository(temp_session)
+                    p_db = await repo.get_by_id(target_plan.id)
+                    if p_db:
+                        p_db.status = "draft"
+                        await repo.session.commit()
+            
             logger.error(f"Error approving plan in chat: {e}")
-            # Do NOT mark as approved - grocery generation failed
-            # Keep plan as draft so user can retry via Plans tab or chat
             context_prompt = (
                 f"Failed to generate grocery list for meal plan '{target_plan.name}' due to an error: {str(e)}. "
                 f"The meal plan remains in draft status. "
                 f"In polite, natural English, explain to the user that the meal plan was NOT approved because the grocery list could not be generated. "
-                f"Tell them they can retry by clicking 'Approve & Generate Grocery List' in the Plans tab, or by asking you again in chat. "
+                f"Tell them they can retry by clicking 'Approve' in the Plans tab, or by asking you again in chat. "
                 f"Do NOT say the plan was approved."
             )
             response_text = await supervisor.generate_conversational_response(
@@ -608,7 +686,7 @@ async def run_meal_planner(
                 user_name=user_profile.get("name")
             )
             state.system_message = response_text
-            state.status = "draft"  # Plan remains draft
+            state.status = "draft"
             state.quick_options = [
                 {"label": "Retry Approval in Plans Tab", "value": "Approve my meal plan"},
                 {"label": "Retry in Chat", "value": "approve this plan"}

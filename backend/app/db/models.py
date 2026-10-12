@@ -1,10 +1,12 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, JSON, Text
 from sqlalchemy.orm import relationship
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from backend.app.db.session import Base
 
-def utc_now():
-    return datetime.now(timezone.utc)
+def ist_now():
+    """Return current time in Indian Standard Time (UTC+5:30)"""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(ist)
 
 class User(Base):
     __tablename__ = "users"
@@ -27,8 +29,8 @@ class User(Base):
     min_safe_calories = Column(Float, nullable=True)
     max_safe_calories = Column(Float, nullable=True)
     suggested_target_calories = Column(Float, nullable=True)
-    created_at = Column(DateTime, default=utc_now)
-    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
 
     allergies = relationship("UserAllergy", back_populates="user", cascade="all, delete-orphan")
     plans = relationship("Plan", back_populates="user", cascade="all, delete-orphan")
@@ -52,10 +54,12 @@ class Plan(Base):
     days = Column(Integer, nullable=False, default=7)
     calorie_target = Column(Float, nullable=False)
     diet_type = Column(String(50), default="veg", nullable=True)
-    status = Column(String(50), default="draft")  # draft, approved, rejected, escalated
+    status = Column(String(50), default="draft")  # draft, approving, approved, rejected, escalated
     version = Column(Integer, default=1, nullable=False)
     grocery_list = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=utc_now)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="plans")
     meals = relationship("PlanMeal", back_populates="plan", cascade="all, delete-orphan")
@@ -87,5 +91,5 @@ class AgentTrace(Base):
     to_agent = Column(String(50), nullable=False)
     type = Column(String(50), nullable=False)  # task, draft, feedback, veto, approve, etc.
     payload = Column(JSON, default=dict)
-    timestamp = Column(DateTime, default=utc_now, index=True)
+    timestamp = Column(DateTime, default=ist_now, index=True)
 

@@ -132,17 +132,22 @@ async def test_edit_meal_without_active_plan_returns_friendly_prompt():
     assert "don't have an active meal plan yet" in final_state.system_message
 
 @pytest.mark.asyncio
-async def test_scan_history_for_plan_context_markdown_bold():
-    from backend.app.orchestration.supervisor.intent import _scan_history_for_plan_context
+async def test_llm_extracts_plan_context_from_history():
+    """Test that LLM-based intent extraction correctly infers plan context from conversation history."""
+    from backend.app.orchestration.supervisor.intent import extract_user_intent
     history = [
         {"role": "user", "content": "can u create a veg meal plan for 5 days with 1800kcal/day"},
         {"role": "assistant", "content": "Your profile preference is **Non-Vegetarian**, but you requested a **Vegetarian** meal plan. In addition, your requested target of **1,800 kcal/day** is below your maintenance range of 2,150 – 2,350 kcal.\n\nCan I create a **5-day Vegetarian** plan for you? Would you like me to plan it at your requested **1,800 kcal/day**, or at your recommended target of **2,250 kcal/day**?"}
     ]
-    ctx = _scan_history_for_plan_context(history)
-    assert ctx["days"] == 5
-    assert ctx["calories"] == 1800.0
-    assert ctx["diet_type"] == "veg"
-    assert ctx["recommended_calories"] == 2250.0
+    # User confirms with advised calorie range
+    user_msg = "oops i forgot about my calorie range thanks for reminding and u can create a veg plan with my advised calorie range"
+    extraction = await extract_user_intent(user_msg, history=history)
+    assert extraction.intent == "new_plan"
+    assert extraction.requested_days == 5
+    assert extraction.requested_calories == 2250.0
+    assert extraction.requested_diet_type == "veg"
+    assert extraction.diet_conflict_confirmed is True
+    assert extraction.chosen_diet_type == "veg"
 
 @pytest.mark.asyncio
 async def test_user_reported_calorie_and_diet_acceptance():
@@ -193,16 +198,19 @@ def test_find_referenced_plan_by_day_count():
     assert matched_3 is not None
     assert matched_3.id == 2
 
-def test_extract_non_veg_spaced_and_meat_exclusions():
-    from backend.app.orchestration.supervisor.intent import _extract_plan_parameters_from_text
+@pytest.mark.asyncio
+async def test_llm_extracts_non_veg_and_exclusions():
+    """Test that LLM-based intent extraction correctly handles non-veg diet and exclusions."""
+    from backend.app.orchestration.supervisor.intent import extract_user_intent
     msg = "okay can u create another plan with 1900 kcal/day non veg meal plan for 5 days and exclude pork, beef, turkey"
-    res = _extract_plan_parameters_from_text(msg)
-    assert res["diet_type"] == "non-veg", f"Expected non-veg, got {res['diet_type']}"
-    assert res["days"] == 5
-    assert res["calories"] == 1900.0
-    assert "pork" in res["exclusions"]
-    assert "beef" in res["exclusions"]
-    assert "turkey" in res["exclusions"]
+    extraction = await extract_user_intent(msg)
+    assert extraction.intent == "new_plan"
+    assert extraction.requested_diet_type == "non-veg"
+    assert extraction.requested_days == 5
+    assert extraction.requested_calories == 1900.0
+    assert "pork" in extraction.requested_exclusions
+    assert "beef" in extraction.requested_exclusions
+    assert "turkey" in extraction.requested_exclusions
 
 @pytest.mark.asyncio
 async def test_multi_turn_edit_meal_slot_inherits_good_plan():
@@ -239,26 +247,28 @@ async def test_multi_turn_edit_meal_slot_inherits_good_plan():
     assert matched.name == "Good plan"
 
 @pytest.mark.asyncio
-async def test_user_reported_exclusion_scrub_intent():
-    from backend.app.orchestration.supervisor.intent import extract_user_intent, _extract_plan_parameters_from_text
+async def test_llm_extracts_exclusions_from_creation_and_update():
+    """Test that LLM-based intent extraction correctly handles exclusions in creation and update messages."""
+    from backend.app.orchestration.supervisor.intent import extract_user_intent
 
     # Test initial creation phrasing with "by excluding the beef, pork and turkey"
-    p_params = _extract_plan_parameters_from_text("create a 3 day meal plan by excluding the beef, pork and turkey")
-    assert "beef" in p_params["exclusions"]
-    assert "pork" in p_params["exclusions"]
-    assert "turkey" in p_params["exclusions"]
+    creation_msg = "create a 3 day meal plan by excluding the beef, pork and turkey"
+    creation_res = await extract_user_intent(creation_msg)
+    assert creation_res.intent == "new_plan"
+    assert "beef" in creation_res.requested_exclusions
+    assert "pork" in creation_res.requested_exclusions
+    assert "turkey" in creation_res.requested_exclusions
 
     # Test update phrasing with "replacing the recipes which contains pork, beef, and turkey with different recipes"
     update_msg = "I just update the recently created meal plan by replacing the recipes which contains pork, beef, and turkey with different recipes"
-    res = await extract_user_intent(update_msg)
-    assert res.intent == "edit_meal"
-    assert "pork" in res.requested_exclusions
-    assert "beef" in res.requested_exclusions
-    assert "turkey" in res.requested_exclusions
-    assert res.is_update_request is False
-    assert res.edit_details is not None
-    # Ensure dish_to_replace attribute exists on EditDetails
-    assert hasattr(res.edit_details, "dish_to_replace")
+    update_res = await extract_user_intent(update_msg)
+    assert update_res.intent == "edit_meal"
+    assert "pork" in update_res.requested_exclusions
+    assert "beef" in update_res.requested_exclusions
+    assert "turkey" in update_res.requested_exclusions
+    assert update_res.is_update_request is False
+    assert update_res.edit_details is not None
+    assert hasattr(update_res.edit_details, "dish_to_replace")
 
 def test_planner_sanitize_diet_cleans_excluded_meats():
     from backend.app.agents.planner.agent import PlannerAgent

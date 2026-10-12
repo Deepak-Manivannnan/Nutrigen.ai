@@ -12,7 +12,7 @@ async def verify_output_safety(
     """
     Output guardrail:
     1. Re-runs final allergy check across all meals and grocery items.
-    2. Labels AI-generated recipes and AI-estimated prices clearly.
+    2. Validates diet compliance against plan's declared diet type.
     3. Appends mandatory medical disclaimer.
     """
     warnings: List[str] = []
@@ -49,11 +49,6 @@ async def verify_output_safety(
                 ai_recipes_count += 1
 
     ai_prices_count = sum(1 for item in grocery_list.items if item.price_source == "ai_estimate") if (grocery_list and grocery_list.items) else 0
-
-    if ai_recipes_count > 0:
-        warnings.append(f"{ai_recipes_count} meal(s) are AI-generated to accommodate regional taste preferences.")
-    if ai_prices_count > 0:
-        warnings.append(f"{ai_prices_count} grocery item(s) use estimated retail prices as Mandi data was unavailable.")
 
     metadata = {
         "disclaimer": "This meal plan is AI-generated for nutritional planning purposes and does not constitute medical advice. Consult a healthcare professional or registered dietitian for specific clinical dietary requirements.",

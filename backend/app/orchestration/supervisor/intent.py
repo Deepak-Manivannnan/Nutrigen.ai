@@ -129,11 +129,219 @@ class UserIntentExtraction(BaseModel):
             return [FixedMealSlot(meal_type=str(k), dish=str(val)) for k, val in v.items()]
         return v
 
-# Fast single-word greeting set for sub-millisecond shortcut
-FAST_GREETINGS = {
-    "hi", "hello", "hey", "hola", "namaste", "good morning", "good afternoon",
-    "good evening", "howdy", "sup", "yo", "hi there", "hello there"
-}
+
+def _build_context_from_history(history: Optional[List[Dict[str, Any]]]) -> str:
+    """Build a concise context summary from conversation history for the LLM."""
+    if not history:
+        return "No prior conversation history."
+    
+    lines = []
+    for h in history[-6:]:  # Last 6 turns
+        role = h.get("role", "unknown")
+        content = (h.get("content") or "").strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    
+    if not lines:
+        return "No prior conversation history."
+    
+    return "Conversation history (most recent last):\n" + "\n".join(lines)
+
+
+INTENT_CLASSIFICATION_PROMPT = """You are the Supervisor Intent Classifier for NutriGen, a specialized clinical meal planning assistant.
+
+Analyze the user's message in context of the conversation history and classify the intent into EXACTLY ONE category. Extract all relevant parameters.
+
+---
+
+### DOMAIN BOUNDARY
+NutriGen's domain is STRICTLY LIMITED to:
+- Meal planning: daily menus, breakfast/lunch/dinner/snack schedules
+- Dietary nutrition: calories, macronutrients (protein, carbs, fats), vitamins
+- Cooking recipes, food ingredients, culinary preparation
+- Food allergies, dietary preferences (vegetarian, vegan, non-veg, keto), ingredient exclusions
+- Grocery shopping lists and Mandi wholesale ingredient prices
+- User profile parameters and inquiries about NutriGen itself
+
+---
+
+### INTENT CATEGORIES (choose exactly ONE)
+
+1. **chat**: Casual greetings, goodbyes, social pleasantries, polite small talk ("hi", "hello", "good morning", "thanks", "bye")
+
+2. **app_info**: Questions specifically asking what NutriGen does or how its system works ("What can you do?", "How does this work?", "What features do you have?")
+
+3. **profile_info**: User asks about their saved profile data ("Tell me about my profile", "What information does my profile hold?", "Show my profile details")
+
+4. **out_of_scope**: ANY question/request OUTSIDE food/nutrition/meal-planning domain (iPhones, Apple CEO, pharmaceuticals, AI, politics, coding, math, general trivia)
+
+5. **explain**: Questions about dietary nutrition, calories, macros, or food science ("How are my calories calculated?", "Why 1800 kcal?", "What is protein?")
+
+6. **new_plan**: User requests or confirms creating a NEW multi-day meal plan
+   - "Plan a 5-day vegetarian meal plan", "Generate meals for 1900 kcal"
+   - "Okay go ahead and create it", "Create the plan", "Yes, make it"
+   - CRITICAL: "Create it", "go ahead and create" after a proposal = new_plan, NOT approve_plan
+
+7. **edit_meal**: User explicitly asks to MODIFY, SWAP, REPLACE, or UPDATE a meal dish in an EXISTING plan
+   - "Replace day 2 breakfast with oatmeal", "Swap lunch with paneer tikka"
+   - "Update Good Meal: remove dairy from all days"
+   - "I want to update my meal plan" (general, no specifics) → is_update_request = true
+   - NEVER select for "delete a meal" or "delete meal" without specific day+slot!
+
+8. **approve_plan**: User wants to APPROVE an already-drafted meal plan to finalize it and compile grocery lists
+   - "Approve this plan", "Looks good approve it", "Approve"
+   - CRITICAL: "Create it", "go ahead and create" = new_plan, NEVER approve_plan!
+
+9. **grocery_only**: Requesting only grocery lists or mandi commodity prices ("Show grocery list", "What are mandi prices?")
+
+10. **delete_plan**: Asking to delete a meal plan/meal, OR confirming deletion
+    - "Delete a meal", "Delete meal plan", "Delete Good Meal", "I want to delete this meal plan"
+    - "Yes, delete it", "Confirm deletion" (confirmation)
+    - CRITICAL: "delete a meal" without specific day+slot = delete_plan, NEVER edit_meal!
+
+11. **rename_plan**: Requesting to rename a meal plan ("Rename Plan 1 to High Protein", "Rename my meal plan")
+
+12. **add_snack**: Asking to add/include a snack meal in a plan ("Add a snack to day 3", "Can I have an evening snack?")
+
+---
+
+### PARAMETER EXTRACTION RULES
+
+**requested_days**: 
+- "tomorrow" → 1, "for 3 days" → 3, "for a week" → 7, "5-day" → 5
+- Null if not mentioned
+
+**requested_calories** (DAILY TOTAL ONLY):
+- "1800 kcal", "1900 calories", "2000 cal" → 1800.0, 1900.0, 2000.0
+- If message mentions "breakfast/lunch/dinner/snack" with calories → that's SLOT calories, NOT daily → set requested_calories = null
+- "per day", "daily" + number → daily calories
+
+**requested_diet_type**: "vegetarian"/"veg" → "veg", "vegan" → "vegan", "non-vegetarian"/"non-veg" → "non-veg"
+- Check "non-veg" FIRST to avoid matching "veg" in "non veg"
+
+**requested_exclusions**: Extract ingredients to avoid/exclude
+- "no dairy", "without pork", "exclude beef", "dairy-free", "avoid nuts"
+- Normalize: "diary" → "dairy", "egg" → "eggs"
+
+**diet_conflict_confirmed** + **chosen_diet_type**: 
+- True only if user explicitly CONFIRMS/CHOSES diet after a conflict prompt
+- "Yes, go with vegetarian" → True, "veg"
+- "Use non-veg" → True, "non-veg"
+- "Create vegan plan" → True, "vegan"
+
+**fixed_meals**: Explicitly locked meals
+- "Fix breakfast as eggs and toast" → [{"meal_type": "breakfast", "dish": "eggs and toast"}]
+
+**edit_details** (only for edit_meal intent):
+- day: "day 2" → 2, "on day 3" → 3
+- meal_type: "breakfast"/"lunch"/"dinner"/"snack"
+- target_meal_calories: SLOT calories only (e.g. "400-500 kcal" → 450.0, "500 kcal" → 500.0)
+- instructions: Full user message for context
+- dish_to_replace: Specific dish mentioned ("replace paneer tikka")
+
+**explain_query**: For explain intent, the specific question
+
+**target_plan_id**: "Plan #9", "Plan 9", "#9" → 9
+
+**target_plan_name**: Plan name in quotes or mentioned
+- "delete 'Good Meal'", "update Good Meal" → "Good Meal"
+- Check quotes first: "Good Meal", 'Good Plan'
+
+**new_plan_name**: For rename_plan, the new name
+- "Rename Plan 1 to High Protein" → "High Protein"
+
+**is_delete_confirmation**: 
+- True if user confirms: "yes", "yeah", "confirm", "go ahead", "delete it", "ok"
+- Check if previous assistant asked for confirmation (from history)
+
+**is_update_request**: 
+- True ONLY if general "update my meal plan" WITHOUT specific meal slot details
+- False if specific instructions given (replace, swap, exclusions, etc.)
+
+**snack_rebalance_choice**: For add_snack after prompt
+- "low calorie snack", "light snack" → "low_calorie"
+- "rebalance", "rebalance all 4 meals" → "rebalance"
+
+**target_day**: Day number for edits/snacks
+- "for day 3", "on day 2" → 3, 2
+
+**snack_dish**: Specific snack dish if mentioned
+
+---
+
+### CONVERSATION CONTEXT HANDLING
+
+Use history to resolve:
+- Implicit references ("create it" → refers to previously proposed plan)
+- Missing parameters (inherit days/calories/diet from previous turns)
+- Confirmation flows (diet conflict, calorie guardrail, delete confirmation)
+- Plan references ("update it" → which plan was discussed?)
+
+---
+
+### CRITICAL DISTINCTIONS
+
+| User says... | Intent | Why |
+|--------------|--------|-----|
+| "Create it" / "Go ahead and create" | new_plan | Creating NEW plan |
+| "Approve it" / "Approve this plan" | approve_plan | Finalizing EXISTING draft |
+| "Delete a meal" | delete_plan | No day+slot = delete whole plan |
+| "Replace day 2 breakfast" | edit_meal | Specific slot edit |
+| "I want to update my plan" | edit_meal + is_update_request=true | General, no specifics |
+| "Why 1800 kcal?" | explain | Nutrition question |
+| "What's my profile?" | profile_info | Profile inquiry |
+| "What can you do?" | app_info | Capability question |
+| "What is AI?" | out_of_scope | Outside domain |
+
+---
+
+### OUTPUT
+Return a UserIntentExtraction object with ALL fields populated. Use null/empty defaults for non-applicable fields.
+"""
+
+async def extract_user_intent(
+    user_message: str,
+    client: Optional[LLMClient] = None,
+    history: Optional[List[Dict[str, Any]]] = None
+) -> UserIntentExtraction:
+    """
+    Supervisor semantic intent parser using LLM reasoning.
+    Leverages LLM intelligence to classify ANY user message against NutriGen's domain boundaries.
+    """
+    llm = client or get_llm_client("supervisor")
+    context = _build_context_from_history(history)
+    
+    prompt = f"{INTENT_CLASSIFICATION_PROMPT}\n\n---\n\nConversation Context:\n{context}\n\nCurrent User Message: \"{user_message}\"\n\nClassify the intent and extract all parameters."
+
+    try:
+        extraction: UserIntentExtraction = await llm.generate_structured(
+            prompt=prompt,
+            response_schema=UserIntentExtraction
+        )
+        # Post-process: convert empty EditDetails to None for consistency
+        if extraction.edit_details and all(
+            v is None for v in [
+                extraction.edit_details.day,
+                extraction.edit_details.meal_type,
+                extraction.edit_details.target_meal_calories,
+                extraction.edit_details.dish_to_replace,
+                extraction.edit_details.instructions
+            ]
+        ):
+            extraction.edit_details = None
+        
+        logger.debug(f"LLM intent extraction: intent={extraction.intent}, days={extraction.requested_days}, calories={extraction.requested_calories}, diet={extraction.requested_diet_type}")
+        return extraction
+    except Exception as e:
+        logger.warning(f"Error in LLM intent extraction: {e}. Applying safe fallback.")
+        # Minimal fallback - let LLM handle it on retry, default to chat
+        return UserIntentExtraction(intent="chat")
+
+
+# =============================================================================
+# Legacy helper functions (kept for backward compatibility with tests)
+# These are NOT used by the new LLM-based extract_user_intent function
+# =============================================================================
 
 def _extract_plan_parameters_from_text(text: str) -> Dict[str, Any]:
     """Helper to extract days, calories, diet, and exclusions from any text message."""
@@ -199,39 +407,6 @@ def _extract_plan_parameters_from_text(text: str) -> Dict[str, Any]:
 
     return res
 
-def _extract_plan_name_from_text(text: str) -> Optional[str]:
-    # Check double/smart quotes first: e.g. "Good plan" or "Mass Meal"
-    m_dq = re.search(r'["“]([^"”]+)["”]', text)
-    if m_dq:
-        val = m_dq.group(1).strip()
-        if val.lower() not in ["breakfast", "lunch", "dinner", "snack"] and len(val.split()) <= 6:
-            return val
-    # Check single quotes: only when not an apostrophe in a contraction (e.g. 'Good plan')
-    m_sq = re.search(r"(?:^|[\s(])'([^']+)'(?:[\s).,!?]|$)", text)
-    if m_sq:
-        val = m_sq.group(1).strip()
-        if val.lower() not in ["breakfast", "lunch", "dinner", "snack"] and len(val.split()) <= 6:
-            return val
-    # Check explicit naming phrases without quotes:
-    # e.g. "name it as mass meal", "name it mass meal", "named mass meal", "call it mass meal", "title it mass meal"
-    m_named = re.search(
-        r'\b(?:name\s+it\s+as|name\s+it|named|call\s+it\s+as|call\s+it|title\s+it\s+as|title\s+it|rename\s+it\s+to|rename\s+to)\s+["“\']?([a-zA-Z0-9\s_-]+?)["”\']?(?:\s+(?:and|make|with|for|but|$)|$)',
-        text,
-        re.IGNORECASE
-    )
-    if m_named:
-        cand = m_named.group(1).strip()
-        if cand and cand.lower() not in ["breakfast", "lunch", "dinner", "snack", "veg", "vegetarian", "non-veg", "vegan", "a", "an", "the"]:
-            return " ".join(w.capitalize() for w in cand.split())
-
-    clean = text.lower()
-    if "good meal" in clean:
-        return "Good Meal"
-    if "good plan" in clean or clean.strip() == "good" or " good " in f" {clean} ":
-        return "Good plan"
-    if "mass meal" in clean:
-        return "Mass Meal"
-    return None
 
 def _scan_history_for_plan_context(history: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
     """Helper to scan conversation history for active plan parameters across all prior turns."""
@@ -286,593 +461,37 @@ def _scan_history_for_plan_context(history: Optional[List[Dict[str, Any]]]) -> D
 
     return ctx
 
-async def extract_user_intent(
-    user_message: str,
-    client: Optional[LLMClient] = None,
-    history: Optional[List[Dict[str, Any]]] = None
-) -> UserIntentExtraction:
-    """
-    Supervisor semantic intent parser:
-    Leverages LLM reasoning and domain rule matching to classify ANY user message against NutriGen's domain boundaries.
-    """
-    cleaned = user_message.strip().lower()
 
-    # Fast shortcut only for unambiguous standalone greetings
-    if cleaned in FAST_GREETINGS:
-        return UserIntentExtraction(intent="chat")
-
-    # Fast check: Profile inquiries ("tell about my profile", "what information does my profile hold/contain")
-    profile_inquiry_phrases = [
-        "tell about my profile", "tell me about my profile", "about my profile",
-        "what information does my profile hold", "what information does my profile contain",
-        "what information does my profile have", "what does my profile contain",
-        "what does my profile hold", "show my profile", "view my profile",
-        "what details does my profile hold", "what details does my profile contain",
-        "my profile details", "my profile information", "what is in my profile",
-        "what kind of information does my profile", "what kind of info does my profile"
-    ]
-    if any(p in cleaned for p in profile_inquiry_phrases):
-        return UserIntentExtraction(intent="profile_info")
-
-    # Inspect previous messages in history for multi-turn context
-    last_asst_content = ""
-    prev_user_content = ""
-    if history:
-        for h in reversed(history):
-            if h.get("role") == "assistant" and not last_asst_content:
-                last_asst_content = (h.get("content") or "").lower()
-            elif h.get("role") == "user" and not prev_user_content:
-                prev_user_content = (h.get("content") or "").strip()
-
-    # 1. Check if previous assistant message asked for Diet Preference Conflict confirmation or combined Diet+Calorie Conflict
-    has_diet_prompt = (
-        ("your profile preference is" in last_asst_content and "can i go ahead" in last_asst_content) or \
-        ("your profile preference is" in last_asst_content and "create a" in last_asst_content) or \
-        ("your profile preference is" in last_asst_content and "default profile" in last_asst_content) or \
-        ("your profile preference is" in last_asst_content and ("recommended target" in last_asst_content or "maintenance range" in last_asst_content))
+def _extract_plan_name_from_text(text: str) -> Optional[str]:
+    # Check double/smart quotes first: e.g. "Good plan" or "Mass Meal"
+    m_dq = re.search(r'["“]([^"”]+)["”]', text)
+    if m_dq:
+        val = m_dq.group(1).strip()
+        if val.lower() not in ["breakfast", "lunch", "dinner", "snack"] and len(val.split()) <= 6:
+            return val
+    # Check single quotes: only when not an apostrophe in a contraction (e.g. 'Good plan')
+    m_sq = re.search(r"(?:^|[\s(])'([^']+)'(?:[\s).,!?]|$)", text)
+    if m_sq:
+        val = m_sq.group(1).strip()
+        if val.lower() not in ["breakfast", "lunch", "dinner", "snack"] and len(val.split()) <= 6:
+            return val
+    # Check explicit naming phrases without quotes:
+    # e.g. "name it as mass meal", "name it mass meal", "named mass meal", "call it mass meal", "title it mass meal"
+    m_named = re.search(
+        r'\b(?:name\s+it\s+as|name\s+it|named|call\s+it\s+as|call\s+it|title\s+it\s+as|title\s+it|rename\s+it\s+to|rename\s+to)\s+["“\']?([a-zA-Z0-9\s_-]+?)["”\']?(?:\s+(?:and|make|with|for|but|$)|$)',
+        text,
+        re.IGNORECASE
     )
-    if has_diet_prompt:
-        hist_ctx = _scan_history_for_plan_context(history)
-        curr_p = _extract_plan_parameters_from_text(user_message)
+    if m_named:
+        cand = m_named.group(1).strip()
+        if cand and cand.lower() not in ["breakfast", "lunch", "dinner", "snack", "veg", "vegetarian", "non-veg", "vegan", "a", "an", "the"]:
+            return " ".join(w.capitalize() for w in cand.split())
 
-        inherited_days = curr_p["days"] or hist_ctx["days"] or 3
-        
-        # Check if user accepted advised / recommended calories
-        wants_advised = any(w in cleaned for w in [
-            "advised calorie", "advised range", "recommended target", "recommended calorie",
-            "recommended range", "advised", "recommended", "balanced plan"
-        ]) or ("remining" in cleaned and "calorie" in cleaned) or ("reminding" in cleaned and "calorie" in cleaned)
-
-        if wants_advised and hist_ctx["recommended_calories"]:
-            inherited_cal = hist_ctx["recommended_calories"]
-        elif wants_advised:
-            inherited_cal = 2250.0
-        else:
-            inherited_cal = curr_p["calories"] or hist_ctx["recommended_calories"] or hist_ctx["calories"]
-
-        inherited_excl = list(set(curr_p["exclusions"] + hist_ctx["exclusions"]))
-
-        inherited_name = curr_p.get("plan_name") or hist_ctx.get("plan_name")
-
-        veg_phrases = [
-            "create vegetarian plan", "veg plan", "go with veg", "vegetarian", "yes, create with veg",
-            "create veg", "no create a vegetarian meal", "create a vegetarian meal", "vegetarian meal",
-            "no i want veg meal plan", "i want veg meal plan", "veg meal plan", "veg meal", "want veg",
-            "make it veg", "veg foods", "with veg", "use veg", "veg only", "no veg", "go with vegetarian",
-            "create a veg plan", "create veg plan", "veg", "prefer vegetarian", "prefer veg",
-            "prefer vegetarian meal", "prefer veg meal", "for this meal prefer vegetarian", "for this meal prefer veg"
-        ]
-        if any(w in cleaned for w in veg_phrases):
-            return UserIntentExtraction(
-                intent="new_plan",
-                diet_conflict_confirmed=True,
-                chosen_diet_type="veg",
-                requested_diet_type="veg",
-                requested_days=inherited_days,
-                requested_calories=inherited_cal,
-                requested_exclusions=inherited_excl,
-                new_plan_name=inherited_name
-            )
-        non_veg_phrases = [
-            "use non-vegetarian", "non-veg", "non-vegetarian", "default profile", "use default",
-            "default", "keep non-veg", "use non-veg", "non-veg plan", "non-veg meal"
-        ]
-        if any(w in cleaned for w in non_veg_phrases):
-            return UserIntentExtraction(
-                intent="new_plan",
-                diet_conflict_confirmed=True,
-                chosen_diet_type="non-veg",
-                requested_diet_type="non-veg",
-                requested_days=inherited_days,
-                requested_calories=inherited_cal,
-                requested_exclusions=inherited_excl,
-                new_plan_name=inherited_name
-            )
-        if any(w in cleaned for w in ["vegan", "create vegan", "vegan plan", "vegan meal"]):
-            return UserIntentExtraction(
-                intent="new_plan",
-                diet_conflict_confirmed=True,
-                chosen_diet_type="vegan",
-                requested_diet_type="vegan",
-                requested_days=inherited_days,
-                requested_calories=inherited_cal,
-                requested_exclusions=inherited_excl,
-                new_plan_name=inherited_name
-            )
-
-        affirmative_or_choice = any(w in cleaned for w in [
-            "yes", "sure", "ok", "okay", "proceed", "go ahead", "please"
-        ]) or wants_advised
-        if affirmative_or_choice:
-            inherited_diet = curr_p["diet_type"] or hist_ctx["diet_type"] or "veg"
-            return UserIntentExtraction(
-                intent="new_plan",
-                diet_conflict_confirmed=True,
-                chosen_diet_type=inherited_diet,
-                requested_diet_type=inherited_diet,
-                requested_days=inherited_days,
-                requested_calories=inherited_cal,
-                requested_exclusions=inherited_excl,
-                new_plan_name=inherited_name
-            )
-
-    # 2. Check if previous assistant message asked for Calorie Guardrail confirmation / recommended target
-    is_calorie_guardrail_prompt = (
-        ("safe range" in last_asst_content or "maintenance range" in last_asst_content or "recommended target" in last_asst_content)
-        and ("would you like me to create" in last_asst_content or "can i create" in last_asst_content or "target of" in last_asst_content or "instead?" in last_asst_content)
-    )
-    if is_calorie_guardrail_prompt:
-        hist_ctx = _scan_history_for_plan_context(history)
-        curr_p = _extract_plan_parameters_from_text(user_message)
-
-        inherited_days = curr_p["days"] or hist_ctx["days"] or 3
-
-        wants_advised = any(w in cleaned for w in [
-            "advised calorie", "advised range", "recommended target", "recommended calorie",
-            "recommended range", "advised", "recommended", "balanced plan"
-        ]) or ("remining" in cleaned and "calorie" in cleaned) or ("reminding" in cleaned and "calorie" in cleaned)
-
-        if wants_advised and hist_ctx["recommended_calories"]:
-            inherited_cal = hist_ctx["recommended_calories"]
-        elif wants_advised:
-            inherited_cal = 2250.0
-        else:
-            inherited_cal = curr_p["calories"] or hist_ctx["recommended_calories"] or hist_ctx["calories"]
-
-        inherited_diet = curr_p["diet_type"] or hist_ctx["diet_type"]
-        inherited_excl = list(set(curr_p["exclusions"] + hist_ctx["exclusions"]))
-
-        # If user replies affirmatively or modifies constraints (e.g. "okay and can u make it as a veg meal")
-        affirmative_or_modifying = any(w in cleaned for w in [
-            "ok", "okay", "yes", "yeah", "sure", "go ahead", "proceed", "make it", "create",
-            "plan", "veg", "vegetarian", "non-veg", "vegan", "recommended", "balanced plan"
-        ])
-        if affirmative_or_modifying:
-            # If user previously requested/discussed a specific diet or confirms, maintain confirmed status
-            is_confirmed_tag = "(confirmed)" in cleaned or "confirmed" in cleaned or bool(inherited_diet) or any(w in cleaned for w in ["yes", "yeah", "sure", "ok", "okay", "proceed"])
-            return UserIntentExtraction(
-                intent="new_plan",
-                diet_conflict_confirmed=is_confirmed_tag,
-                chosen_diet_type=inherited_diet if is_confirmed_tag else None,
-                requested_diet_type=inherited_diet,
-                requested_days=inherited_days,
-                requested_calories=inherited_cal,
-                requested_exclusions=inherited_excl
-            )
-
-    # 3. Check if previous assistant message asked which meal plan to update
-    is_pending_update_selection = (
-        ("which one would you like to update" in last_asst_content
-         or "which one you'd like to update" in last_asst_content
-         or "which plan would you like to update" in last_asst_content
-         or "which meal plan would you like to update" in last_asst_content
-         or "which one would you prefer to update" in last_asst_content
-         or "which one do you want to update" in last_asst_content)
-    )
-    if is_pending_update_selection:
-        target_id = None
-        m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-        if m_id:
-            target_id = int(m_id.group(1))
-        plan_name = _extract_plan_name_from_text(user_message)
-        
-        # Check if user already provided specific slot edit instructions in this reply
-        meal_slot_keywords = ["breakfast", "lunch", "dinner", "snack"]
-        has_slot = any(k in cleaned for k in meal_slot_keywords)
-        has_action = any(k in cleaned for k in ["replace", "swap", "change", "modify", "switch", "substitute"])
-        has_specific = has_slot and has_action
-        
-        edit_dt = None
-        if has_specific:
-            m_day = re.search(r'day\s*(\d+)', cleaned)
-            d_val = int(m_day.group(1)) if m_day else None
-            m_slot = re.search(r'\b(breakfast|lunch|dinner|snack)\b', cleaned)
-            s_val = m_slot.group(1) if m_slot else None
-            edit_dt = EditDetails(day=d_val, meal_type=s_val, instructions=user_message)
-            
-        return UserIntentExtraction(
-            intent="edit_meal",
-            target_plan_id=target_id,
-            target_plan_name=plan_name or user_message.strip(),
-            is_update_request=not has_specific,
-            edit_details=edit_dt
-        )
-
-    # 2. Check if previous assistant message asked for Snack rebalance options
-    if "snack" in last_asst_content and any(w in last_asst_content for w in ["exceed", "calorie", "target", "rebalance", "low-calorie", "light"]):
-        hist_day = None
-        if history:
-            for h in reversed(history):
-                c = (h.get("content") or "").lower()
-                m_d = re.search(r'\b(?:for\s+)?day\s*(\d+)\b', c)
-                if m_d:
-                    hist_day = int(m_d.group(1))
-                    break
-        m_curr_day = re.search(r'\b(?:for\s+)?day\s*(\d+)\b', cleaned)
-        chosen_day = int(m_curr_day.group(1)) if m_curr_day else hist_day
-
-        if any(w in cleaned for w in ["low-calorie", "low calorie", "add low calorie", "add low-calorie", "light snack", "light"]):
-            return UserIntentExtraction(intent="add_snack", snack_rebalance_choice="low_calorie", target_day=chosen_day)
-        if any(w in cleaned for w in ["rebalance", "rebalance all 4 meals", "all 4 meals"]):
-            return UserIntentExtraction(intent="add_snack", snack_rebalance_choice="rebalance", target_day=chosen_day)
-
-    # 3. Check if previous assistant message asked for Plan Deletion confirmation
-    is_pending_delete = (
-        "are you sure you want to delete" in last_asst_content
-        or "can i delete it" in last_asst_content
-        or "which meal plan should be deleted" in last_asst_content
-        or "reply 'yes, delete it'" in last_asst_content
-        or "reply \"yes, delete it\"" in last_asst_content
-    )
-    if is_pending_delete:
-        if any(w in cleaned for w in ["yes", "yeah", "yep", "sure", "confirm", "proceed", "go ahead", "delete it", "ok", "okay"]):
-            target_id = None
-            m = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-            if m:
-                target_id = int(m.group(1))
-            plan_name = _extract_plan_name_from_text(user_message)
-            return UserIntentExtraction(
-                intent="delete_plan",
-                target_plan_id=target_id,
-                target_plan_name=plan_name,
-                is_delete_confirmation=True
-            )
-        if any(w in cleaned for w in ["no", "cancel", "don't", "keep it", "stop"]):
-            return UserIntentExtraction(
-                intent="delete_plan",
-                is_delete_confirmation=False
-            )
-
-    # Fast rule check: Rename plan
-    if "rename" in cleaned and ("plan" in cleaned or "#" in cleaned):
-        target_id = None
-        m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-        if m_id:
-            target_id = int(m_id.group(1))
-        plan_name = _extract_plan_name_from_text(user_message)
-        m_name = re.search(r'to\s+["\']?([^"\']+)["\']?$', user_message, re.IGNORECASE)
-        new_name = m_name.group(1).strip() if m_name else None
-        return UserIntentExtraction(
-            intent="rename_plan",
-            target_plan_id=target_id,
-            target_plan_name=plan_name,
-            new_plan_name=new_name
-        )
-
-    # Fast rule check: Explicit plan / meal deletion (e.g. "hey i want to delete a meal", "i want to delete a meal", "delete a meal", "delete meal", "delete meal plan", "delete good meal")
-    delete_keywords = ["delete", "remove", "clear", "cancel"]
-    has_delete = any(k in cleaned for k in delete_keywords)
-    has_target = any(w in cleaned for w in ["plan", "meal plan", "a meal", "the meal", "my meal", "this meal", "meal", "good meal"])
-    has_specific_slot = bool(re.search(r'day\s*\d+', cleaned)) and any(s in cleaned for s in ["breakfast", "lunch", "dinner", "snack"])
-    if has_delete and has_target and not has_specific_slot and not any(w in cleaned for w in ["why", "explain"]):
-        target_id = None
-        m = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-        if m:
-            target_id = int(m.group(1))
-        plan_name = _extract_plan_name_from_text(user_message)
-        return UserIntentExtraction(
-            intent="delete_plan",
-            target_plan_id=target_id,
-            target_plan_name=plan_name,
-            is_delete_confirmation=("yes" in cleaned or "confirm" in cleaned)
-        )
-
-    # Fast rule check: Specific meal slot edit / swap / replace / modification
-    # e.g. 'I want to update "Good Meal": replace day 2 breakfast with something else and reduce the calorie like 400 to 500 kcal'
-    meal_slot_keywords = ["breakfast", "lunch", "dinner", "snack"]
-    has_meal_slot = any(k in cleaned for k in meal_slot_keywords) or bool(re.search(r'day\s*\d+', cleaned))
-    has_edit_action = any(k in cleaned for k in ["replace", "swap", "change", "modify", "update", "switch", "substitute"])
-
-    if has_meal_slot and has_edit_action and not any(k in cleaned for k in ["create a 3-day", "plan a 3-day", "plan a 7-day", "generate a"]):
-        m_day = re.search(r'day\s*(\d+)', cleaned)
-        day_val = int(m_day.group(1)) if m_day else None
-        if not day_val and history:
-            for h in reversed(history):
-                c = (h.get("content") or "").strip().lower()
-                m_h_d = re.search(r'\b(?:for\s+|on\s+)?day\s*(\d+)\b', c)
-                if m_h_d:
-                    day_val = int(m_h_d.group(1))
-                    break
-
-        m_slot = re.search(r'\b(breakfast|lunch|dinner|snack)\b', cleaned)
-        m_type = m_slot.group(1) if m_slot else None
-
-        # Check for slot calorie limits (e.g. "400 to 500 kcal", "400-500 kcal", "500 kcal")
-        slot_cal = None
-        m_range = re.search(r'(\d+)\s*(?:to|-)\s*(\d+)\s*(?:kcal|cal|calories|calorle)', cleaned)
-        if m_range:
-            slot_cal = (float(m_range.group(1)) + float(m_range.group(2))) / 2.0
-        else:
-            m_single = re.search(r'(\d+)\s*(?:kcal|cal|calories|calorle)', cleaned)
-            if m_single:
-                slot_cal = float(m_single.group(1))
-
-        plan_name = _extract_plan_name_from_text(user_message)
-        target_id = None
-        m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-        if m_id:
-            target_id = int(m_id.group(1))
-
-        # If plan is not explicitly named in current message, inherit from history
-        if not plan_name and not target_id and history:
-            for h in reversed(history):
-                c = (h.get("content") or "").strip()
-                # Check for explicit plan name recognized by helper
-                p_cand = _extract_plan_name_from_text(c)
-                if p_cand:
-                    plan_name = p_cand
-                    break
-                # Check for double/smart quotes around plan name (e.g. update your "Good" plan)
-                m_q = re.search(r'["“]([^"”]+)["”](?:\s*plan)?', c, re.IGNORECASE)
-                if m_q and m_q.group(1).lower() not in ["breakfast", "lunch", "dinner", "snack"]:
-                    cand_name = m_q.group(1).strip()
-                    if len(cand_name.split()) <= 5:
-                        plan_name = cand_name
-                        break
-
-        # Clean instructions to remove redundant "(Plan #11):" noise
-        cleaned_instructions = re.sub(r'\(Plan\s*#\d+\):?', '', user_message, flags=re.IGNORECASE).strip()
-
-        return UserIntentExtraction(
-            intent="edit_meal",
-            target_plan_id=target_id,
-            target_plan_name=plan_name,
-            requested_calories=None,  # Slot calorie is NOT a daily target!
-            is_update_request=False,  # Specific meal details provided
-            edit_details=EditDetails(
-                day=day_val,
-                meal_type=m_type,
-                target_meal_calories=slot_cal,
-                instructions=cleaned_instructions
-            )
-        )
-
-    # Fast rule check: General update / modify request (e.g. "I want to update Good Meal", "update my meal plan")
-    general_update_phrases = [
-        "i want to update", "i wanted to update", "update my meal plan", "update a meal plan",
-        "update the meal plan", "update meal plan", "modify my meal plan", "modify meal plan",
-        "update good meal", "modify good meal", "update a meal", "update the meal", "update meal",
-        "modify a meal", "modify meal"
-    ]
-    if any(p in cleaned for p in general_update_phrases) and not has_meal_slot:
-        target_id = None
-        m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-        if m_id:
-            target_id = int(m_id.group(1))
-        plan_name = _extract_plan_name_from_text(user_message)
-        p_params = _extract_plan_parameters_from_text(user_message)
-        has_excl_instructions = bool(p_params.get("exclusions")) or any(w in cleaned for w in ["pork", "beef", "turkey", "meat", "dairy", "chicken", "fish"])
-        return UserIntentExtraction(
-            intent="edit_meal",
-            target_plan_id=target_id,
-            target_plan_name=plan_name,
-            requested_exclusions=p_params.get("exclusions", []),
-            is_update_request=not has_excl_instructions,
-            requested_calories=None,
-            edit_details=EditDetails(instructions=user_message) if has_excl_instructions else None
-        )
-
-    # Fast rule check: Add snack
-    if "snack" in cleaned and any(w in cleaned for w in ["add", "include", "put", "want a snack", "have a snack", "snack meal"]):
-        m_day = re.search(r'\b(?:for\s+)?day\s*(\d+)\b', cleaned)
-        t_day = int(m_day.group(1)) if m_day else None
-        m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-        t_id = int(m_id.group(1)) if m_id else None
-        p_name = _extract_plan_name_from_text(user_message)
-        choice = None
-        if any(w in cleaned for w in ["low-calorie", "low calorie", "light snack", "light"]):
-            choice = "low_calorie"
-        elif any(w in cleaned for w in ["rebalance", "all 4 meals"]):
-            choice = "rebalance"
-        return UserIntentExtraction(
-            intent="add_snack",
-            target_day=t_day,
-            target_plan_id=t_id,
-            target_plan_name=p_name,
-            snack_rebalance_choice=choice
-        )
-
-    # Fast rule check: Confirming or commanding plan creation from conversation flow
-    # e.g. "okay go ahead and create it", "go ahead and create it", "create it", "go ahead and create", "go ahead and make it", "create the plan"
-    confirm_creation_phrases = [
-        "go ahead and create it", "go ahead and create", "go ahead and make it", "go ahead and make",
-        "create it please", "create it now", "create it", "create the plan", "make the plan",
-        "proceed with creating", "proceed to create", "yes create it", "please create it",
-        "okay create it", "ok create it", "go ahead with creating", "go ahead and generate",
-        "create the meal plan", "create mass meal", "create the mass meal"
-    ]
-    is_confirm_creation = (
-        any(p in cleaned for p in confirm_creation_phrases)
-        or (
-            any(w in cleaned for w in ["go ahead", "proceed", "yes please", "sure", "ok", "okay"])
-            and any(w in cleaned for w in ["create", "make", "generate"])
-            and not any(w in cleaned for w in ["approve", "grocery", "delete", "remove", "cancel", "replace", "swap"])
-        )
-    )
-    if is_confirm_creation:
-        hist_ctx = _scan_history_for_plan_context(history)
-        curr_p = _extract_plan_parameters_from_text(user_message)
-
-        chosen_days = curr_p["days"] or hist_ctx["days"] or 3
-        chosen_cal = curr_p["calories"] or hist_ctx["recommended_calories"] or hist_ctx["calories"]
-        chosen_diet = curr_p["diet_type"] or hist_ctx["diet_type"] or "veg"
-        chosen_excl = list(set(curr_p["exclusions"] + hist_ctx["exclusions"]))
-        chosen_name = curr_p.get("plan_name") or hist_ctx.get("plan_name")
-
-        return UserIntentExtraction(
-            intent="new_plan",
-            requested_days=chosen_days,
-            requested_calories=chosen_cal,
-            requested_diet_type=chosen_diet,
-            chosen_diet_type=chosen_diet,
-            diet_conflict_confirmed=True,
-            requested_exclusions=chosen_excl,
-            new_plan_name=chosen_name
-        )
-
-    # Fast rule check: Approve meal plan
-    approve_phrases = ["approve this plan", "approve the plan", "approve plan", "approve draft", "approve meal plan", "approve"]
-    if any(p == cleaned or cleaned.startswith(p) for p in approve_phrases) or (cleaned.startswith("approve ") and "grocery" not in cleaned):
-        plan_name = _extract_plan_name_from_text(user_message)
-        m_id = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-        target_id = int(m_id.group(1)) if m_id else None
-        return UserIntentExtraction(
-            intent="approve_plan",
-            target_plan_id=target_id,
-            target_plan_name=plan_name
-        )
-
-    # Fast rule check for app capabilities / general queries / scope inquiries
-    app_info_triggers = [
-        "other than", "what else", "besides", "what can you do", "what do you do",
-        "how does this work", "other results", "other result", "other info", "other information",
-        "can you provide other", "can you show other", "can you do other", "provide other results",
-        "provide other", "give other results", "show other results"
-    ]
-    if any(ph in cleaned for ph in app_info_triggers):
-        return UserIntentExtraction(intent="app_info")
-
-    llm = client or get_llm_client("supervisor")
-    prompt = (
-        "You are the Supervisor intent classifier for NutriGen, a specialized clinical meal planning assistant.\n\n"
-        "Analyze the user message and classify its intent into EXACTLY ONE category.\n\n"
-        "--- DOMAIN BOUNDARY DEFINITION ---\n"
-        "NutriGen's domain is STRICTLY LIMITED to:\n"
-        "• Meal planning, daily menus, breakfast/lunch/dinner/snack schedules.\n"
-        "• Dietary nutrition, calories, macronutrients (protein, carbs, fats), vitamins.\n"
-        "• Cooking recipes, food ingredients, and culinary preparation.\n"
-        "• Food allergies, dietary preferences (vegetarian, vegan, non-veg, keto), ingredient exclusions.\n"
-        "• Grocery shopping lists and Mandi wholesale ingredient prices.\n"
-        "• User profile parameters and Inquiries about NutriGen itself.\n\n"
-        "--- INTENT CATEGORIES ---\n"
-        "1. 'profile_info':\n"
-        "   - The user asks about what data/details are in their user profile (e.g. 'Tell about my profile', 'What information does my profile contain/hold?', 'Show my profile details').\n\n"
-        "2. 'rename_plan':\n"
-        "   - Requesting to rename a meal plan (e.g. 'Rename Plan 1 to High Protein', 'Rename my meal plan to Weekend Veg Feast').\n\n"
-        "3. 'add_snack':\n"
-        "   - Asking to add or include a snack meal in a plan (e.g. 'Add a snack to day 3', 'Can I have an evening snack?').\n\n"
-        "4. 'out_of_scope':\n"
-        "   - ANY question or request that falls OUTSIDE the food/nutrition/meal-planning domain.\n"
-        "   - Examples: iPhones, Apple CEO, pharmaceuticals/paracetamol, AI, politics, coding, math, general trivia.\n\n"
-        "5. 'chat':\n"
-        "   - Casual greetings, goodbyes, social pleasantries, or polite small talk ('hi', 'hello', 'good morning', 'thanks').\n\n"
-        "6. 'app_info':\n"
-        "   - Questions specifically asking what NutriGen does or how its system works, or asking if it can provide other results/capabilities ('What can you do for me?', 'Explain how you work', 'Can you provide other results than this?').\n\n"
-        "7. 'explain':\n"
-        "   - Questions about dietary nutrition, calories, macros, or food science ('How are my calories calculated?', 'Why 1800 kcal?').\n\n"
-        "8. 'new_plan':\n"
-        "   - User requests or confirms creating a NEW multi-day meal plan (e.g. 'Plan a 5-day vegetarian meal plan', 'Generate meals for 1900 kcal', 'okay go ahead and create it', 'create it', 'create the plan').\n\n"
-        "9. 'edit_meal':\n"
-        "   - MUST ONLY be selected when user explicitly asks to modify, swap, replace, or update a meal dish in an existing plan (e.g. 'replace day 2 breakfast with something else', 'swap lunch with paneer', 'I want to update Good Meal'). NEVER select for general questions, and NEVER select for 'delete a meal' or 'delete meal'!\n\n"
-        "10. 'approve_plan':\n"
-        "   - User wants to APPROVE an already-drafted meal plan to finalize it and compile grocery lists (e.g. 'approve this plan', 'looks good approve it', 'approve'). CRITICAL: If the user says 'create it', 'go ahead and create it', or asks to make/create a plan, this is ALWAYS 'new_plan', NEVER 'approve_plan'!\n\n"
-        "11. 'grocery_only':\n"
-        "   - Requesting only grocery lists or mandi commodity prices.\n\n"
-        "12. 'delete_plan':\n"
-        "   - Asking to delete a meal plan or meal (e.g. 'hey i want to delete a meal', 'delete a meal', 'delete meal', 'delete good meal plan', 'i want to delete this meal plan'), or confirming deletion. CRITICAL: 'delete a meal' or 'delete meal' without a specific day and slot MUST ALWAYS be classified as 'delete_plan', NEVER 'edit_meal'!\n\n"
-        f"User message: \"{user_message}\"\n\n"
-        "--- CRITICAL FIELD EXTRACTION RULES ---\n"
-        "• MEAL EDITS vs NEW PLANS:\n"
-        "  - If user wants to replace/swap/modify a meal slot (e.g. 'replace day 2 breakfast and reduce calories like 400 to 500 kcal'):\n"
-        "    * intent is ALWAYS 'edit_meal' (NEVER 'new_plan')!\n"
-        "    * requested_calories MUST BE NULL! (requested_calories represents entire daily target, NOT single meal slot).\n"
-        "    * edit_details: set day (e.g. 2), meal_type ('breakfast'), target_meal_calories (450.0), and instructions.\n"
-        "• requested_diet_type: (MUST extract if user mentions diet preference: 'vegetarian'/'veg' -> 'veg', 'vegan' -> 'vegan', 'non-vegetarian'/'non-veg' -> 'non-veg')\n"
-        "• target_plan_name: (string name if user mentions a plan by name like 'Good Meal' or in quotes)\n"
-        "• target_plan_id: (integer plan id if user explicitly writes '#2' or 'Plan 2')\n"
-        "• is_update_request: (true ONLY if user generally asks 'I want to update my meal plan' without specific meal slot details)\n"
-        "• is_delete_confirmation: (true if user says 'yes', 'confirm', 'yes delete it')\n"
-    )
-
-    try:
-        extraction: UserIntentExtraction = await llm.generate_structured(
-            prompt=prompt,
-            response_schema=UserIntentExtraction
-        )
-        p_params = _extract_plan_parameters_from_text(user_message)
-        if p_params.get("exclusions"):
-            current_excl = list(extraction.requested_exclusions or [])
-            for exc in p_params["exclusions"]:
-                if exc not in current_excl:
-                    current_excl.append(exc)
-            extraction.requested_exclusions = current_excl
-
-        if extraction.requested_exclusions or (
-            extraction.edit_details and any(w in (extraction.edit_details.instructions or "").lower() for w in [
-                "replace", "swap", "remove", "exclude", "without", "pork", "beef", "turkey", "meat", "chicken", "fish", "dairy"
-            ])
-        ):
-            extraction.is_update_request = False
-
-        return extraction
-    except Exception as e:
-        logger.warning(f"Error in LLM intent extraction: {e}. Applying safe fallback.")
-        # Fall back to 'delete_plan' if deletion keywords present
-        if any(w in cleaned for w in ["delete", "remove plan", "clear plan", "cancel plan"]):
-            target_id = None
-            m = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-            if m:
-                target_id = int(m.group(1))
-            plan_name = _extract_plan_name_from_text(user_message)
-            return UserIntentExtraction(
-                intent="delete_plan",
-                target_plan_id=target_id,
-                target_plan_name=plan_name,
-                is_delete_confirmation=("yes" in cleaned or "confirm" in cleaned)
-            )
-        # Fall back to 'rename_plan' if rename keywords present
-        if "rename" in cleaned:
-            target_id = None
-            m = re.search(r'(?:plan\s*#?|#)(\d+)', cleaned)
-            if m:
-                target_id = int(m.group(1))
-            plan_name = _extract_plan_name_from_text(user_message)
-            return UserIntentExtraction(intent="rename_plan", target_plan_id=target_id, target_plan_name=plan_name)
-        # Fall back to 'profile_info'
-        if "profile" in cleaned:
-            return UserIntentExtraction(intent="profile_info")
-        # Fall back to 'edit_meal' if swap/replace/update keywords present
-        if any(w in cleaned for w in ["swap", "replace", "change meal", "change breakfast", "change lunch", "change dinner", "edit meal", "edit plan", "update"]):
-            plan_name = _extract_plan_name_from_text(user_message)
-            return UserIntentExtraction(
-                intent="edit_meal",
-                target_plan_name=plan_name,
-                edit_details=EditDetails(instructions=user_message)
-            )
-        # Fall back to 'new_plan' ONLY if planning action keywords are present
-        if any(w in cleaned for w in ["generate", "plan", "diet", "meal plan", "menu", "schedule meals"]):
-            d_type = "veg" if "veg" in cleaned and "non" not in cleaned else ("non-veg" if "non-veg" in cleaned or "chicken" in cleaned or "meat" in cleaned else None)
-            return UserIntentExtraction(intent="new_plan", requested_diet_type=d_type)
-        
-        # If the query is completely unrelated to food/nutrition and not a greeting, fall back to out_of_scope
-        food_or_chat_keywords = [
-            "hi", "hello", "hey", "help", "thanks", "thank you", "bye", "good morning", "good evening",
-            "food", "meal", "diet", "recipe", "cook", "eat", "grocery", "nutrition", "calorie", "protein",
-            "carb", "fat", "breakfast", "lunch", "dinner", "snack", "plan", "veg", "vegan", "chicken", "paneer"
-        ]
-        if not any(w in cleaned for w in food_or_chat_keywords):
-            return UserIntentExtraction(intent="out_of_scope")
-
-        return UserIntentExtraction(intent="chat")
-
-
+    clean = text.lower()
+    if "good meal" in clean:
+        return "Good Meal"
+    if "good plan" in clean or clean.strip() == "good" or " good " in f" {clean} ":
+        return "Good plan"
+    if "mass meal" in clean:
+        return "Mass Meal"
+    return None

@@ -172,13 +172,13 @@ export default function PlansPage() {
           <p className="page-subtitle">Review, adjust, and approve your agent-generated meal plans.</p>
         </div>
 
-        <div className="card empty-state" style={{ padding: '60px var(--space-6)' }}>
+        <div className="card empty-state" style={{ padding: '72px var(--space-8)' }}>
           <div className="empty-icon">📋</div>
           <h2 className="empty-title">No meal plans found</h2>
           <p className="empty-desc">
             You don't have an active meal plan yet. Start a conversation with our multi-agent assistant to generate your first personalized plan.
           </p>
-          <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+          <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
             <button
               className="btn btn-primary"
               onClick={() => navigate('/app/chat')}
@@ -186,13 +186,6 @@ export default function PlansPage() {
             >
               <MessageSquare size={16} />
               Start Planning in Chat
-            </button>
-            <button
-              className="btn btn-outline"
-              onClick={handleLoadSample}
-              id="empty-plan-sample-btn"
-            >
-              Load Sample 7-Day Plan
             </button>
           </div>
         </div>

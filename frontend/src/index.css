@@ -2767,27 +2767,30 @@ ol {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px var(--space-6);
+  padding: 72px var(--space-8);
   text-align: center;
+  margin-top: 24px;
+  margin-bottom: 8px;
+  min-height: 280px;
 }
 
 .empty-icon {
-  font-size: 40px;
-  margin-bottom: var(--space-4);
+  font-size: 44px;
+  margin-bottom: var(--space-5);
 }
 
 .empty-title {
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--gray-700);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .empty-desc {
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
   color: var(--gray-500);
-  max-width: 280px;
-  margin-bottom: var(--space-5);
+  max-width: 320px;
+  margin-bottom: var(--space-4);
   line-height: 1.6;
 }
 

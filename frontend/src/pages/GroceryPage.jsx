@@ -164,7 +164,7 @@ export default function GroceryPage() {
 
       {/* Empty State when no approved grocery list exists */}
       {(!currentGrocery || !currentGrocery.categories || allCategories.length === 0) ? (
-        <div className="card empty-state" style={{ padding: '60px var(--space-6)' }}>
+        <div className="card empty-state" style={{ padding: '72px var(--space-8)' }}>
           <div className="empty-icon">🛒</div>
           <h2 className="empty-title">
             {activePlan ? `"${activePlan.name}" is currently in Draft` : 'No grocery list generated yet'}

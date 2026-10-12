@@ -106,7 +106,7 @@ function NavGroceryIcon({ active }) {
 export default function Sidebar({ mobileOpen, onMobileClose }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { profile, signOut, plansBadge, groceryBadge, setPlansBadge, setGroceryBadge } = useApp();
+  const { profile, user, signOut, plansBadge, groceryBadge, setPlansBadge, setGroceryBadge } = useApp();
   const [showProfileDrop, setShowProfileDrop] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const footerRef = useRef(null);

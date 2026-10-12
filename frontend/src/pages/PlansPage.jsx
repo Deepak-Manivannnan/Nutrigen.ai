@@ -23,6 +23,7 @@ import {
   Check,
   Calendar,
   CalendarClock,
+  MessageSquare,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { generateDemoPlan } from '../utils/workflowSimulator';
@@ -35,8 +36,9 @@ const MEAL_ICONS = {
 };
 
 function formatTimestamp(ts) {
-  if (!ts) return null;
+  if (!ts) return '—';
   const date = new Date(ts);
+  if (isNaN(date.getTime())) return '—';
   const now = new Date();
   const diffMs = now - date;
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
@@ -56,8 +58,9 @@ function formatTimestamp(ts) {
 }
 
 function formatAbsoluteDate(ts) {
-  if (!ts) return null;
+  if (!ts) return '—';
   const date = new Date(ts);
+  if (isNaN(date.getTime())) return '—';
   return date.toLocaleDateString('en-US', { 
     year: 'numeric', 
     month: 'short', 
@@ -131,7 +134,8 @@ export default function PlansPage() {
   }
 
   // Active plan lookup
-  const activePlan = plans.find(p => p.id === activePlanId) || plans[0] || null;
+  const plansArray = Array.isArray(plans) ? plans : [];
+  const activePlan = plansArray.find(p => p.id === activePlanId) || plansArray[0] || null;
 
   function handleApprove(planId) {
     approvePlan(planId);
@@ -160,7 +164,7 @@ export default function PlansPage() {
     addToast('Sample 7-day meal plan created!', 'success');
   }
 
-  if (!activePlan || plans.length === 0) {
+  if (!activePlan || plansArray.length === 0) {
     return (
       <div className="page-content" id="plans-page">
         <div className="page-header">
@@ -226,9 +230,9 @@ export default function PlansPage() {
       </div>
 
       {/* Plan Selector tabs if multiple plans */}
-      {plans.length > 1 && (
+      {plansArray.length > 1 && (
         <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-6)', overflowX: 'auto', paddingBottom: 4 }}>
-          {plans.map(p => {
+          {plansArray.map(p => {
             const isSelected = p.id === activePlan.id;
             const statusLabel = p.status === 'approved' ? `Version ${p.version || 1}` : 'Draft';
             return (

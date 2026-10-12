@@ -14,8 +14,10 @@ export default function GroceryPage() {
   const { plans, activePlanId, setActivePlanId, groceryList, setGrocery, addToast } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
 
+  const plansArray = Array.isArray(plans) ? plans : [];
+
   // Resolve active plan and its specific grocery checklist
-  const activePlan = plans.find(p => p.id === activePlanId) || plans[0] || null;
+  const activePlan = plansArray.find(p => p.id === activePlanId) || plansArray[0] || null;
   const currentGrocery = (activePlan && activePlan.grocery_list)
     ? adaptBackendGrocery(activePlan.grocery_list, activePlan.days)
     : (activePlan ? null : groceryList);
@@ -142,9 +144,9 @@ export default function GroceryPage() {
       </div>
 
       {/* Plan Selector tabs if multiple plans */}
-      {plans.length > 1 && (
+      {plansArray.length > 1 && (
         <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-6)', overflowX: 'auto', paddingBottom: 4 }}>
-          {plans.map(p => {
+          {plansArray.map(p => {
             const isSelected = p.id === (activePlan?.id);
             return (
               <button

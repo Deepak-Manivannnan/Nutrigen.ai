@@ -264,6 +264,8 @@ export function adaptBackendPlan(rawPlan, profile) {
     version: rawPlan.version || 1,
     grocery_list: rawPlan.grocery_list || null,
     created_at: rawPlan.created_at,
+    updated_at: rawPlan.updated_at,
+    approved_at: rawPlan.approved_at,
     planDays,
     meals: rawPlan.meals || [],
   };

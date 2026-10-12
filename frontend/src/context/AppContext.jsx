@@ -81,11 +81,14 @@ export function AppProvider({ children }) {
 
   // Universal helper to load user profile and user's meal plans from the backend database
   const loadUserData = useCallback(async (userId, optProfile = null) => {
+    if (!userId) {
+      console.warn('loadUserData called without userId');
+      return;
+    }
     try {
-      const activeId = userId || 1;
       let liveProfile = optProfile;
       if (!liveProfile) {
-        liveProfile = await fetchCurrentProfile(activeId);
+        liveProfile = await fetchCurrentProfile(userId);
       }
 
       if (liveProfile) {
@@ -130,8 +133,9 @@ export function AppProvider({ children }) {
   // Initial load upon startup / refresh
   useEffect(() => {
     const savedUser = getStoredUser();
-    const targetId = savedUser?.id || 1;
-    loadUserData(targetId, savedUser?.profile);
+    if (savedUser) {
+      loadUserData(savedUser.id, savedUser.profile);
+    }
   }, [loadUserData]);
 
   const signIn = useCallback(async (userData) => {

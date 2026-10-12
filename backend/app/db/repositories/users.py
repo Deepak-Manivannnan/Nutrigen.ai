@@ -59,13 +59,14 @@ class UserRepository:
             name=name.strip(),
             email=email.strip().lower(),
             password_hash=password_hash,
-            age=26,
-            sex="female",
-            height_cm=165.0,
-            weight_kg=60.0,
-            activity_level="medium",
-            goal="maintain",
-            diet_type="veg",
+            # Profile fields left as None - will be set during onboarding
+            age=None,
+            sex=None,
+            height_cm=None,
+            weight_kg=None,
+            activity_level=None,
+            goal=None,
+            diet_type=None,
             dislikes=[],
         )
         self.session.add(user)

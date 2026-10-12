@@ -226,13 +226,6 @@ export default function HomePage() {
                   Our autonomous clinical 4-step workflow creates balanced, allergen-safe meals for you
                 </p>
               </div>
-              <button
-                className="dash-view-all-btn"
-                onClick={() => navigate('/app/chat')}
-                id="create-first-plan-btn"
-              >
-                Create your first plan <ArrowRight size={15} />
-              </button>
             </div>
 
             <div className="how-it-works-grid">

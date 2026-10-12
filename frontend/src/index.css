@@ -1196,7 +1196,8 @@ ol {
 }
 
 .dash-greeting-wrap {
-  margin-bottom: 16px;
+  margin-top: 12px;
+  margin-bottom: 20px;
   flex-shrink: 0;
 }
 
@@ -1336,9 +1337,9 @@ ol {
   align-items: center;
   justify-content: space-between;
   overflow: hidden;
-  margin-bottom: 22px;
-  height: 146px;
-  min-height: 146px;
+  margin-bottom: 28px;
+  height: 156px;
+  min-height: 156px;
   position: relative;
   flex-shrink: 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
@@ -1435,6 +1436,7 @@ ol {
   display: flex;
   flex-direction: column;
   margin-top: 0;
+  padding-bottom: 8px;
 }
 
 .dash-plans-header {

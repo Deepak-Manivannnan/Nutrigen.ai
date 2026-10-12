@@ -2357,10 +2357,12 @@ ol {
 
 /* Onboarding */
 .onboarding-page {
-  min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
   background: var(--gray-50);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .onboarding-header {
@@ -2379,11 +2381,15 @@ ol {
   align-items: flex-start;
   justify-content: center;
   padding: var(--space-6) var(--space-4);
+  overflow: hidden;
 }
 
 .onboarding-container {
   width: 100%;
   max-width: 640px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .onboarding-card {
@@ -2392,6 +2398,10 @@ ol {
   border-radius: var(--radius-xl);
   overflow: hidden;
   box-shadow: var(--shadow-lg);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .onboarding-step-tabs {
@@ -2449,6 +2459,9 @@ ol {
 
 .onboarding-content {
   padding: var(--space-5);
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .onboarding-step-title {

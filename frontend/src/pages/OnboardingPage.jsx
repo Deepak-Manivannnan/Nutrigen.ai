@@ -129,24 +129,6 @@ export default function OnboardingPage() {
     if (step > 1) setStep(s => s - 1);
   }
 
-  function handleFinish() {
-    const profileData = {
-      ...form,
-      name: user?.name || '',  // Include name from signup
-      age: Number(form.age),
-      height_cm: Number(form.height_cm),
-      weight_kg: Number(form.weight_kg),
-      fixed_meals: {
-        breakfast: form.fixed_breakfast,
-        lunch: form.fixed_lunch,
-        dinner: form.fixed_dinner,
-      },
-    };
-    createProfile(profileData);
-    addToast('Profile created! Welcome to Nutrigen.ai 🎉', 'success');
-    navigate('/app/home');
-  }
-
   function canProceed() {
     if (step === 1) {
       // Next button enabled when all 4 basic fields have any input
@@ -342,23 +324,19 @@ export default function OnboardingPage() {
                         }}
                         onRemove={t => set('allergies', form.allergies.filter(a => a.toLowerCase() !== t.toLowerCase()))}
                         placeholder="e.g. sesame, mustard"
+                        allowAlphaOnly
                       />
                     </div>
-                    {form.allergies.length === 0 && (
-                      <div style={{ padding: 'var(--space-4)', background: 'var(--green-50)', border: '1px solid var(--green-200)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--green-700)' }}>
-                        ✓ No allergies selected. You can add them later from your profile.
-                      </div>
-                    )}
                   </div>
                 </>
               )}
 
               {/* Step 5: Review */}
-              {step === 6 && (
+              {step === 5 && (
                 <>
                   <h2 className="onboarding-step-title">Review your profile</h2>
                   <p className="onboarding-step-desc">Everything looks good? You can always edit later.</p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+                  <div className="review-list" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
                     {[
                       { label: 'Name', value: user?.name || '—' },
                       { label: 'Age / Gender', value: `${form.age} years · ${form.sex}` },
@@ -374,9 +352,6 @@ export default function OnboardingPage() {
                         <span style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-900)', fontWeight: 500, textAlign: 'right', maxWidth: '60%' }}>{item.value || '—'}</span>
                       </div>
                     ))}
-                  </div>
-                  <div style={{ marginTop: 'var(--space-5)', padding: 'var(--space-4)', background: 'var(--green-50)', border: '1px solid var(--green-200)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--green-700)' }}>
-                    🎉 Your profile is ready. Click <strong>Continue</strong> to start planning!
                   </div>
                 </>
               )}

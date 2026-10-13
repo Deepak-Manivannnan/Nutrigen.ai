@@ -1,7 +1,7 @@
 import os
 from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, field_validator
-from backend.app.llm.client import llm_client, LLMClient, get_llm_client
+from backend.app.llm.client import llm_client, LLMClient, LLMUnavailableError, get_llm_client
 from backend.app.observability.logging import get_logger
 
 logger = get_logger("supervisor.intent")
@@ -24,6 +24,10 @@ class EditDetails(BaseModel):
     dish_to_replace: Optional[str] = Field(None, description="Specific dish name or description to replace")
     instructions: Optional[str] = Field(None, description="Instructions for replacement or modification")
     operation: Optional[str] = Field(None, description="Operation type: 'replace' (default), 'add', or 'remove'")
+    edit_scope: Optional[str] = Field(
+        None,
+        description="Scope of the edit: 'slot' (one day+meal), 'day' (whole day, e.g. 'redo day 2'), or 'plan' (whole plan, e.g. 'replace all recipes', 'remove dairy everywhere'). None when unclear."
+    )
 
 IntentType = Literal[
     "chat",         # Greetings, pleasantries, polite conversation
@@ -38,6 +42,7 @@ IntentType = Literal[
     "delete_plan",  # Request to delete a meal plan or confirming plan deletion
     "rename_plan",  # Request to rename a meal plan
     "add_snack",    # Request to add a snack to a meal plan
+    "list_plans",   # Request to list/show/view the user's saved meal plans
     "resume_request", # User wants to resume a pending meal planning workflow
     "cancel_request", # User wants to cancel a pending meal planning workflow
 ]
@@ -111,6 +116,10 @@ class UserIntentExtraction(BaseModel):
         default=False,
         description="True if user generally asks 'I want to update my meal plan' without specific meal edit details."
     )
+    use_profile_defaults: bool = Field(
+        default=False,
+        description="True if the user agrees to create the plan with their saved profile defaults (e.g. 'yes, use my profile', 'go ahead with my profile preferences', 'create it with my defaults') after the assistant offered that choice. Set intent='new_plan' alongside this flag."
+    )
     target_day: Optional[int] = Field(
         None,
         description="Day number targeted for meal edit or snack (e.g. Day 3 -> 3)."
@@ -177,20 +186,25 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 ### INTENT CATEGORIES (choose exactly ONE)
 
-1. **chat**: Casual greetings, goodbyes, social pleasantries, polite small talk ("hi", "hello", "good morning", "thanks", "bye"), AND general requests for help/guidance without specific plan parameters ("can you help me create a meal plan?", "I need help with meal planning", "I want to plan my meals", "help me plan my meals")
+1. **chat**: Casual greetings, goodbyes, social pleasantries, polite small talk ("hi", "hello", "good morning", "thanks", "bye"), AND vague help-seeking WITHOUT an explicit create request ("can you help me create a meal plan?", "I need help with meal planning", "I want to plan my meals", "help me plan my meals", "plan my meals")
+   - CRITICAL: If the message EXPLICITLY says create/make/generate/build a (new) (meal) plan — even with zero parameters — it is new_plan, NEVER chat. The chat category is only for messages with NO explicit create request at all.
 
-2. **app_info**: Questions specifically asking what NutriGen does or how its system works ("What can you do?", "How does this work?", "What features do you have?")
+2. **app_info**: Questions specifically asking what NUTRIGEN's meal-planning features do or how to use them ("What can you do?", "How does this app work?", "What features do you have for meal planning?")
+   - NEVER select for questions about AI, AI agents, technology, or how the AI itself works — those are out_of_scope.
 
 3. **profile_info**: User asks about their saved profile data ("Tell me about my profile", "What information does my profile hold?", "Show my profile details")
 
-4. **out_of_scope**: ANY question/request OUTSIDE food/nutrition/meal-planning domain (iPhones, Apple CEO, pharmaceuticals, AI, politics, coding, math, general trivia)
+4. **out_of_scope**: ANY question/request OUTSIDE food/nutrition/meal-planning domain (iPhones, Apple CEO, pharmaceuticals, politics, coding, math, general trivia, capital cities, nature topics like palm trees)
+   - Questions about AI, AI agents, artificial intelligence, machine learning, how the AI works, or technology in general are ALWAYS out_of_scope — NEVER app_info or explain, even when phrased as "explain what is an AI agent".
 
-5. **explain**: Questions about dietary nutrition, calories, macros, or food science ("How are my calories calculated?", "Why 1800 kcal?", "What is protein?")
+5. **explain**: Questions about FOOD, dietary nutrition, calories, macros, nutrients, or food science ("How are my calories calculated?", "Why 1800 kcal?", "What is protein?", "What is an apple?", "How much protein is in chicken?", "Calories in 2 bananas?", "Is brown rice healthy?")
+   - ANY question asking what a FOOD is, what nutrients a food contains, or calories/protein/carbs/fat in a food (with or without an amount) is explain — NEVER out_of_scope. Foods, fruits, vegetables, meats, grains, and ingredients are always in-domain.
 
 6. **new_plan**: User EXPLICITLY requests or confirms creating a NEW multi-day meal plan WITH specific parameters
    - "Plan a 5-day vegetarian meal plan", "Generate meals for 1900 kcal", "Create a 7-day meal plan for 2000 kcal"
    - "Okay go ahead and create it", "Create the plan", "Yes, make it" (after a proposal)
-   - MUST have at least one specific parameter: days, calories, diet type, or explicit confirmation after a proposal
+   - An explicit create request with NO parameters yet ("Create a meal plan", "Create a plan for me", "Create a new meal plan for me", "Make me a meal plan") is ALSO new_plan with no params — the application will offer profile defaults vs. custom specs. NEVER chat for explicit "create/make/generate a (new) (meal) plan" requests.
+   - Normally has at least one specific parameter (days, calories, diet type) or is an explicit confirmation after a proposal; a bare explicit create request (no params) is still new_plan — specs follow.
    - CRITICAL: "Create it", "go ahead and create" after a proposal = new_plan, NOT approve_plan
 
 7. **edit_meal**: User explicitly asks to MODIFY, SWAP, REPLACE, ADD, or REMOVE a meal dish/slot in an EXISTING plan
@@ -216,13 +230,16 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 12. **add_snack**: Requesting to add a snack to a meal plan ("Add a snack to day 3", "Can I have an evening snack?")
 
-13. **resume_request**: User wants to resume a pending meal planning workflow
+13. **list_plans**: User wants to SEE or LIST their saved meal plans ("Show my meal plans", "List my plans", "What plans do I have?", "View my existing plans")
+    - NEVER select for create/update/delete/rename requests - only for viewing/listing saved plans
+
+14. **resume_request**: User wants to resume a pending meal planning workflow
     - "Continue creating the plan", "Resume the plan", "Let's continue", "Yes, continue"
     - "I want to continue creating the plan", "Go ahead with the plan"
 
-14. **cancel_request**: User wants to cancel a pending meal planning workflow
-    - "Cancel the plan", "Stop the plan", "Create a new plan instead"
-    - "Forget the plan", "Start over", "New plan instead"
+15. **cancel_request**: User wants to cancel a pending meal planning workflow
+    - "Cancel the plan", "Stop the plan", "Create a new plan instead", "Start a new plan instead"
+    - "Forget the plan", "Start over", "Start fresh", "New plan instead"
 
 ---
 
@@ -242,6 +259,7 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 **requested_exclusions**: Extract ingredients to avoid/exclude
 - "no dairy", "without pork", "exclude beef", "dairy-free", "avoid nuts"
+- "replace all beef dishes with chicken", "swap dishes containing pork" -> ["beef"], ["pork"]
 - Normalize: "egg" -> "eggs"
 
 **diet_conflict_confirmed** + **chosen_diet_type**: 
@@ -264,8 +282,9 @@ NutriGen's domain is STRICTLY LIMITED to:
 - meal_type: "breakfast"/"lunch"/"dinner"/"snack"
 - target_meal_calories: SLOT calories only (e.g. "400-500 kcal" -> 450.0, "500 kcal" -> 500.0)
 - instructions: Full user message for context
-- dish_to_replace: Specific dish mentioned ("replace paneer tikka")
+- dish_to_replace: Specific dish mentioned ("replace paneer tikka"). For ingredient swaps ("replace all beef dishes with chicken", "swap out the pork"), ALWAYS set this to the ingredient/dish being removed ("beef dishes", "pork") — never leave it null when the message names what goes away.
 - operation: "add" (for "add a snack"), "remove" (for "remove the snack"), "replace" (default for "replace/swap/change")
+- edit_scope: "slot" (one specific day+meal), "day" ("redo day 2", "change all of day 3"), "plan" ("replace all recipes", "remove dairy from every day", whole-plan changes), null when unclear or still being clarified
 
 **explain_query**: For explain intent, the specific question or topic the user wants explained.
 
@@ -321,17 +340,32 @@ When PENDING WORKFLOW CONTEXT is provided, the user's message may be a PARTIAL a
 3. **If user says "resume", "continue", "go ahead", "proceed" with pending workflow**:
    - Set intent = "resume_request"
 
-4. **If user says "cancel", "stop", "new plan instead" with pending workflow**:
+4. **If user says "cancel", "stop", "no", "keep it", "don't delete", "new plan instead" with ANY pending workflow**
+   (diet conflict, calorie guardrail, edit clarification, or delete confirmation):
    - Set intent = "cancel_request"
+   - A lone "Cancel" message ALWAYS cancels whatever is pending — NEVER classify it as chat.
 
 5. **If user provides a COMPLETE answer resolving ALL pending conflicts** (specifies both diet AND calories):
    - Set intent = "new_plan" (or original_intent)
    - Set all relevant confirmation flags
    - Clear pending workflow
 
-5. **If user provides NEW plan parameters unrelated to pending workflow**:
-   - Treat as new_plan with new parameters
-   - Clear pending workflow
+6. **Fresh new-request override**: If the message reads as a NEW, ANOTHER, or DIFFERENT plan request — a self-contained
+   fresh specification (diet and/or calories and/or days stated together as one request, e.g. "create a new veg meal
+   plan for 2000 kcal for 5 days") rather than a reply to the pending question(s) — do NOT set
+   diet_conflict_confirmed / calorie_guardrail_confirmed / chosen_diet_type / chosen_calorie_target. Set ONLY the
+   requested_* fields with intent = "new_plan". When in doubt, treat SHORT direct replies ("I prefer vegetarian",
+   "veg", "2100", "yes, 2100", "go with the recommended", "use my profile diet") as answers (rules 1-2), and treat
+   longer self-contained specs — especially with new/another/different/start-over/instead language — as fresh requests.
+
+7. **Never sideline an answer**: When pending_conflicts is non-empty and the message states a diet preference or a
+   calorie number, that is an answer to the pending question (rules 1-2). NEVER classify such messages as
+   chat/app_info/explain.
+
+8. **Profile-defaults agreement**: If the assistant just offered to create the plan with the user's saved profile
+   defaults (check the conversation history for that offer) and the user agrees — "yes", "go ahead", "use my profile",
+   "create it with my defaults", "sounds good, do it" — set intent = "new_plan" AND use_profile_defaults = true.
+   Do NOT set requested_* params in this case; the application fills them from the profile.
 
 CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers diet preference but not calories), the intent should still be the original intent (e.g., "new_plan") with the appropriate confirmation flags set. Do NOT classify as "chat" or "app_info".
 
@@ -353,6 +387,7 @@ CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers die
 
 **requested_exclusions**: Extract ingredients to avoid/exclude
 - "no dairy", "without pork", "exclude beef", "dairy-free", "avoid nuts"
+- "replace all beef dishes with chicken", "swap dishes containing pork" -> ["beef"], ["pork"]
 - Normalize: "egg" -> "eggs"
 
 **diet_conflict_confirmed** + **chosen_diet_type**: 
@@ -375,8 +410,9 @@ CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers die
 - meal_type: "breakfast"/"lunch"/"dinner"/"snack"
 - target_meal_calories: SLOT calories only (e.g. "400-500 kcal" -> 450.0, "500 kcal" -> 500.0)
 - instructions: Full user message for context
-- dish_to_replace: Specific dish mentioned ("replace paneer tikka")
+- dish_to_replace: Specific dish mentioned ("replace paneer tikka"). For ingredient swaps ("replace all beef dishes with chicken", "swap out the pork"), ALWAYS set this to the ingredient/dish being removed ("beef dishes", "pork") — never leave it null when the message names what goes away.
 - operation: "add" (for "add a snack"), "remove" (for "remove the snack"), "replace" (default for "replace/swap/change")
+- edit_scope: "slot" (one specific day+meal), "day" ("redo day 2", "change all of day 3"), "plan" ("replace all recipes", "remove dairy from every day", whole-plan changes), null when unclear or still being clarified
 
 **explain_query**: For explain intent, the specific question or topic the user wants explained.
 
@@ -414,11 +450,15 @@ CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers die
 | "Remove the snack from day 2" | edit_meal + operation=remove | Remove snack meal |
 | "I want to update my plan" | edit_meal + is_update_request=true | General, no specifics |
 | "Why 1800 kcal?" | explain | Nutrition question |
+| "What is an apple?" / "Protein in chicken?" | explain | Food question — always answer, never out_of_scope |
 | "What's my profile?" | profile_info | Profile inquiry |
 | "What can you do?" | app_info | Capability question |
-| "What is AI?" | out_of_scope | Outside domain |
+| "What is AI?" / "Explain what is an AI agent?" | out_of_scope | AI/tech — never app_info or explain |
 | "Continue the plan" / "Resume" | resume_request | Resume pending workflow |
-| "Cancel the plan" / "New plan instead" | cancel_request | Cancel pending workflow |
+| "Cancel the plan" / "New plan instead" / "Create a new plan instead" / "Start over" | cancel_request | Cancel pending workflow |
+| "Show my meal plans" / "List my plans" | list_plans | View saved plans |
+| "Create a meal plan" / "Create a plan for me" (no params) | new_plan | Bare create → profile-defaults offer |
+| "Yes, use my profile" / "Go ahead with my profile" (after defaults offer) | new_plan + use_profile_defaults=true | Create with profile defaults |
 
 ---
 
@@ -475,6 +515,10 @@ PENDING WORKFLOW CONTEXT:
         
         logger.debug(f"LLM intent extraction: intent={extraction.intent}, days={extraction.requested_days}, calories={extraction.requested_calories}, diet={extraction.requested_diet_type}")
         return extraction
+    except LLMUnavailableError:
+        # Backend outage, not a misunderstanding: propagate so the API returns
+        # an honest service-trouble message instead of a canned fallback reply.
+        raise
     except Exception as e:
         logger.warning(f"Error in LLM intent extraction: {e}. Applying safe fallback.")
         # Minimal fallback - let LLM handle it on retry, default to chat

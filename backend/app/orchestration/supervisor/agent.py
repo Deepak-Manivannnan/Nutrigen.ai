@@ -8,7 +8,7 @@ from backend.app.guardrails.input_checks import validate_input_request
 from backend.app.guardrails.output_checks import verify_output_safety
 from backend.app.observability.trace import trace_hub
 from backend.app.observability.logging import get_logger
-from backend.app.llm.client import llm_client, LLMClient, get_llm_client
+from backend.app.llm.client import llm_client, LLMClient, LLMUnavailableError, get_llm_client
 
 logger = get_logger("supervisor.agent")
 
@@ -82,23 +82,74 @@ class SupervisorAgent:
         user_query: str,
         history: Optional[List[Dict[str, Any]]] = None
     ) -> str:
+        """Answers food, nutrition, and diet questions directly from LLM knowledge.
+
+        Food questions ("what is an apple?", "protein in chicken?") are always
+        answered — never deflected. Amount-specific questions are scaled to the
+        asked amount; otherwise per-100g (or per typical unit) values are given.
+        """
         name = state.user_profile.get("name", "there")
         history_ctx = self._format_history_context(history)
 
         prompt = (
-            f"You are the Supervisor in NutriGen explaining a nutrition decision to {name} in friendly, conversational language.\n\n"
+            f"You are NutriGen, a knowledgeable food and nutrition companion talking with {name}.\n\n"
             f"{history_ctx}"
             f"Target calories: {state.calorie_target or 'standard'}\n"
             f"Diet: {state.user_profile.get('diet_type', 'veg')}\n\n"
             f"User Query: {user_query}\n\n"
-            f"Provide a clear, helpful, non-technical explanation answering their question directly in 2 to 3 sentences.\n"
+            f"Answer their food/nutrition question directly from your knowledge in a warm, conversational tone (3 to 5 sentences).\n"
+            f"RULES:\n"
+            f"- If they ask what a FOOD is, briefly say what it is (taste, type, common uses) plus 1-2 key nutrition highlights.\n"
+            f"- If they ask about calories/protein/carbs/fat in a food WITH a specific amount (e.g. '2 apples', '200g chicken'), scale your answer to that amount.\n"
+            f"- If NO amount is given, give values per 100 grams (or per typical single unit, e.g. one medium apple ~182g) and say so.\n"
+            f"- Give approximate ranges honestly (e.g. 'roughly 23-24 g protein per 100 g chicken breast').\n"
+            f"- NEVER deflect with 'my expertise is focused on meal plans rather than defining foods' or similar — answering food questions IS your job.\n"
+            f"- Do NOT pivot to selling meal plans. One brief, natural serving tip at most.\n"
             f"CRITICAL: Do NOT begin with 'Hey {name}' or 'Hi {name}'. Answer directly in the flow of conversation."
         )
 
         try:
             return await self.llm.generate_text(prompt)
+        except LLMUnavailableError:
+            # Backend outage: propagate for an honest service-trouble
+            # message rather than a canned reply that pretends understanding.
+            raise
         except Exception as e:
-            return f"Regarding your question about '{user_query}': I'm here to ensure your meals are balanced and safe. Let me know if you'd like me to adjust anything!"
+            return f"Good question about '{user_query}' — happy to dig into the nutrition details for you. Could you tell me which specific food or nutrient you'd like values for (and the amount, if any)?"
+
+    async def generate_out_of_scope_decline(
+        self,
+        user_message: str,
+        history: Optional[List[Dict[str, Any]]] = None,
+        user_name: Optional[str] = None,
+    ) -> str:
+        """Short decline used ONLY while another workflow is pending.
+
+        Unlike the full out-of-scope reply, this states NO factual answer at
+        all — the pending question follows immediately, so the decline must not
+        echo or repeat any answer content.
+        """
+        name = (user_name or "").strip() or "there"
+        history_ctx = self._format_history_context(history)
+        prompt = (
+            f"You are NutriGen, a meal planning and nutrition assistant talking with {name}.\n\n"
+            f"{history_ctx}"
+            f"The user just asked something completely outside your scope: \"{user_message}\"\n\n"
+            f"In ONE short, warm sentence, politely decline to answer it: you are strictly focused on meal "
+            f"planning, nutrition, recipes, and groceries, so you can't help with that particular question.\n"
+            f"CRITICAL: Do NOT answer the question itself. Do NOT state any fact from it (no capitals, no "
+            f"definitions, no explanations of any kind). No greeting, no bullet points."
+        )
+        try:
+            return await self.llm.generate_text(prompt)
+        except LLMUnavailableError:
+            # Backend outage: propagate for an honest service-trouble
+            # message rather than a canned reply that pretends understanding.
+            raise
+        except Exception:
+            return (
+                "I can't help with that one — I'm strictly focused on meal planning, nutrition, recipes, and groceries."
+            )
 
     def _format_history_context(self, history: Optional[List[Dict[str, Any]]]) -> str:
         if not history:
@@ -167,6 +218,10 @@ class SupervisorAgent:
         
         try:
             return await self.llm.generate_text(prompt)
+        except LLMUnavailableError:
+            # Backend outage: propagate for an honest service-trouble
+            # message rather than a canned reply that pretends understanding.
+            raise
         except Exception as e:
             # Fallback to simple template if LLM fails
             if is_calorie_unsafe:
@@ -190,60 +245,35 @@ class SupervisorAgent:
     ) -> str:
         """
         Conversational greeting & chat response.
-        Friendly, natural human-to-human tone without repetitive greetings in ongoing dialog.
-        Handles meal planning help requests by asking clarifying questions.
+        The LLM reads the user's message and decides: warm reply, or — when the
+        user asks for meal-planning help without giving parameters — ask 1-2
+        clarifying questions. No keyword lists: understanding lives in the model.
         """
         name = (user_name or "").strip() or "there"
         history_ctx = self._format_history_context(history)
         is_first_interaction = not history or len(history) <= 1
 
-        # Check if user is asking for help with meal planning (general request without specific params)
-        msg_lower = user_message.lower()
-        is_meal_planning_help = any(phrase in msg_lower for phrase in [
-            "help me create", "help me create a meal plan", "help me plan",
-            "create a meal plan", "create meal plan", "meal plan for me",
-            "plan my meals", "plan meals", "need a meal plan",
-            "want a meal plan", "want to create a meal plan",
-            "help with meal plan", "help with meal planning",
-            "help me create a plan", "create a plan for me", "plan for me",
-            "help me with a plan", "make a plan", "make a meal plan",
-            "can you help me create a plan", "can you create a plan"
-        ])
-
-        if is_meal_planning_help:
-            prompt = (
-                f"You are NutriGen, a helpful personal meal planning companion.\n"
-                f"User's name: {name}\n\n"
-                f"{history_ctx}\n"
-                f"The user says: \"{user_message}\"\n\n"
-                f"The user is asking for help creating a meal plan but hasn't provided specific parameters yet.\n\n"
-                f"Respond naturally, conversationally, and concisely (2-3 sentences max).\n"
-                f"RULES:\n"
-                f"- Acknowledge their request warmly and address them by name.\n"
-                f"- Ask 1-2 clarifying questions to get the minimum needed parameters:\n"
-                f"  * How many days? (default 7)\n"
-                f"  * Target calories per day? (or I can calculate from their profile)\n"
-                f"  * Diet type? (veg/non-veg/vegan - default from profile)\n"
-                f"- Do NOT dump features, bullet points, or instructions.\n"
-                f"- Keep it natural, warm, and conversational.\n"
-                f"- If this is NOT the first interaction, do NOT say 'Hey {name}' or 'Hi {name}' again!\n"
-                f"- End with an open question inviting them to provide details."
-            )
-        else:
-            prompt = (
-                f"You are NutriGen, a helpful personal meal planning companion.\n"
-                f"User's name: {name}\n\n"
-                f"{history_ctx}\n"
-                f"The user says: \"{user_message}\"\n\n"
-                f"Respond naturally, conversationally, and concisely (1 to 2 sentences maximum).\n"
-                f"RULES:\n"
-                f"- If this is the FIRST greeting message, you may say 'Hi {name}! How can I help you today?'.\n"
-                f"- If this is an ONGOING conversation, do NOT say 'Hey {name}' or 'Hi {name}' again! Simply reply directly to what they said in conversation flow.\n"
-                f"- Do NOT dump an unsolicited list of features, bullet points, or instructions.\n"
-                f"- Keep it natural, warm, and human."
-            )
+        prompt = (
+            f"You are NutriGen, a helpful personal meal planning companion talking with {name}.\n"
+            f"{history_ctx}"
+            f"The user says: \"{user_message}\"\n\n"
+            f"Understand what the user means and respond naturally, warmly, and concisely (1 to 3 sentences maximum).\n"
+            f"RULES:\n"
+            f"- If this is the FIRST greeting, you may say 'Hi {name}! How can I help you today?'.\n"
+            f"- In an ONGOING conversation, do NOT repeat greetings ('Hey {name}'/'Hi {name}'). Reply directly in flow.\n"
+            f"- If the user is asking for help creating a meal plan but has NOT given specifics (no days, calories, or diet), "
+            f"acknowledge warmly by name and ask the 1-2 most useful clarifying questions "
+            f"(how many days? target calories per day? diet type veg/non-veg/vegan?). End with an open question.\n"
+            f"- Otherwise simply reply to what they said like a thoughtful human would.\n"
+            f"- Do NOT dump an unsolicited list of features, bullet points, or instructions.\n"
+            f"- Keep it natural, warm, and human."
+        )
         try:
             return await self.llm.generate_text(prompt)
+        except LLMUnavailableError:
+            # Backend outage: propagate for an honest service-trouble
+            # message rather than a canned reply that pretends understanding.
+            raise
         except Exception:
             if is_first_interaction:
                 return f"Hi {name}! How can I help you today?"
@@ -266,13 +296,18 @@ class SupervisorAgent:
             f"You are NutriGen, a helpful personal meal planning assistant talking with {name}.\n\n"
             f"{history_ctx}"
             f"The user asks: \"{user_message}\"\n\n"
-            f"Answer their question directly, warmly, and concisely in 1 to 2 sentences:\n"
-            f"- Do NOT recite marketing filler, promotional pitches, or phrases like 'Beyond crafting these balanced menus...'.\n"
-            f"- Jump straight into answering what was asked in a clean, professional, conversational tone.\n"
-            f"- No repetitive greetings ('Hey', 'Hi') in ongoing dialogue."
+            f"Answer their question directly, warmly, and conversationally in 2 to 4 sentences, like a knowledgeable friend would:\n"
+            f"- First acknowledge what THEY asked about (show you understood their situation, e.g. that they are new here).\n"
+            f"- Then describe concretely what you can do for them: personalized multi-day meal plans, calorie targets matched to their profile, diet preferences and allergy safety, plan edits, approvals with grocery lists and mandi prices.\n"
+            f"- End with one natural next-step question (e.g. what they would like to plan first).\n"
+            f"- No repetitive greetings ('Hey', 'Hi') in ongoing dialogue, no rigid brochure tone."
         )
         try:
             return await self.llm.generate_text(prompt)
+        except LLMUnavailableError:
+            # Backend outage: propagate for an honest service-trouble
+            # message rather than a canned reply that pretends understanding.
+            raise
         except Exception:
             return (
                 "I can help you create personalized daily meal plans based on your calorie goals and dietary preferences, "
@@ -288,24 +323,35 @@ class SupervisorAgent:
         """
         Polite, brief domain guardrail message when the user asks questions outside of
         meal planning, recipes, nutrition, or grocery shopping (e.g., 'what is an AI').
-        Keeps it concise, friendly, and human without repetitive greetings or lectures.
+        Conversational and warm: acknowledge the actual question, state the boundary
+        naturally, and offer in-domain help. Never a canned refusal sentence.
         """
         history_ctx = self._format_history_context(history)
 
         prompt = (
-            f"You are NutriGen, a dedicated meal planning and nutrition assistant.\n\n"
+            f"You are NutriGen, a dedicated meal planning and nutrition assistant with a warm, human conversational style.\n\n"
             f"{history_ctx}"
             f"The user asked: \"{user_message}\"\n\n"
-            f"In 1 to 2 natural, polite sentences, explain that your expertise is dedicated exclusively to meal planning, nutrition, recipes, and groceries, so you cannot assist with topics outside of food like \"{user_message}\".\n"
-            f"CRITICAL: Do NOT start with 'Hey' or greetings. State clearly that you cannot assist with topics outside of food.\n"
+            f"Reply in 2 to 3 natural sentences, like a helpful friend:\n"
+            f"- Briefly acknowledge what they asked about so they feel heard.\n"
+            f"- Explain conversationally that you are built specifically for meal planning, nutrition, recipes, and groceries, so this particular question is outside what you can help with.\n"
+            f"- Offer something genuinely useful you CAN do instead, tied to their context where possible "
+            f"(e.g. plan their meals, explain a nutrition topic, check their profile).\n"
+            f"- CRITICAL: Do NOT start with 'Hey' or greetings. Do NOT recite a rigid boilerplate refusal. "
+            f"Vary your wording; sound human, not scripted.\n"
             f"Do NOT use bullet points or structured lists."
         )
         try:
             return await self.llm.generate_text(prompt)
+        except LLMUnavailableError:
+            # Backend outage: propagate for an honest service-trouble
+            # message rather than a canned reply that pretends understanding.
+            raise
         except Exception:
             return (
-                f"My expertise is dedicated exclusively to meal planning, recipes, and nutrition, so I cannot assist with topics outside of food. "
-                f"Feel free to ask me anything about your diet, meals, or groceries though!"
+                f"That's an interesting question about '{user_message}' — honestly, I'm built specifically for meal planning, "
+                f"recipes, and nutrition, so I can't do that one justice. "
+                f"But I'd love to help with your meals, diet questions, or grocery planning instead!"
             )
 
     async def generate_profile_info_response(
@@ -370,6 +416,10 @@ class SupervisorAgent:
                 history=history,
                 user_name=name
             )
+        except LLMUnavailableError:
+            # Backend outage: propagate for an honest service-trouble
+            # message rather than a canned reply that pretends understanding.
+            raise
         except Exception as e:
             logger.warning(f"LLM generation failed for profile info: {e}")
             return (
@@ -440,19 +490,13 @@ class SupervisorAgent:
         )
         try:
             return await self.llm.generate_text(prompt)
+        except LLMUnavailableError:
+            # Backend outage: propagate for an honest service-trouble message
+            # rather than a canned reply that pretends understanding.
+            raise
         except Exception as e:
-            logger.warning(f"[SupervisorAgent] LLM conversational generation failed: {e}. Falling back to clean context.")
-            c_low = context.lower()
-            if "don't have an active meal plan yet" in c_low or "0 active meal plans" in c_low or "0 saved meal plans" in c_low:
-                return "You don't have an active meal plan yet to update. Would you like me to create one for you? Just let me know your calorie target or preferences!"
-            if "already approved" in c_low:
-                return "Your meal plan is already approved! You can view its full itemized grocery checklist in the Grocery tab."
-            if "approved" in c_low:
-                return "Your meal plan is now approved! You can check your grocery checklist in the Grocery tab."
-            if "deleted" in c_low:
-                return "Your meal plan has been permanently deleted. Let me know whenever you would like to create a new one!"
-            if "renamed" in c_low:
-                return "Your meal plan has been renamed successfully!"
-            if "snack" in c_low:
-                return "I've added the healthy snack to your meal plan in the Plans tab. Take a look and let me know if you would like any other adjustments!"
-            return "I've updated your meal plan! You can review the details in your Plans tab."
+            logger.warning(f"[SupervisorAgent] LLM conversational generation failed: {e}. Falling back to a warm generic reply.")
+            return (
+                "Got it — I've taken care of that for you. "
+                "You can review everything in your Plans tab, and just let me know if you'd like any changes!"
+            )

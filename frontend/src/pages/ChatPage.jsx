@@ -16,34 +16,73 @@ const SUGGESTIONS = [
   'Plan 5 days for weight loss',
 ];
 
-function renderInlineMarkdown(str) {
+function renderInlineMarkdown(str, onPlanLink) {
   if (!str) return '';
   const parts = [];
-  const regex = /(\*\*.*?\*\*|\*.*?\*)/g;
+  let key = 0;
+
+  const pushFormatted = (text) => {
+    if (!text) return;
+    const regex = /(\*\*.*?\*\*|\*.*?\*)/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(<span key={key++}>{text.slice(lastIndex, match.index)}</span>);
+      }
+      const matchText = match[0];
+      if (matchText.startsWith('**') && matchText.endsWith('**')) {
+        parts.push(<strong key={key++}>{matchText.slice(2, -2)}</strong>);
+      } else if (matchText.startsWith('*') && matchText.endsWith('*')) {
+        parts.push(<em key={key++}>{matchText.slice(1, -1)}</em>);
+      }
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      parts.push(<span key={key++}>{text.slice(lastIndex)}</span>);
+    }
+  };
+
+  // Inline plan links [Label](plan://<id>) render as tappable buttons that
+  // jump straight to the plan in the Plans tab.
+  const linkRegex = /\[([^\]]+)\]\(plan:\/\/(\d+)\)/g;
   let lastIndex = 0;
   let match;
+  let foundLink = false;
 
-  while ((match = regex.exec(str)) !== null) {
+  while ((match = linkRegex.exec(str)) !== null) {
+    foundLink = true;
     if (match.index > lastIndex) {
-      parts.push(str.slice(lastIndex, match.index));
+      pushFormatted(str.slice(lastIndex, match.index));
     }
-    const matchText = match[0];
-    if (matchText.startsWith('**') && matchText.endsWith('**')) {
-      parts.push(<strong key={match.index}>{matchText.slice(2, -2)}</strong>);
-    } else if (matchText.startsWith('*') && matchText.endsWith('*')) {
-      parts.push(<em key={match.index}>{matchText.slice(1, -1)}</em>);
-    }
-    lastIndex = regex.lastIndex;
+    const label = match[1];
+    const planId = Number(match[2]);
+    parts.push(
+      <button
+        key={key++}
+        type="button"
+        className="chat-plan-link"
+        title={`Open ${label} in Plans`}
+        onClick={() => onPlanLink && onPlanLink(planId)}
+      >
+        {label}
+      </button>
+    );
+    lastIndex = linkRegex.lastIndex;
   }
 
-  if (lastIndex < str.length) {
-    parts.push(str.slice(lastIndex));
+  if (!foundLink) {
+    pushFormatted(str);
+  } else if (lastIndex < str.length) {
+    pushFormatted(str.slice(lastIndex));
   }
 
   return parts.length > 0 ? parts : str;
 }
 
-function FormattedMessage({ text }) {
+function FormattedMessage({ text, onPlanLink }) {
   if (!text) return null;
   const lines = text.split('\n');
 
@@ -58,13 +97,13 @@ function FormattedMessage({ text }) {
           return (
             <div key={idx} style={{ display: 'flex', gap: '0.4rem', margin: '0.2rem 0' }}>
               <span style={{ color: 'var(--green-600)', fontWeight: 600 }}>•</span>
-              <span>{renderInlineMarkdown(bulletMatch[2])}</span>
+              <span>{renderInlineMarkdown(bulletMatch[2], onPlanLink)}</span>
             </div>
           );
         }
         return (
           <div key={idx} style={{ margin: '0.15rem 0' }}>
-            {renderInlineMarkdown(line)}
+            {renderInlineMarkdown(line, onPlanLink)}
           </div>
         );
       })}
@@ -72,7 +111,7 @@ function FormattedMessage({ text }) {
   );
 }
 
-function MessageBubble({ msg, onAction, onQuickOption, userInitial = 'U' }) {
+function MessageBubble({ msg, onAction, onQuickOption, onPlanLink, userInitial = 'U', showQuickOptions = true }) {
   const isUser = msg.role === 'user';
   const initials = isUser ? userInitial : '🌿';
 
@@ -87,14 +126,14 @@ function MessageBubble({ msg, onAction, onQuickOption, userInitial = 'U' }) {
       <div className={`message-avatar ${isUser ? 'user' : 'ai'}`}>{initials}</div>
       <div style={{ maxWidth: '85%' }}>
         <div className={`message-bubble ${isUser ? 'user' : 'ai'}`}>
-          <FormattedMessage text={msg.content} />
+          <FormattedMessage text={msg.content} onPlanLink={onPlanLink} />
           {msg.actionType && (
             <button className="chat-action-btn" onClick={() => onAction && onAction(msg)} id={`chat-action-${msg.id}`}>
               {msg.actionLabel} <ChevronRight size={13} />
             </button>
           )}
         </div>
-        {msg.quickOptions && msg.quickOptions.length > 0 && (
+        {showQuickOptions && msg.quickOptions && msg.quickOptions.length > 0 && (
           <div className="chat-quick-options" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
             {msg.quickOptions.map((opt, i) => (
               <button
@@ -231,13 +270,15 @@ export default function ChatPage() {
       }
 
       let createdPlan = null;
-      if (chatRes.plan_id) {
+      // Only plan creation / updates / approvals touch the Plans badge.
+      // Renames refresh silently (no badge); grocery badges only on approval.
+      if (chatRes.plan_id && (chatRes.intent === 'new_plan' || chatRes.intent === 'edit_meal' || chatRes.intent === 'approve_plan')) {
         try {
           const rawPlan = await fetchPlanById(chatRes.plan_id);
           if (rawPlan) {
             createdPlan = adaptBackendPlan(rawPlan, profile);
             addPlan(createdPlan);
-            if (createdPlan.grocery_list) {
+            if (createdPlan.grocery_list && createdPlan.status === 'approved') {
               const grocery = adaptBackendGrocery(createdPlan.grocery_list, createdPlan.days);
               if (grocery) setGrocery(grocery);
             }
@@ -245,6 +286,9 @@ export default function ChatPage() {
         } catch (planErr) {
           console.warn('Could not fetch generated plan:', planErr);
         }
+      } else if (chatRes.plan_id) {
+        // E.g. renames: sync the new name without lighting any badge.
+        refreshPlans();
       }
 
       addMessage({
@@ -295,6 +339,22 @@ export default function ChatPage() {
     handleSend(value);
   }
 
+  // Inline plan links inside message text ([Name](plan://id)) jump straight to
+  // that plan in the Plans tab.
+  function handlePlanLink(planId) {
+    if (!planId) return;
+    navigate('/app/plans', { state: { focusPlanId: Number(planId) } });
+  }
+
+  // Quick options belong to the latest assistant message only: once the user
+  // replies or picks an option, older options disappear.
+  const lastAssistantId = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') return messages[i].id;
+    }
+    return null;
+  })();
+
   const hasContent = messages.length > 0 || chatStatus;
 
   return (
@@ -343,6 +403,8 @@ export default function ChatPage() {
                   msg={msg}
                   onAction={handleAction}
                   onQuickOption={handleQuickOption}
+                  onPlanLink={handlePlanLink}
+                  showQuickOptions={msg.role === 'assistant' && msg.id === lastAssistantId}
                   userInitial={userInitial}
                 />
               ))}

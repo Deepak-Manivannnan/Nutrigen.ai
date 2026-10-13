@@ -205,7 +205,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
         current_plan: MealPlan,
         edit_details: Any,
         user_profile: Dict[str, Any],
-        task_id: Optional[str] = None
+        task_id: Optional[str] = None,
+        exclusions: Optional[List[str]] = None
     ) -> MealPlan:
         """
         Modifies a specific meal slot (or specific day, or scrubbed exclusions) in an existing meal plan
@@ -216,19 +217,33 @@ class PlannerAgent(BaseAgent[MealPlan]):
         instructions = getattr(edit_details, "instructions", "") or "modify meal"
         target_meal_cal = getattr(edit_details, "target_meal_calories", None)
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
+        edit_scope = getattr(edit_details, "edit_scope", None)
+        edit_exclusions = [str(e).strip().lower() for e in (exclusions or []) if str(e or "").strip()]
 
         cl_inst = instructions.lower()
 
+        # Meat/pork-family words so "ham", "bacon", "sausage" style requests are
+        # caught even when phrased without the parent ingredient name.
+        meat_words = ["pork", "beef", "turkey", "meat", "chicken", "fish", "dairy", "allerg",
+                      "ham", "bacon", "sausage", "pepperoni", "salami", "prosciutto", "pancetta", "lard"]
+
         # Check if the instruction asks to replace recipes across the plan containing specific excluded ingredients
         is_exclusion_scrub = (
-            any(w in cl_inst for w in ["pork", "beef", "turkey", "meat", "chicken", "fish", "dairy", "allerg"])
-            and any(w in cl_inst for w in ["replace", "remove", "exclude", "without", "free", "scrub", "different recipes"])
-        ) or (bool(user_profile.get("allergies")) and any(w in cl_inst for w in ["exclude", "remove", "without", "replace recipes", "replace the recipes"]))
+            any(w in cl_inst for w in meat_words)
+            and any(w in cl_inst for w in ["replace", "remove", "exclude", "without", "free", "scrub", "different recipes", "swap", "swap out"])
+        ) or (bool(user_profile.get("allergies")) and any(w in cl_inst for w in ["exclude", "remove", "without", "replace recipes", "replace the recipes"])) \
+            or (bool(edit_exclusions) and (edit_scope == "plan" or (
+                getattr(edit_details, "day", None) is None and getattr(edit_details, "meal_type", None) is None)))
 
         if is_exclusion_scrub:
             allergies_list = [str(a).lower() for a in user_profile.get("allergies", [])]
-            for exc in ["pork", "beef", "turkey", "dairy"]:
+            for exc in ["pork", "beef", "turkey", "dairy", "ham", "bacon", "sausage", "chicken", "fish"]:
                 if exc in cl_inst and exc not in allergies_list:
+                    allergies_list.append(exc)
+            # Structured exclusions from the supervisor always apply (they name
+            # exactly what must go, e.g. "ham", "beef").
+            for exc in edit_exclusions:
+                if exc not in allergies_list:
                     allergies_list.append(exc)
             user_profile["allergies"] = allergies_list
 
@@ -280,7 +295,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 sum(d.total_calories for d in updated_plan.days) / len(updated_plan.days),
                 1
             )
-            self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories, user_profile)
+            self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories, user_profile, exclusions=edit_exclusions)
             return updated_plan
 
         target_meal_type = getattr(edit_details, "meal_type", None)
@@ -325,6 +340,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- User request: '{instructions}'\n"
                 f"- Diet type: {plan_diet} (FOR VEGETARIAN: ZERO MEAT/CHICKEN/FISH/SEAFOOD, FOR VEGAN: ZERO ANIMAL PRODUCTS)\n"
                 f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                f"- Also strictly exclude these user-rejected ingredients: {edit_exclusions if edit_exclusions else 'none'}. Do NOT include any of them.\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 f"- Meals to include: {len(target_day_plan.meals)} balanced meals ({', '.join(m.meal_type for m in target_day_plan.meals)}).\n"
                 f"- For EACH meal, provide realistic ingredients (amount_grams) and detailed 3 to 4 numbered step-by-step 'instructions' (prep, cook, season, serve warm).\n"
@@ -426,7 +442,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
         updated_plan.name = getattr(current_plan, "name", None) or f"{len(updated_plan.days)}-Day {plan_diet.capitalize()} Plan"
 
         # Sanitize diet compliance on the plan
-        self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories, user_profile)
+        self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories, user_profile, exclusions=edit_exclusions)
 
         return updated_plan
 

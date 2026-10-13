@@ -97,101 +97,235 @@ def find_referenced_plan(
     return None
 
 # =========================================================================
-# Pending-workflow interruption helpers
+# Pending-workflow interruption helpers (LLM-first)
+#
+# Routing decisions here are driven by the LLM's structured intent
+# (intent + confirmation flags + extracted params), never by matching
+# keywords in the raw message. All user-facing wording is composed by the
+# supervisor LLM from factual context; only quick-option *values* stay
+# deterministic because the frontend treats them as machine contracts.
 # =========================================================================
 
-_NEW_PLAN_MARKERS = (
-    "new meal plan", "new plan", "another meal plan", "another plan",
-    "start a new", "make a new", "create another", "fresh meal plan",
-    "fresh plan", "new one", "a different plan", "different meal plan",
-    "start over", "start fresh",
-    "new veg", "new vegetarian", "new vegan", "new non-veg", "new nonveg",
-    "another veg", "another vegetarian", "another vegan", "another non-veg",
-)
 
-_PLAN_CREATE_VERBS = ("create", "make", "build", "generate", "plan a", "plan an", "plan another")
-
-# Explicit acknowledgements that the user wants to abandon the pending workflow
-# and start over with a brand-new plan (as opposed to a fresh competing request
-# that should itself be interrupted).
-_NEW_CHOICE_PHRASES = (
-    "new plan instead", "new meal plan instead", "start a new plan instead",
-    "start fresh", "start over", "yes, create a new", "no, create a new",
-    "yes, start a new", "no, start a new", "create a new plan instead",
-    "create a new meal plan instead", "let's start fresh", "lets start fresh",
-    "forget it and create a new", "drop it and create a new",
-)
-
-_LIST_PLANS_PATTERNS = (
-    "list my plans", "list my meal plans", "list the plans", "list the meal plans",
-    "list my plan", "list my meal plan", "list the plan", "list the meal plan",
-    "show my plans", "show my meal plans", "show me my plans", "show me my meal plans",
-    "show existing plans", "view my plans", "view my meal plans", "view existing plans",
-    "view existing plan", "view my plan",
-    "what plans do i have", "which plans do i have",
-    "all my plans", "all my meal plans", "my plan list",
-)
-
-
-def _mentions_diet(msg_lower: str) -> bool:
-    return any(k in msg_lower for k in (
-        "veg", "vegan", "non-veg", "nonveg", "vegetarian", "non vegetarian"
-    ))
-
-
-def _mentions_calories(msg_lower: str) -> bool:
-    return bool(re.search(
-        r"(\d[\d,]{2,4}\s*(kcal|calories|cal\b))|((kcal|calories|cal\b)[^\d]{0,8}\d[\d,]{2,4})",
-        msg_lower
-    ))
-
-
-def is_new_plan_request(user_message: str) -> bool:
-    low = user_message.lower()
-    return any(m in low for m in _NEW_PLAN_MARKERS)
-
-
-def is_list_plans_request(user_message: str) -> bool:
-    low = user_message.lower()
-    return any(p in low for p in _LIST_PLANS_PATTERNS)
-
-
-def _answered_pending_questions(user_message: str, intent_data) -> dict:
-    """Whether THIS message answers the diet/calorie confirmation questions."""
-    low = user_message.lower()
-    d = _mentions_diet(low)
-    c = _mentions_calories(low)
-    user_diet = (intent_data.chosen_diet_type or intent_data.requested_diet_type) if d else None
-    user_cal = (
-        intent_data.chosen_calorie_target
-        if intent_data.chosen_calorie_target is not None
-        else intent_data.requested_calories
-    ) if c else None
-    return {"answered_diet": user_diet is not None, "answered_cal": user_cal is not None}
-
-
-def _interruption_prompt_text(pending, intent_data) -> str:
-    """Deterministic text asking whether to continue pending work or do the new request."""
-    if pending.workflow_type == "edit_meal":
-        workflow_desc = "updating your meal plan"
+def _pending_answer_signals(intent_data) -> tuple:
+    """Diet/calorie values the LLM extracted, split by confirmation backing."""
+    diet_val = intent_data.chosen_diet_type or intent_data.requested_diet_type
+    diet_flagged = bool(intent_data.diet_conflict_confirmed or intent_data.chosen_diet_type)
+    if intent_data.chosen_calorie_target is not None:
+        cal_val, cal_flagged = intent_data.chosen_calorie_target, True
+    elif intent_data.requested_calories is not None:
+        cal_val, cal_flagged = intent_data.requested_calories, bool(intent_data.calorie_guardrail_confirmed)
     else:
-        workflow_desc = "creating your new meal plan"
-    req_label = {
+        cal_val, cal_flagged = None, False
+    return diet_val, diet_flagged, cal_val, cal_flagged
+
+
+def _llm_answer_signals(intent_data) -> dict:
+    """Whether the LLM understood THIS message as answering pending questions.
+
+    The classifier sets confirmation flags only when the user expresses the
+    corresponding choice, so these flags — not substring matching — decide.
+    """
+    diet_val, diet_flagged, cal_val, cal_flagged = _pending_answer_signals(intent_data)
+    return {
+        "answered_diet": diet_flagged,
+        "answered_cal": cal_flagged,
+        "answered_any": diet_flagged or cal_flagged,
+        "fresh_diet": intent_data.requested_diet_type or None,
+        "fresh_cal": intent_data.requested_calories,
+    }
+
+
+def _contradicts_pending_answers(intent_data, pending_info: dict) -> bool:
+    """Whether the LLM-extracted values contradict the pending offered options.
+
+    A diet answer must be the requested diet or the profile diet; a calorie
+    answer must be the pending target or one of the offered safe values. All
+    compared as structured data from the pending state — no text matching.
+    """
+    diet_val, _, cal_val, _ = _pending_answer_signals(intent_data)
+    if diet_val:
+        allowed_diets = {
+            str(v).lower()
+            for v in (pending_info.get("requested_diet"), pending_info.get("profile_diet"))
+            if v
+        }
+        if allowed_diets and str(diet_val).lower() not in allowed_diets:
+            return True
+    if cal_val is not None:
+        allowed_cals = set()
+        for key in ("cal_val", "suggested", "min_safe", "max_safe"):
+            try:
+                if pending_info.get(key) is not None:
+                    allowed_cals.add(float(pending_info.get(key)))
+            except (TypeError, ValueError):
+                continue
+        if allowed_cals and float(cal_val) not in allowed_cals:
+            return True
+    return False
+
+
+def _is_complete_fresh_spec(intent_data) -> bool:
+    """Whether the LLM extracted a self-contained new spec (diet + calories + days)."""
+    diet_val, _, cal_val, _ = _pending_answer_signals(intent_data)
+    return bool(diet_val is not None and cal_val is not None and intent_data.requested_days)
+
+
+def _pending_answer_values(intent_data, pending_info: dict) -> tuple:
+    """Resolve diet/calorie values for the new-plan branch from LLM signals.
+
+    When a conflict question is open, only the LLM's confirmation-backed
+    values (chosen_*/confirmed flags) count as answers — this guards against
+    values carried over from history. For a fresh request there is no pending
+    question, so the extracted request values are used directly.
+    """
+    diet_open = bool(pending_info.get("diet_pending")) and not bool(pending_info.get("diet_resolved"))
+    cal_open = bool(pending_info.get("cal_pending")) and not bool(pending_info.get("cal_resolved"))
+    if diet_open:
+        user_diet = intent_data.chosen_diet_type or (
+            intent_data.requested_diet_type if intent_data.diet_conflict_confirmed else None
+        )
+    else:
+        user_diet = intent_data.chosen_diet_type or intent_data.requested_diet_type
+    if cal_open:
+        user_cal = (
+            intent_data.chosen_calorie_target
+            if intent_data.chosen_calorie_target is not None
+            else (intent_data.requested_calories if intent_data.calorie_guardrail_confirmed else None)
+        )
+    else:
+        user_cal = (
+            intent_data.chosen_calorie_target
+            if intent_data.chosen_calorie_target is not None
+            else intent_data.requested_calories
+        )
+    return user_diet, user_cal
+
+
+def _describe_competing_action(intent: str) -> str:
+    return {
         "new_plan": "create a new meal plan",
         "rename_plan": "rename one of your existing plans",
         "delete_plan": "delete a meal plan",
         "approve_plan": "approve a meal plan",
         "edit_meal": "update an existing meal plan",
-    }.get(intent_data.intent, "do that for you")
-    return (
-        f"I can help you with that — you'd like me to {req_label}.\n\n"
-        f"Just to keep things straight: we were in the middle of {workflow_desc} for you, "
-        f"and the pending questions haven't been answered yet.\n\n"
-        f"Which would you like to do?"
+        "list_plans": "view your saved meal plans",
+    }.get(intent, "do that")
+
+
+def _describe_pending_work(pending) -> str:
+    if pending.workflow_type == "edit_meal":
+        return "updating your meal plan"
+    if pending.workflow_type == "delete_plan":
+        return "deleting one of your meal plans"
+    return "creating your new meal plan"
+
+
+async def _compose_interruption_message(supervisor, *, user_message: str, user_name: str,
+                                        pending, competing_intent: str,
+                                        history) -> str:
+    """LLM-composed: acknowledge the new request + ask continue-vs-new."""
+    context_prompt = (
+        f"The user just asked you to {_describe_competing_action(competing_intent)}: '{user_message}'. "
+        f"However, you were in the middle of {_describe_pending_work(pending)} for them, "
+        f"and the pending questions for that have not been answered yet. "
+        f"In warm, natural conversational English (2-3 sentences), acknowledge what they just asked for, "
+        f"mention you were in the middle of the other task, and ask which they would like to do: "
+        f"continue the in-progress work, or proceed with the new request instead. End with the question."
+    )
+    return await supervisor.generate_conversational_response(
+        user_message=user_message,
+        context=context_prompt,
+        history=history,
+        user_name=user_name,
+    )
+
+
+async def append_resume_prompt(supervisor, state, response_text: str, pending,
+                               user_message: str, history, user_name: str) -> None:
+    """Keep a just-given answer verbatim, then append an LLM-composed bridge
+    asking whether to continue the pending work or start a new plan."""
+    workflow_desc = (
+        "updating your meal plan" if pending.workflow_type == "edit_meal" else "creating your meal plan"
+    )
+    bridge_context = (
+        f"You just answered the user's question. But you were also in the middle of {workflow_desc} "
+        f"for them, with pending questions still unanswered. "
+        f"Write ONE warm, natural bridge sentence (no greeting, no bullet points) that transitions from "
+        f"the answer to asking whether they would like to continue that in-progress work or start a new plan instead."
+    )
+    bridge = await supervisor.generate_conversational_response(
+        user_message=f"(continuing the conversation; the user had asked: '{user_message}')",
+        context=bridge_context,
+        history=history,
+        user_name=user_name,
+    )
+    state.system_message = f"{response_text}\n\n{bridge}"
+    state.status = "conversational"
+    resume_label = "Continue the update" if pending.workflow_type == "edit_meal" else "Resume"
+    state.quick_options = [
+        {"label": resume_label, "value": "Continue creating the plan"},
+        {"label": "New Plan", "value": "Create a new plan instead"},
+    ] + list(state.quick_options or [])
+
+
+async def ask_for_new_plan_specs(supervisor, state, user_profile, user_message: str, history) -> None:
+    """Offer profile defaults vs. custom specs for a new plan.
+
+    The profile already holds diet/calorie preferences, so instead of asking
+    for everything from scratch, the LLM offers: create with profile defaults,
+    or share custom specifications. A pending state preserves the offer across
+    navigation; quick options stay strictly relevant to this choice.
+    """
+    p_diet = str(user_profile.get("diet_type", "veg")).lower()
+    diet_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(p_diet, p_diet.capitalize())
+    sug = int(user_profile.get("suggested_target_calories") or 2100)
+    days_default = settings.default_plan_days
+    name = user_profile.get("name", "there")
+    context_prompt = (
+        f"The user wants a brand-new meal plan. Their saved profile already has {diet_display} diet and a "
+        f"suggested target of {sug:,} kcal/day. "
+        f"In warm, natural conversational English (2-3 sentences), say you'd be happy to build it, then ask: "
+        f"shall I create a {days_default}-day plan with those profile preferences ({diet_display}, {sug:,} kcal/day), "
+        f"or do they have their own specifications (days, calorie target, diet type)? End with the question."
+    )
+    specs_text = await supervisor.generate_conversational_response(
+        user_message=user_message,
+        context=context_prompt,
+        history=history,
+        user_name=name,
+    )
+    state.system_message = specs_text
+    state.status = "conversational"
+    defaults_value = f"Create a {days_default}-day {p_diet} meal plan for {sug} kcal with my profile defaults"
+    state.quick_options = [
+        {"label": f"Use my profile ({diet_display}, {sug:,} kcal)", "value": defaults_value},
+        {"label": "I'll give specs", "value": "I have my own specifications for the new plan"},
+    ]
+    # Preserve the offer (and the profile defaults) across navigation so a
+    # follow-up "yes, use my profile" still resolves.
+    state.pending_workflow = PendingWorkflow(
+        workflow_type="new_plan",
+        pending_conflicts=["specs_choice"],
+        asked_questions=[specs_text],
+        extracted_info={
+            "awaiting_specs_choice": True,
+            "profile_diet": p_diet,
+            "suggested_calories": sug,
+            "days_default": days_default,
+            "prompt_text": specs_text,
+            "prompt_quick_options": list(state.quick_options or []),
+        },
+        next_expected_decision="specs_choice",
+        original_intent="new_plan",
+        original_message=user_message,
+        user_profile_at_start=dict(user_profile or {}),
+        created_at=datetime.utcnow().isoformat()
     )
 
 
 def _interruption_quick_options(pending, intent_data, interrupted_message: str) -> list:
+    """Deterministic quick options: machine-contract values the frontend/LLM rely on."""
     resume_label = "Continue the update" if pending.workflow_type == "edit_meal" else "Continue existing plan"
     new_label = {
         "new_plan": "Create the new plan",
@@ -206,41 +340,6 @@ def _interruption_quick_options(pending, intent_data, interrupted_message: str) 
         # the pending workflow is dropped.
         {"label": new_label, "value": interrupted_message},
         {"label": "Cancel", "value": "Cancel"},
-    ]
-
-
-def append_resume_prompt(state, response_text: str, pending) -> None:
-    """Answer a question, then ask whether to continue the pending workflow or start fresh."""
-    workflow_desc = (
-        "updating your meal plan" if pending.workflow_type == "edit_meal" else "creating your meal plan"
-    )
-    resume_prompt = (
-        f"\n\nWe were in the middle of {workflow_desc} for you. "
-        f"Would you like to continue with that, or start a new plan instead?"
-    )
-    state.system_message = f"{response_text}{resume_prompt}"
-    state.status = "conversational"
-    resume_label = "Continue the update" if pending.workflow_type == "edit_meal" else "Resume"
-    state.quick_options = [
-        {"label": resume_label, "value": "Continue creating the plan"},
-        {"label": "New Plan", "value": "Create a new plan instead"},
-    ] + list(state.quick_options or [])
-
-
-def ask_for_new_plan_specs(state, user_profile) -> None:
-    """After the user abandons a pending workflow for a new plan, ask for the specs."""
-    sug = int(user_profile.get("suggested_target_calories") or 2100)
-    p_diet = str(user_profile.get("diet_type", "veg")).lower()
-    state.pending_workflow = None
-    state.system_message = (
-        "Got it — let's start a fresh meal plan. Tell me how many days (e.g. 3, 5, or 7), "
-        "your calorie target, and your diet preference (veg / non-veg / vegan), "
-        "and I'll put one together for you."
-    )
-    state.status = "conversational"
-    state.quick_options = [
-        {"label": f"Plan 3 days ({sug:,} kcal)", "value": f"Plan a 3-day {p_diet} meal plan for {sug} kcal"},
-        {"label": f"Plan 7 days ({sug:,} kcal)", "value": f"Plan a 7-day {p_diet} meal plan for {sug} kcal"},
     ]
 
 
@@ -272,8 +371,195 @@ def make_edit_pending(
     )
 
 
-async def run_meal_planner(
-    user_id: int,
+def make_delete_pending(
+    response_text: str,
+    quick_options: list,
+    user_message: str,
+    user_profile: Dict[str, Any],
+    target_plan_name: Optional[str] = None,
+) -> PendingWorkflow:
+    """Persist a plan-deletion confirmation so 'Cancel' (and navigation) resolve
+    against it instead of falling through to a generic no-session message."""
+    return PendingWorkflow(
+        workflow_type="delete_plan",
+        pending_conflicts=["delete_confirmation"],
+        asked_questions=[response_text],
+        extracted_info={
+            "target_plan_name": target_plan_name,
+            "reprompt_text": response_text,
+            "reprompt_quick_options": list(quick_options or []),
+        },
+        next_expected_decision="delete_confirmation",
+        original_intent="delete_plan",
+        original_message=user_message,
+        user_profile_at_start=dict(user_profile or {}),
+        created_at=datetime.utcnow().isoformat()
+    )
+
+
+async def _decline_and_represent_pending(supervisor, state, pending, user_message: str,
+                                         history, user_name: str) -> None:
+    """Out-of-scope question asked mid-workflow: decline WITHOUT answering it,
+    then re-present ONLY the pending question (stored snapshot). The declined
+    answer must never be echoed or repeated anywhere in the reply."""
+    decline = await supervisor.generate_out_of_scope_decline(
+        user_message, history=history, user_name=user_name,
+    )
+    if pending.workflow_type == "edit_meal":
+        text = pending.extracted_info.get("reprompt_text") or "Where would you like to continue with your update?"
+        quick = pending.extracted_info.get("reprompt_quick_options")
+    elif pending.workflow_type == "delete_plan":
+        text = pending.extracted_info.get("reprompt_text") or "Which meal plan would you like to delete?"
+        quick = pending.extracted_info.get("reprompt_quick_options")
+    else:
+        text = pending.extracted_info.get("prompt_text") or "Let's continue creating your meal plan."
+        quick = pending.extracted_info.get("prompt_quick_options")
+    state.system_message = f"{decline}\n\n{text}"
+    state.status = "conversational"
+    state.quick_options = quick or [
+        {"label": "Resume", "value": "Continue creating the plan"},
+        {"label": "New Plan", "value": "Create a new plan instead"},
+    ]
+    # Pending workflow is preserved as-is (still awaiting an answer).
+
+
+def _same_dish(old_meal, new_meal) -> bool:
+    """Whether the regenerated meal is the same dish (drift, not a change)."""
+    a = (getattr(old_meal, "recipe_name", None) or "").strip().lower()
+    b = (getattr(new_meal, "recipe_name", None) or "").strip().lower()
+    return bool(a) and a == b
+
+
+_DISH_STOPWORDS = {"dish", "dishes", "meal", "meals", "food", "foods", "recipe", "recipes",
+                   "menu", "item", "items", "that", "this", "it", "the", "a", "an", "some", "all"}
+
+
+def _edit_exclusion_terms(intent_data) -> list:
+    """Effective exclusion terms for an edit: the LLM's requested_exclusions
+    plus significant words from dish_to_replace (structured LLM output)."""
+    exclusions = [str(e).strip().lower() for e in (getattr(intent_data, "requested_exclusions", None) or [])]
+    exclusions = [e for e in exclusions if e]
+    ed = getattr(intent_data, "edit_details", None)
+    _dish_rep = (getattr(ed, "dish_to_replace", None) or "").strip().lower()
+    for _tok in re.split(r"[^a-z]+", _dish_rep):
+        if len(_tok) >= 3 and _tok not in _DISH_STOPWORDS and _tok not in exclusions:
+            exclusions.append(_tok)
+    return exclusions
+
+
+def _meal_matches_exclusions(meal, exclusions) -> bool:
+    """Whether a meal's recipe/ingredients contain any excluded ingredient."""
+    if not exclusions:
+        return False
+    hay = " ".join(
+        [getattr(meal, "recipe_name", None) or ""]
+        + [getattr(ing, "name", None) or "" for ing in (getattr(meal, "ingredients", None) or [])]
+    ).lower()
+    for ex in exclusions:
+        ex = str(ex or "").strip().lower()
+        if ex and ex in hay:
+            return True
+    return False
+
+
+def _surgically_merge_edit(old_plan, new_plan, intent_data):
+    """Merge a regenerated plan over the previous version, keeping every
+    non-targeted meal byte-identical (dish, calories, macros, ingredients,
+    instructions) so unrelated dishes never drift.
+
+    Only these slots keep the regenerated meal: the explicitly targeted
+    (day, meal_type) slot, a whole targeted day, newly added slots (e.g. a new
+    snack), slots whose original meal contained an excluded ingredient, or
+    everything for an explicit plan-wide scope. Missing original slots are
+    re-added unless the user asked to remove them.
+    """
+    ed = intent_data.edit_details if intent_data else None
+    target_day = getattr(ed, "day", None) if ed else None
+    target_meal = ((getattr(ed, "meal_type", None) or "").lower()) if ed else None
+    operation = ((getattr(ed, "operation", None) or "replace")) if ed else "replace"
+    scope = getattr(ed, "edit_scope", None) if ed else None
+    exclusions = _edit_exclusion_terms(intent_data)
+
+    old_by_slot = {}
+    for d in (getattr(old_plan, "days", None) or []):
+        for m in (getattr(d, "meals", None) or []):
+            old_by_slot[(d.day_number, (getattr(m, "meal_type", None) or "").lower())] = m
+
+    kept_count, restored_count = 0, 0
+    merged = new_plan.model_copy(deep=True)
+    for day in (getattr(merged, "days", None) or []):
+        old_day = next((d for d in (getattr(old_plan, "days", None) or []) if d.day_number == day.day_number), None)
+        kept_meals = []
+        for meal in (getattr(day, "meals", None) or []):
+            mtype = (getattr(meal, "meal_type", None) or "").lower()
+            key = (day.day_number, mtype)
+            old_meal = old_by_slot.get(key)
+            # Precedence: an explicitly targeted slot wins first, then
+            # exclusion matches, then plan-wide scope. Anything else that has
+            # an original counterpart is restored byte-identical.
+            if old_meal is None:
+                keep_new = True  # slot the generator added; nothing to restore
+            elif (
+                target_day is not None
+                and target_meal
+                and day.day_number == target_day
+                and mtype == target_meal
+            ):
+                keep_new = True  # the explicitly targeted slot
+            elif target_day is not None and target_meal:
+                keep_new = False
+            elif exclusions and _meal_matches_exclusions(old_meal, exclusions):
+                keep_new = True  # original dish contained an excluded ingredient
+            elif exclusions:
+                keep_new = False
+            elif scope == "plan":
+                # Plan-wide rewrite: still restore slots the generator returned
+                # under the SAME dish name (drift, not an intentional change).
+                keep_new = not _same_dish(old_meal, meal)
+            elif operation == "add":
+                keep_new = True
+            elif target_day is not None and not target_meal and day.day_number == target_day and scope == "day":
+                keep_new = True  # whole targeted day
+            elif target_day is None and not target_meal and scope != "plan":
+                keep_new = True  # nothing targeted: preserve generator output
+            else:
+                keep_new = False
+            if not keep_new and old_meal is not None:
+                kept_meals.append(old_meal.model_copy(deep=True))
+                restored_count += 1
+            else:
+                kept_meals.append(meal)
+                kept_count += 1
+        # Re-add original slots the generator dropped unintentionally.
+        if old_day is not None:
+            present = {(day.day_number, (getattr(m, "meal_type", None) or "").lower()) for m in kept_meals}
+            for old_meal in (getattr(old_day, "meals", None) or []):
+                otype = (getattr(old_meal, "meal_type", None) or "").lower()
+                okey = (old_day.day_number, otype)
+                if okey in present:
+                    continue
+                # Don't resurrect a slot the user asked to remove, or one whose
+                # ingredients were excluded.
+                if operation == "remove" and target_day == old_day.day_number and (not target_meal or otype == target_meal):
+                    continue
+                if exclusions and _meal_matches_exclusions(old_meal, exclusions):
+                    continue
+                kept_meals.append(old_meal.model_copy(deep=True))
+                restored_count += 1
+        day.meals = kept_meals
+        day.total_calories = round(sum((getattr(m, "calories", None) or 0) for m in kept_meals), 1)
+        day.total_protein_g = round(sum((getattr(m, "protein_g", None) or 0) for m in kept_meals), 1)
+        day.total_carbs_g = round(sum((getattr(m, "carbs_g", None) or 0) for m in kept_meals), 1)
+        day.total_fat_g = round(sum((getattr(m, "fat_g", None) or 0) for m in kept_meals), 1)
+    if getattr(merged, "days", None):
+        merged.average_daily_calories = round(
+            sum((getattr(d, "total_calories", None) or 0) for d in merged.days) / len(merged.days), 1
+        )
+    logger.info(f"Surgical edit merge: kept {kept_count} regenerated meal(s), restored {restored_count} untouched meal(s).")
+    return merged
+
+
+async def run_meal_planner(    user_id: int,
     user_message: str,
     user_profile: Dict[str, Any],
     session: Optional[AsyncSession] = None,
@@ -305,7 +591,13 @@ async def run_meal_planner(
     # A "resume"/"continue" answer re-activates the pending workflow's original
     # intent BEFORE PlanState is built (PlanState.intent is a typed literal, and
     # the graph routes on it - so it must hold the real intent, not 'resume_request').
-    if intent_data.intent == "resume_request" and pending_workflow and pending_workflow.original_intent:
+    # was_resume_request preserves the LLM's verdict for the interruption gate below.
+    was_resume_request = (
+        intent_data.intent == "resume_request"
+        and pending_workflow is not None
+        and bool(getattr(pending_workflow, "original_intent", None))
+    )
+    if was_resume_request:
         intent_data.intent = pending_workflow.original_intent
 
     # Merge standing fixed meals from profile if any
@@ -339,12 +631,19 @@ async def run_meal_planner(
     db_plan_id = None
     matched_plan = None
     if all_plans:
+        # For plan updates with no explicitly named target, never silently fall
+        # back to the latest plan when several exist: history references still
+        # resolve continuations, and a lone plan still resolves to itself.
+        _explicit_target = bool(intent_data.target_plan_id or intent_data.target_plan_name)
         matched_plan = find_referenced_plan(
             user_message,
             all_plans,
             target_id=intent_data.target_plan_id,
             target_name=intent_data.target_plan_name,
-            history=history
+            history=history,
+            fallback_to_first=(
+                _explicit_target or intent_data.intent != "edit_meal" or len(all_plans) == 1
+            ),
         )
         if matched_plan:
             existing_plan = PlanRepository.to_meal_plan_domain(matched_plan)
@@ -379,6 +678,30 @@ async def run_meal_planner(
     # before the pending-workflow handling.
     supervisor = SupervisorAgent()
 
+    # Resume/cancel with no in-progress workflow: the LLM understood an intent
+    # to resume/cancel, but there is nothing to act on. Say so conversationally
+    # instead of letting the request fall through to the planning graph.
+    if intent_data.intent in ("resume_request", "cancel_request") and not state.pending_workflow:
+        action = "resume" if intent_data.intent == "resume_request" else "cancel"
+        context_prompt = (
+            f"The user said '{user_message}', which sounds like they want to {action} a meal-plan workflow, "
+            f"but there is no in-progress meal plan creation or update right now. "
+            f"In warm, natural conversational English (2 sentences), let them know there's nothing in progress "
+            f"to {action}, and offer to create a new meal plan or update an existing one instead."
+        )
+        state.system_message = await supervisor.generate_conversational_response(
+            user_message=user_message,
+            context=context_prompt,
+            history=history,
+            user_name=user_profile.get("name"),
+        )
+        state.status = "conversational"
+        state.quick_options = [
+            {"label": "Create new plan", "value": "Create a new meal plan"},
+            {"label": "View existing plans", "value": "Show my meal plans"},
+        ]
+        return state
+
     # =========================================================================
     # Handle Pending Workflow: Check for pending workflow and handle resume/cancel/out_of_scope
     # =========================================================================
@@ -399,11 +722,24 @@ async def run_meal_planner(
     elif intent_data.intent == "cancel_request" and pending_workflow:
         # Clear the pending workflow
         state.pending_workflow = None
-        context_prompt = (
-            "The user wants to cancel the pending meal plan creation and start fresh. "
-            "In friendly, polite English, confirm that the previous meal plan creation has been cancelled "
-            "and ask what they'd like to do instead (create a new plan, modify existing, etc.)."
-        )
+        if pending_workflow.original_intent == "delete_plan":
+            context_prompt = (
+                "The user cancelled the deletion of their meal plan. "
+                "In friendly, polite English, reassure them that their meal plan is kept safely and nothing was deleted, "
+                "and ask if they would like to make any other adjustments instead."
+            )
+        elif pending_workflow.original_intent == "edit_meal":
+            context_prompt = (
+                "The user cancelled the in-progress update of their meal plan. "
+                "In friendly, polite English, confirm that the update was dropped and their saved plan is unchanged, "
+                "and ask what they'd like to do instead (create a new plan, modify existing, etc.)."
+            )
+        else:
+            context_prompt = (
+                "The user wants to cancel the pending meal plan creation and start fresh. "
+                "In friendly, polite English, confirm that the previous meal plan creation has been cancelled "
+                "and ask what they'd like to do instead (create a new plan, modify existing, etc.)."
+            )
         response_text = await supervisor.generate_conversational_response(
             user_message=user_message,
             context=context_prompt,
@@ -419,16 +755,13 @@ async def run_meal_planner(
         return state
 
     # =========================================================================
-    # Plan Listing (anytime): "show my meal plans" / "list my plans"
-    # Lists the user's saved plans with per-plan shortcuts to the Plans tab.
-    # If a workflow is pending, the list is followed by a continue/new prompt.
+    # Plan Listing: the LLM classified this message as a request to view saved
+    # plans. Facts come from the database; the wording is composed by the LLM.
+    # If a workflow is pending, an LLM-composed bridge follows the list.
     # =========================================================================
-    if is_list_plans_request(user_message):
+    if intent_data.intent == "list_plans":
         if not all_plans:
-            list_text = (
-                "You don't have any saved meal plans yet. I can create one for you — just "
-                "tell me how many days, your calorie target, and your diet preference."
-            )
+            facts = "The user has 0 saved meal plans in their account."
             state.quick_options = [
                 {"label": "Plan 3 days", "value": "Plan 3 days for 1800 kcal"},
                 {"label": "Plan 7 days", "value": "Plan 7 days vegetarian meal plan"},
@@ -438,24 +771,46 @@ async def run_meal_planner(
                 "approved": "Approved", "draft": "Draft", "reviewing": "Reviewing",
                 "escalated": "Escalated", "failed": "Failed",
             }
-            lines = ["Here are your saved meal plans:"]
-            for p in all_plans:
-                name = getattr(p, "name", None) or f"Plan #{p.id}"
-                days = getattr(p, "days", 0)
-                cal = getattr(p, "calorie_target", None) or getattr(p, "target_calories", None)
-                diet = str(getattr(p, "diet_type", "") or "").lower()
-                diet_txt = "Non-Veg" if diet == "non-veg" else (diet.capitalize() if diet else "—")
-                cal_txt = f"{int(cal):,} kcal" if cal else "—"
-                st = status_lbl.get(getattr(p, "status", ""), "Draft")
-                lines.append(f"- **{name}** — {days} days · {cal_txt} · {diet_txt} ({st})")
-            list_text = "\n".join(lines)
-            state.quick_options = [
-                {"label": f"Open {getattr(p, 'name', None) or f'Plan #{p.id}'}", "value": f"__open_plan__:{p.id}"}
-                for p in all_plans
-            ] + [{"label": "Create new plan", "value": "Create a new meal plan"}]
+            plan_facts = []
+            plan_link_lines = []
+            for i, p in enumerate(all_plans, start=1):
+                p_name = getattr(p, "name", None) or f"Plan #{p.id}"
+                p_days = getattr(p, "days", 0)
+                p_cal = getattr(p, "calorie_target", None)
+                p_cal_txt = f"{int(p_cal):,} kcal" if p_cal else "calories not set"
+                p_diet = str(getattr(p, "diet_type", "") or "").lower() or "diet not set"
+                p_status = status_lbl.get(getattr(p, "status", ""), "Draft")
+                plan_facts.append(f"- {p_name}: {p_days} days, {p_cal_txt}, {p_diet}, status {p_status}")
+                plan_link_lines.append(
+                    f"{i}. [{p_name}](plan://{p.id}) — {p_days} days · {p_cal_txt} · {p_diet} ({p_status})"
+                )
+            facts = "The user's saved meal plans:\n" + "\n".join(plan_facts)
+            # No "create" button here: options must stay relevant to the
+            # list that was asked for (plans open inline via tappable links).
+            state.quick_options = None
+        list_context = (
+            f"{facts}\n\n"
+            f"In warm, natural conversational English (1-2 sentences), introduce the user's saved plans below. "
+            f"Do NOT list the plans yourself in prose — the numbered tappable list follows your message. "
+            f"When there are no plans, let them know that warmly and invite them to create one "
+            f"by sharing days, calorie target, and diet preference."
+        )
+        list_text = await supervisor.generate_conversational_response(
+            user_message=user_message,
+            context=list_context,
+            history=history,
+            user_name=user_profile.get("name"),
+        )
+        if all_plans:
+            # Deterministic numbered list with inline tappable plan links that
+            # jump straight to the plan in the Plans tab.
+            list_text = f"{list_text}\n" + "\n".join(plan_link_lines)
 
         if state.pending_workflow:
-            append_resume_prompt(state, list_text, state.pending_workflow)
+            await append_resume_prompt(
+                supervisor, state, list_text, state.pending_workflow,
+                user_message, history, user_profile.get("name"),
+            )
         else:
             state.system_message = list_text
             state.status = "conversational"
@@ -470,30 +825,92 @@ async def run_meal_planner(
         return state
 
     # =========================================================================
-    # PENDING-WORKFLOW INTERRUPTION GATE
-    # When a pending workflow exists (diet/calorie confirmation, or an in-progress
-    # plan update), a competing request (new plan, rename, delete, approve, edit)
-    # must not silently discard it. We either resolve an open interruption choice,
-    # or ask the user whether to continue the pending work or proceed with the new
-    # request. Informational questions get answered AND followed by that prompt.
+    # PENDING-WORKFLOW INTERRUPTION GATE (LLM-first)
+    # Routing uses the LLM's structured verdict (intent + confirmation flags +
+    # extracted params) together with the pending state — never keyword matching
+    # on the raw message. Reply wording is composed by the supervisor LLM.
     # =========================================================================
     pending_workflow = state.pending_workflow
     if pending_workflow:
         pinfo = dict(pending_workflow.extracted_info or {})
         awaiting_choice = bool(pinfo.get("awaiting_interruption_choice"))
-        msg_lower = user_message.lower()
-        is_resume_msg = (
-            intent_data.intent == "resume_request"
-            or any(k in msg_lower for k in (
-                "resume", "continue", "carry on", "keep going", "keep it", "go on",
-            ))
-        )
 
-        if awaiting_choice:
-            if is_resume_msg:
+        # --- Specs choice: the user was offered profile-defaults vs. custom
+        # specs for a new plan. Route on the LLM's verdict, not keywords.
+        # (cancel_request never reaches here: the shared cancel handler above
+        # catches it first whenever a pending workflow exists.)
+        if pinfo.get("awaiting_specs_choice"):
+            if intent_data.intent in ("rename_plan", "delete_plan", "approve_plan", "edit_meal"):
+                # Explicit pivot to another action: drop the specs offer, do it.
+                state.pending_workflow = None
+            elif intent_data.intent == "out_of_scope":
+                await _decline_and_represent_pending(
+                    supervisor, state, pending_workflow,
+                    user_message, history, user_profile.get("name"),
+                )
+                return state
+            elif intent_data.intent in ("chat", "app_info", "explain", "profile_info", "list_plans"):
+                # Conversational question: answer it, then re-present the
+                # stored specs offer (never silently drop it).
+                if intent_data.intent == "list_plans":
+                    answer = await supervisor.generate_conversational_response(
+                        user_message=user_message,
+                        context=(
+                            "The user asked to see their saved meal plans: "
+                            + ", ".join(getattr(p, "name", None) or f"Plan #{p.id}" for p in all_plans)
+                            + ". In one warm sentence, tell them their plans are listed as tappable links below."
+                        ),
+                        history=history,
+                        user_name=user_profile.get("name"),
+                    )
+                    if all_plans:
+                        answer = f"{answer}\n" + "\n".join(
+                            f"{i}. [{getattr(p, 'name', None) or f'Plan #{p.id}'}](plan://{p.id})"
+                            for i, p in enumerate(all_plans, start=1)
+                        )
+                else:
+                    answer = await supervisor.handle_conversational_intent(
+                        state=state, user_message=user_message,
+                        intent=intent_data.intent, history=history
+                    )
+                stored_specs = pinfo.get("prompt_text") or "Would you like me to create the plan with your profile preferences, or do you have your own specifications?"
+                stored_quick = pinfo.get("prompt_quick_options")
+                state.system_message = f"{answer}\n\n{stored_specs}"
+                state.status = "conversational"
+                state.quick_options = stored_quick or [
+                    {"label": "Use my profile defaults", "value": "Create it with my profile defaults"},
+                ]
+                return state
+            elif getattr(intent_data, "use_profile_defaults", False):
+                # Agreed to profile defaults: drop the offer; the new-plan
+                # branch below fills the missing specs from the profile.
+                state.pending_workflow = None
+            elif intent_data.intent == "new_plan":
+                sig = _llm_answer_signals(intent_data)
+                if sig["fresh_diet"] or sig["fresh_cal"] or intent_data.requested_days:
+                    # Custom specifications given: drop the offer, proceed.
+                    state.pending_workflow = None
+                else:
+                    # Bare message: re-present the stored specs offer.
+                    state.system_message = pinfo.get("prompt_text") or "Would you like me to create the plan with your profile preferences, or do you have your own specifications?"
+                    state.status = "conversational"
+                    state.quick_options = pinfo.get("prompt_quick_options")
+                    return state
+            else:
+                # Anything else: re-present the stored specs offer.
+                state.system_message = pinfo.get("prompt_text") or "Would you like me to create the plan with your profile preferences, or do you have your own specifications?"
+                state.status = "conversational"
+                state.quick_options = pinfo.get("prompt_quick_options")
+                return state
+
+        elif awaiting_choice:
+            if was_resume_request:
                 # Re-present the pending question(s) exactly as the user saw them.
                 if pending_workflow.workflow_type == "edit_meal":
                     text = pinfo.get("reprompt_text") or "Where would you like to continue with your update?"
+                    quick = pinfo.get("reprompt_quick_options")
+                elif pending_workflow.workflow_type == "delete_plan":
+                    text = pinfo.get("reprompt_text") or "Which meal plan would you like to delete?"
                     quick = pinfo.get("reprompt_quick_options")
                 else:
                     text = pinfo.get("prompt_text") or "Let's continue creating your meal plan."
@@ -513,48 +930,74 @@ async def run_meal_planner(
                     payload={"action": "pending_resume"}
                 )
                 return state
-            if intent_data.intent in ("chat", "app_info", "explain", "profile_info", "out_of_scope") and not any(
-                phr in msg_lower for phr in _NEW_CHOICE_PHRASES
+            if intent_data.intent == "out_of_scope":
+                # Out-of-scope mid-choice: decline WITHOUT answering, then
+                # re-present only the pending question (never echo the answer).
+                await _decline_and_represent_pending(
+                    supervisor, state, pending_workflow,
+                    user_message, history, user_profile.get("name"),
+                )
+                return state
+            if intent_data.intent in ("chat", "app_info", "explain", "profile_info", "list_plans"):
+                # The LLM understood this as a question, not the competing action:
+                # answer it, then keep the interruption choice alive.
+                if intent_data.intent == "list_plans":
+                    answer = await supervisor.generate_conversational_response(
+                        user_message=user_message,
+                        context=(
+                            "The user asked to see their saved meal plans: "
+                            + ", ".join(getattr(p, "name", None) or f"Plan #{p.id}" for p in all_plans)
+                            + ". In one warm sentence, tell them their plans are listed as tappable links below."
+                        ),
+                        history=history,
+                        user_name=user_profile.get("name"),
+                    )
+                    if all_plans:
+                        answer = f"{answer}\n" + "\n".join(
+                            f"{i}. [{getattr(p, 'name', None) or f'Plan #{p.id}'}](plan://{p.id})"
+                            for i, p in enumerate(all_plans, start=1)
+                        )
+                    # No "create" button: options stay relevant to the list.
+                    state.quick_options = None
+                else:
+                    answer = await supervisor.handle_conversational_intent(
+                        state=state, user_message=user_message,
+                        intent=intent_data.intent, history=history
+                    )
+                await append_resume_prompt(
+                    supervisor, state, answer, pending_workflow,
+                    user_message, history, user_profile.get("name"),
+                )
+                return state
+            # Anything else while awaiting = the LLM classified this as the
+            # competing action: drop the pending workflow and handle it fresh.
+            sig = _llm_answer_signals(intent_data)
+            if (
+                intent_data.intent == "new_plan"
+                and sig["answered_any"]
+                and not _contradicts_pending_answers(intent_data, pinfo)
             ):
-                # Answer the new question, then keep the interruption choice alive.
-                answer = await supervisor.handle_conversational_intent(
-                    state=state, user_message=user_message,
-                    intent=intent_data.intent, history=history
-                )
-                workflow_desc = (
-                    "updating your meal plan" if pending_workflow.workflow_type == "edit_meal"
-                    else "creating your meal plan"
-                )
-                resume_prompt = (
-                    f"\n\nWe were in the middle of {workflow_desc} for you. "
-                    f"Would you like to continue with that, or start a new plan instead?"
-                )
-                state.system_message = f"{answer}{resume_prompt}"
-                state.status = "conversational"
-                resume_label = "Continue the update" if pending_workflow.workflow_type == "edit_meal" else "Resume"
-                state.quick_options = [
-                    {"label": resume_label, "value": "Continue creating the plan"},
-                    {"label": "New Plan", "value": "Create a new plan instead"},
-                ]
-                return state
-            # Anything else while awaiting = the user chose the competing request:
-            # drop the pending workflow and handle this message as a fresh request.
-            chosen_new = any(phr in msg_lower for phr in _NEW_CHOICE_PHRASES)
-            has_params = _mentions_diet(msg_lower) or _mentions_calories(msg_lower)
-            state.pending_workflow = None
-            if (chosen_new or intent_data.intent == "new_plan") and not has_params:
-                # Explicit "start a new plan instead" (or a bare "create a new meal
-                # plan" echo): abandon the pending flow and ask for the new specs.
-                ask_for_new_plan_specs(state, user_profile)
-                await supervisor.log_step(
-                    state=state, from_agent="supervisor", to_agent="user",
-                    msg_type="feedback", content=str(state.system_message)[:120] + "...",
-                    payload={"action": "new_plan_specs_request"}
-                )
-                return state
-            # A concrete competing request (carries params, or a rename/delete/
-            # approve/edit echo) continues below the gate with no pending workflow.
-        elif is_resume_msg and pending_workflow.workflow_type == "edit_meal":
+                # The user answered the pending question(s) instead of choosing:
+                # resume the pending flow (choice flags dropped) and resolve below.
+                new_info = {k: v for k, v in pinfo.items()
+                            if k not in ("awaiting_interruption_choice", "interrupted_by", "interrupted_intent")}
+                state.pending_workflow = pending_workflow.model_copy(update={"extracted_info": new_info})
+                # Fall through to the normal branches with the pending restored.
+            else:
+                state.pending_workflow = None
+                if intent_data.intent == "new_plan" and not (sig["fresh_diet"] or sig["fresh_cal"]):
+                    # Awaiting a choice and the user sent a bare new-plan message:
+                    # abandon the pending flow and ask for the new specs.
+                    await ask_for_new_plan_specs(supervisor, state, user_profile, user_message, history)
+                    await supervisor.log_step(
+                        state=state, from_agent="supervisor", to_agent="user",
+                        msg_type="feedback", content=str(state.system_message)[:120] + "...",
+                        payload={"action": "new_plan_specs_request"}
+                    )
+                    return state
+                # A concrete competing request (carries params, or a rename/delete/
+                # approve/edit action) continues below the gate with no pending workflow.
+        elif was_resume_request and pending_workflow.workflow_type == "edit_meal":
             # Resuming an in-progress update: re-present the stored question.
             text = pinfo.get("reprompt_text") or "Where would you like to continue with your update?"
             quick = pinfo.get("reprompt_quick_options")
@@ -571,46 +1014,49 @@ async def run_meal_planner(
                 payload={"action": "edit_pending_resume"}
             )
             return state
-        elif not is_resume_msg:
-            chosen_new = any(phr in msg_lower for phr in _NEW_CHOICE_PHRASES)
-            if chosen_new:
-                # The user answered a resume/new prompt with "start a new plan
-                # instead": drop the pending flow (no re-interruption) and ask for
-                # the new specs, or if this message already carries diet/calorie
-                # params, fall through to process the concrete request fresh.
-                if _mentions_diet(msg_lower) or _mentions_calories(msg_lower):
-                    state.pending_workflow = None
-                else:
-                    ask_for_new_plan_specs(state, user_profile)
-                    await supervisor.log_step(
-                        state=state, from_agent="supervisor", to_agent="user",
-                        msg_type="feedback", content=str(state.system_message)[:120] + "...",
-                        payload={"action": "new_plan_specs_request"}
-                    )
-                    return state
-            elif intent_data.intent in ("rename_plan", "delete_plan", "approve_plan"):
+        elif not was_resume_request:
+            if intent_data.intent in ("rename_plan", "delete_plan", "approve_plan"):
+                # The LLM classified an explicit plan action: never an answer to
+                # diet/calorie confirmations, so it interrupts the pending work.
                 competing = True
             elif intent_data.intent == "edit_meal":
                 # A fresh update request interrupts plan CREATION; a follow-up to an
-                # in-progress update is a continuation and is handled by the edit flow.
+                # in-progress update is a continuation handled by the edit flow.
                 competing = pending_workflow.workflow_type != "edit_meal"
             elif intent_data.intent == "new_plan":
                 if pending_workflow.workflow_type == "edit_meal":
                     # Any new-plan request interrupts an in-progress update.
                     competing = True
-                elif is_new_plan_request(user_message):
-                    # An explicit "new plan" request interrupts pending confirmations.
-                    competing = True
+                elif "(confirmed)" in user_message:
+                    # Our own confirmation quick-option echo: always an answer.
+                    competing = False
                 else:
-                    answered = _answered_pending_questions(user_message, intent_data)
-                    resolved_any = answered["answered_diet"] or answered["answered_cal"]
-                    has_create_verb = any(v in msg_lower for v in _PLAN_CREATE_VERBS)
-                    competing = has_create_verb and not resolved_any
+                    sig = _llm_answer_signals(intent_data)
+                    complete = _is_complete_fresh_spec(intent_data)
+                    contradicts = _contradicts_pending_answers(intent_data, pinfo)
+                    if sig["answered_any"] and not (complete and contradicts):
+                        # The LLM understood this as confirming pending question(s).
+                        competing = False
+                    elif intent_data.requested_days and not sig["fresh_diet"] and not sig["fresh_cal"] and not sig["answered_any"]:
+                        # Days-only continuation (e.g. "plan it for 5 days"):
+                        # let the new-plan branch re-ask the open questions.
+                        competing = False
+                    else:
+                        # Fresh specs (flagged-but-contradicting, unflagged new
+                        # request, or bare message): interrupt and ask.
+                        competing = True
             else:
                 competing = False
 
             if competing:
-                state.system_message = _interruption_prompt_text(pending_workflow, intent_data)
+                state.system_message = await _compose_interruption_message(
+                    supervisor,
+                    user_message=user_message,
+                    user_name=user_profile.get("name"),
+                    pending=pending_workflow,
+                    competing_intent=intent_data.intent,
+                    history=history,
+                )
                 state.status = "conversational"
                 state.quick_options = _interruption_quick_options(pending_workflow, intent_data, user_message)
                 new_info = {
@@ -634,25 +1080,16 @@ async def run_meal_planner(
         response_text = await supervisor.generate_profile_info_response(state, user_message, history=history)
         state.system_message = response_text
         state.status = "conversational"
-        from backend.app.guardrails.calorie_rules import calculate_mifflin_st_jeor
-        c_info = calculate_mifflin_st_jeor(
-            age=int(user_profile.get("age", 26)),
-            sex=str(user_profile.get("sex", "male")),
-            height_cm=float(user_profile.get("height_cm", 175)),
-            weight_kg=float(user_profile.get("weight_kg", 70)),
-            activity_level=str(user_profile.get("activity_level", "medium")),
-            goal=str(user_profile.get("goal", "maintain"))
-        )
-        sug = int(c_info["suggested_target"])
-        p_diet = user_profile.get("diet_type", "veg")
-        state.quick_options = [
-            {"label": f"Plan 3 days ({sug:,} kcal)", "value": f"Plan a 3-day {p_diet} meal plan for {sug} kcal"},
-            {"label": f"Plan 7 days ({sug:,} kcal)", "value": f"Plan a 7-day {p_diet} meal plan for {sug} kcal"}
-        ]
+        # No quick options here: they must stay relevant to the profile answer,
+        # not pitch a new plan under every response.
+        state.quick_options = None
         # A pending workflow is not discarded by a profile inquiry: answer it and
         # ask whether to continue the pending work or start a new plan.
         if state.pending_workflow:
-            append_resume_prompt(state, response_text, state.pending_workflow)
+            await append_resume_prompt(
+                supervisor, state, response_text, state.pending_workflow,
+                user_message, history, user_profile.get("name"),
+            )
         await supervisor.log_step(
             state=state,
             from_agent="supervisor",
@@ -706,9 +1143,11 @@ async def run_meal_planner(
             except Exception as e:
                 logger.error(f"[{tid}] Failed to rename plan: {e}")
 
+            old_title = target_plan.name
             context_prompt = (
-                f"Successfully renamed the user's meal plan to '{new_title}'. "
-                f"In polite, natural English, confirm to the user that their meal plan has been renamed to '{new_title}'."
+                f"Successfully renamed the user's meal plan from '{old_title}' to '{new_title}'. "
+                f"In polite, natural English, confirm that their plan '{old_title}' has been renamed to '{new_title}' — "
+                f"state both the old and the new name explicitly."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -758,29 +1197,22 @@ async def run_meal_planner(
     # Step 4: Handle Plan Deletion Flow
     # =========================================================================
     if intent_data.intent == "delete_plan":
-        # Check if previous assistant message in history asked for delete confirmation
-        last_asst_content = ""
-        if history:
-            for h in reversed(history):
-                if h.get("role") == "assistant":
-                    last_asst_content = (h.get("content") or "").strip().lower()
-                    break
-
-        is_pending_confirmation = (
-            "are you sure you want to delete" in last_asst_content
-            or "can i delete it" in last_asst_content
-            or "which meal plan should be deleted" in last_asst_content
-            or "reply 'yes, delete it'" in last_asst_content
-            or "reply \"yes, delete it\"" in last_asst_content
-        )
+        # A delete confirmation in progress is tracked as a PendingWorkflow, so
+        # Cancel/answers resolve against structured state — not history keyword
+        # matching.
+        del_pending = None
+        if state.pending_workflow and state.pending_workflow.original_intent == "delete_plan":
+            del_pending = state.pending_workflow
+        is_pending_confirmation = del_pending is not None
 
         cleaned_user_msg = user_message.strip().lower()
-        is_cancelling = any(w in cleaned_user_msg for w in ["no", "cancel", "don't", "keep it", "stop"])
+        is_cancelling = is_pending_confirmation and any(w in cleaned_user_msg for w in ["no", "cancel", "don't", "keep it", "stop"])
 
         if is_pending_confirmation and is_cancelling:
             context_prompt = (
                 "The user cancelled the deletion of their meal plan. "
-                "Warmly and politely reassure them that their meal plan is kept safely, and ask if they would like to make any other adjustments instead."
+                "Warmly and politely reassure them that their meal plan is kept safely and nothing was deleted, "
+                "and ask if they would like to make any other adjustments instead."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -790,6 +1222,8 @@ async def run_meal_planner(
             )
             state.system_message = response_text
             state.status = "conversational"
+            # Deletion abandoned - drop the delete confirmation state.
+            state.pending_workflow = None
             return state
 
         # Determine target plan if explicitly stated
@@ -813,9 +1247,9 @@ async def run_meal_planner(
             )
 
             if not plan_to_delete and is_pending_confirmation:
-                m_prev = re.search(r'\*\*\"([^\"]+)\"\*\*', last_asst_content)
-                if m_prev:
-                    prev_name = m_prev.group(1).lower()
+                # Fall back to the plan stored in the delete confirmation state.
+                prev_name = ((del_pending.extracted_info or {}).get("target_plan_name") or "").strip().lower()
+                if prev_name:
                     plan_to_delete = next((p for p in all_plans if p.name.lower() == prev_name or prev_name in p.name.lower()), None)
 
             if not plan_to_delete and len(all_plans) == 1:
@@ -852,10 +1286,19 @@ async def run_meal_planner(
                 state.system_message = response_text
                 state.status = "deleted"
                 state.deleted_plan_id = del_id
-                state.quick_options = [
-                    {"label": "Plan 3 days (1800 kcal)", "value": "Plan 3 days for 1800 kcal"},
-                    {"label": "Plan 7 days (veg)", "value": "Plan 7 days vegetarian meal plan"}
-                ]
+                # Deletion completed - drop the delete confirmation state.
+                state.pending_workflow = None
+                # Options stay relevant: with no plans left, offer creation;
+                # otherwise point at the remaining plans.
+                if remaining_count == 0:
+                    state.quick_options = [
+                        {"label": "Plan 3 days (1800 kcal)", "value": "Plan 3 days for 1800 kcal"},
+                        {"label": "Plan 7 days (veg)", "value": "Plan 7 days vegetarian meal plan"}
+                    ]
+                else:
+                    state.quick_options = [
+                        {"label": "View existing plans", "value": "Show my meal plans"}
+                    ]
                 return state
             else:
                 context_prompt = (
@@ -916,6 +1359,10 @@ async def run_meal_planner(
                 {"label": f"Yes, delete {target_plan.name}", "value": f"Yes, delete \"{target_plan.name}\""},
                 {"label": "Cancel", "value": "Cancel"}
             ]
+            state.pending_workflow = make_delete_pending(
+                response_text, state.quick_options, user_message, user_profile,
+                target_plan_name=target_plan.name,
+            )
             return state
 
         # Case 2: Multiple plans exist and user did not name one
@@ -939,6 +1386,9 @@ async def run_meal_planner(
         state.system_message = response_text
         state.status = "conversational"
         state.quick_options = options
+        state.pending_workflow = make_delete_pending(
+            response_text, options, user_message, user_profile,
+        )
         return state
 
     # =========================================================================
@@ -1141,13 +1591,10 @@ async def run_meal_planner(
     # Step 6: Handle Edit / Update Plan Request
     # =========================================================================
     if intent_data.intent == "edit_meal":
-        # Safeguard: Verify user query actually contains modification language
-        has_edit_token = any(k in user_message.lower() for k in [
-            "replace", "swap", "modify", "update", "change", "switch", "substitute", "edit",
-            "breakfast", "lunch", "dinner", "snack"
-        ])
+        # The LLM already decided this message is a plan-update request
+        # (is_update_request / edit_details). Trust that verdict; no keyword veto.
         if len(all_plans) == 0:
-            if not has_edit_token and not intent_data.is_update_request and not intent_data.edit_details:
+            if not intent_data.is_update_request and not intent_data.edit_details:
                 # Mistakenly routed to edit_meal; re-route to conversational app_info
                 intent_data.intent = "app_info"
                 response_text = await supervisor.handle_conversational_intent(
@@ -1179,19 +1626,33 @@ async def run_meal_planner(
             ]
             return state
 
-        # Check if user provided specific modification instructions or requested ingredient exclusions
+        # Whether the LLM extracted actionable edit specifics (slot, dish,
+        # calories, add/remove operation, plan-wide scope) or exclusions.
         has_excl = bool(intent_data.requested_exclusions and len(intent_data.requested_exclusions) > 0)
+        ed = intent_data.edit_details
+        if ed is not None:
+            # Structural validation of the LLM's extraction (domain rules, not
+            # keyword matching): drop values outside the known enums/ranges so a
+            # vague request can never look like a specific slot edit.
+            if getattr(ed, "meal_type", None) not in (None, "breakfast", "lunch", "dinner", "snack"):
+                ed.meal_type = None
+            _day = getattr(ed, "day", None)
+            if _day is not None and (not isinstance(_day, int) or _day < 1):
+                ed.day = None
+            if getattr(ed, "operation", None) not in (None, "add", "remove", "replace"):
+                ed.operation = None
+            if getattr(ed, "edit_scope", None) not in (None, "slot", "day", "plan"):
+                ed.edit_scope = None
         has_specific_instructions = bool(
             has_excl
             or (
-                intent_data.edit_details and (
-                    getattr(intent_data.edit_details, "day", None)
-                    or getattr(intent_data.edit_details, "meal_type", None)
-                    or getattr(intent_data.edit_details, "dish_to_replace", None)
-                    or any(w in (getattr(intent_data.edit_details, "instructions", "") or "").lower() for w in [
-                        "swap", "replace", "change", "modify", "switch", "substitute", "snack", "pork", "beef", "turkey",
-                        "meat", "chicken", "fish", "dairy", "exclude", "without", "remove", "add"
-                    ])
+                ed and (
+                    getattr(ed, "day", None)
+                    or getattr(ed, "meal_type", None)
+                    or getattr(ed, "dish_to_replace", None)
+                    or getattr(ed, "target_meal_calories", None)
+                    or getattr(ed, "operation", None) in ("add", "remove")
+                    or getattr(ed, "edit_scope", None) in ("day", "plan")
                 )
             )
         )
@@ -1257,21 +1718,14 @@ async def run_meal_planner(
 
         # If user provided meal edit instructions, check if essential parameters are missing or ambiguous
         if existing_plan and intent_data.edit_details:
-            cl_inst = (getattr(intent_data.edit_details, "instructions", "") or user_message).lower()
-            is_plan_wide = (
-                has_excl
-                or any(w in cl_inst for w in ["all days", "every day", "entire plan", "whole plan", "all meals", "replace recipes", "replace the recipes", "replacing the recipes", "replacing recipes"])
-                or (any(w in cl_inst for w in ["pork", "beef", "turkey", "meat", "chicken", "fish", "dairy"]) and any(w in cl_inst for w in ["replace", "exclude", "remove", "scrub", "without"]))
-            )
+            # Scope comes from the LLM's structured verdict: plan-wide work
+            # (exclusions, whole-plan scope) runs the swarm; a whole-day scope
+            # skips slot clarification; otherwise resolve the missing slot/day.
+            ed_scope = getattr(intent_data.edit_details, "edit_scope", None)
+            is_plan_wide = bool(has_excl or ed_scope == "plan")
 
             if not is_plan_wide:
                 target_meal_type = getattr(intent_data.edit_details, "meal_type", None)
-                if not target_meal_type:
-                    for mt in ["snack", "breakfast", "lunch", "dinner"]:
-                        if mt in cl_inst:
-                            target_meal_type = mt
-                            intent_data.edit_details.meal_type = mt
-                            break
 
                 target_day = getattr(intent_data.edit_details, "day", None)
 
@@ -1282,7 +1736,7 @@ async def run_meal_planner(
                         target_day = snack_days[0]
                         intent_data.edit_details.day = target_day
 
-                is_entire_day = any(k in cl_inst for k in ["entire day", "whole day", "all meals on day", "all 3 meals", "all 4 meals"])
+                is_entire_day = (ed_scope == "day")
 
                 # Check if meal slot is specified, but day is missing/ambiguous across a multi-day plan
                 if target_meal_type and target_day is None and len(existing_plan.days) > 1:
@@ -1336,12 +1790,47 @@ async def run_meal_planner(
                     )
                     return state
 
+        # The LLM extracted actionable edit specifics, but no existing plan could
+        # be matched (no plan named, or several to choose from): ask which plan
+        # to update instead of letting the request fall through to the graph.
+        if intent_data.edit_details and not existing_plan and len(all_plans) > 1:
+            context_prompt = (
+                f"The user wants to update a meal plan ({user_message}), and they have "
+                f"{len(all_plans)} saved plans: {', '.join(p.name for p in all_plans)}. "
+                f"In friendly, conversational English, ask which meal plan they would like to update."
+            )
+            response_text = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=user_profile.get("name")
+            )
+            state.system_message = response_text
+            state.status = "conversational"
+            state.quick_options = [
+                {"label": f"Update {p.name}", "value": f"I want to update \"{p.name}\": "}
+                for p in all_plans
+            ]
+            state.pending_workflow = make_edit_pending(
+                response_text, state.quick_options, "which_plan",
+                "your meal plan", user_message, user_profile
+            )
+            return state
+
     # =========================================================================
     # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
     # =========================================================================
     # =========================================================================
     # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
     # =========================================================================
+    if intent_data.intent == "out_of_scope" and state.pending_workflow:
+        # Out-of-scope question asked mid-workflow: decline WITHOUT answering
+        # it, then re-present only the pending question (never echo an answer).
+        await _decline_and_represent_pending(
+            supervisor, state, state.pending_workflow,
+            user_message, history, user_profile.get("name"),
+        )
+        return state
     if intent_data.intent in ("chat", "app_info", "out_of_scope", "explain"):
         # Answer the user's question first. If a workflow is pending, also ask
         # whether they'd like to continue it or start a new plan instead.
@@ -1352,7 +1841,10 @@ async def run_meal_planner(
             history=history
         )
         if state.pending_workflow:
-            append_resume_prompt(state, response_text, state.pending_workflow)
+            await append_resume_prompt(
+                supervisor, state, response_text, state.pending_workflow,
+                user_message, history, user_profile.get("name"),
+            )
         else:
             state.system_message = response_text
             state.status = "conversational" if intent_data.intent != "out_of_scope" else "out_of_scope"
@@ -1372,6 +1864,44 @@ async def run_meal_planner(
 
         profile_diet = str(user_profile.get("diet_type", "veg")).lower()
 
+        # The user agreed to build the plan with their saved profile defaults:
+        # fill only the missing slots from the profile (explicitly mentioned
+        # values always win).
+        if getattr(intent_data, "use_profile_defaults", False):
+            if not intent_data.requested_diet_type and not intent_data.chosen_diet_type:
+                intent_data.requested_diet_type = profile_diet
+            if intent_data.requested_calories is None and intent_data.chosen_calorie_target is None:
+                try:
+                    intent_data.requested_calories = float(user_profile.get("suggested_target_calories") or 2100)
+                except (TypeError, ValueError):
+                    pass
+            if not intent_data.requested_days:
+                intent_data.requested_days = settings.default_plan_days
+
+        # A bare create request (the LLM extracted no specs at all and nothing
+        # is pending): offer profile defaults vs. custom specs conversationally
+        # instead of silently generating a default plan.
+        has_any_spec = bool(
+            intent_data.requested_calories
+            or intent_data.requested_diet_type
+            or intent_data.chosen_diet_type
+            or intent_data.chosen_calorie_target is not None
+            or intent_data.fixed_meals
+            or intent_data.requested_exclusions
+            or intent_data.new_plan_name
+        )
+        if not has_any_spec and not state.pending_workflow:
+            await ask_for_new_plan_specs(supervisor, state, user_profile, user_message, history)
+            await supervisor.log_step(
+                state=state,
+                from_agent="supervisor",
+                to_agent="user",
+                msg_type="feedback",
+                content=str(state.system_message or "")[:120] + "...",
+                payload={"action": "new_plan_specs_request"}
+            )
+            return state
+
         # ------------------------------------------------------------------
         # Resolve requested parameters, carrying forward anything the user has
         # already told us while resolving a pending conflict question. This is
@@ -1381,27 +1911,10 @@ async def run_meal_planner(
         pending = state.pending_workflow
         pending_info = dict(pending.extracted_info) if (pending and pending.extracted_info) else {}
 
-        msg_lower = user_message.lower()
-        mentions_diet = any(k in msg_lower for k in (
-            "veg", "vegan", "non-veg", "nonveg", "vegetarian", "non vegetarian"
-        ))
-        mentions_cal = bool(re.search(
-            r"(\d[\d,]{2,4}\s*(kcal|calories|cal\b))|((kcal|calories|cal\b)[^\d]{0,8}\d[\d,]{2,4})",
-            msg_lower
-        ))
-
-        # Only trust a diet/calorie value from the LLM when the user actually
-        # mentioned it in THIS message (guards against carries-over from history).
-        user_diet = intent_data.chosen_diet_type or intent_data.requested_diet_type
-        if not (user_diet and mentions_diet):
-            user_diet = None
-        user_cal = (
-            intent_data.chosen_calorie_target
-            if intent_data.chosen_calorie_target is not None
-            else intent_data.requested_calories
-        )
-        if not (user_cal is not None and mentions_cal):
-            user_cal = None
+        # Resolve diet/calorie values from the LLM's structured verdict (see
+        # _pending_answer_values): confirmation-backed values while a question
+        # is open, extracted request values for a fresh request.
+        user_diet, user_cal = _pending_answer_values(intent_data, pending_info)
 
         req_diet = str(user_diet or pending_info.get("requested_diet") or "").lower() or None
         req_cal = user_cal if user_cal is not None else pending_info.get("cal_val")
@@ -1527,12 +2040,30 @@ async def run_meal_planner(
                 requested_diet_type=None
             )
             if not is_safe:
-                msg = err_msg or "The requested calorie target is outside safe clinical guidelines for your profile."
-                state.system_message = msg
-                state.status = "conversational"
                 suggested = meta.get("suggested_target", 2350.0)
                 min_safe = meta.get("min_safe", 2250.0)
                 max_safe = meta.get("max_safe", 2450.0)
+                diet_display = {"veg": "vegetarian", "non-veg": "non-vegetarian", "vegan": "vegan"}.get(effective_diet, effective_diet)
+                cal_display = int(req_cal) if req_cal is not None else int(suggested)
+                # Acknowledge the diet choice the user just confirmed BEFORE
+                # asking the calorie question — never silently drop it.
+                guardrail_context = (
+                    f"The user just confirmed they want {diet_display} for this {req_days}-day meal plan. "
+                    f"First acknowledge that choice warmly (e.g. confirm vegetarian is locked in for this plan). "
+                    f"Then explain their requested target of {cal_display:,} kcal/day is below their safe maintenance "
+                    f"range of {int(min_safe):,}–{int(max_safe):,} kcal for their maintain-weight goal "
+                    f"(recommended {int(suggested):,} kcal), and ask them to confirm the recommended "
+                    f"{int(suggested):,} kcal or pick another safe value below. "
+                    f"Keep it natural and conversational, 2-4 sentences, no greeting, no bullet points."
+                )
+                msg = await supervisor.generate_conversational_response(
+                    user_message=user_message,
+                    context=guardrail_context,
+                    history=history,
+                    user_name=user_profile.get("name")
+                )
+                state.system_message = msg
+                state.status = "conversational"
                 diet_lbl = {"veg": "veg", "non-veg": "non-veg", "vegan": "vegan"}.get(effective_diet, "veg")
                 state.quick_options = [
                     {"label": f"Plan at {int(suggested):,} kcal (Recommended)", "value": f"Plan {req_days} days {diet_lbl} for {int(suggested)} kcal"},
@@ -1589,6 +2120,14 @@ async def run_meal_planner(
     # Step 9: Execute LangGraph Workflow
     # =========================================================================
     # Store intent_data in state for graph nodes that need it (e.g., exclusions)
+    # For edits, fold dish_to_replace terms into requested_exclusions up front
+    # so the planner swarm and the surgical merge share one exclusion set.
+    if intent_data.intent == "edit_meal":
+        merged_excl = _edit_exclusion_terms(intent_data)
+        try:
+            intent_data.requested_exclusions = merged_excl
+        except Exception:
+            pass
     state.intent_data = intent_data
     graph = create_meal_planner_graph()
     result = await graph.ainvoke(state)
@@ -1601,6 +2140,17 @@ async def run_meal_planner(
     # Clear pending workflow on successful workflow completion
     if final_state.current_plan and final_state.status in ("reviewing", "approved", "draft"):
         final_state.pending_workflow = None
+
+    # Surgical edit merge: only the user-targeted slots may change; every other
+    # meal is restored byte-identical from the previous version so unrelated
+    # dishes (and their calories) never drift between versions.
+    if intent_data.intent == "edit_meal" and existing_plan and final_state.current_plan:
+        try:
+            final_state.current_plan = _surgically_merge_edit(
+                existing_plan, final_state.current_plan, intent_data
+            )
+        except Exception as e:
+            logger.warning(f"[{tid}] Surgical merge failed, keeping generated plan: {e}")
 
     # =========================================================================
     # Step 10: Persist Plan to Database & Format Friendly Response
@@ -1632,7 +2182,7 @@ async def run_meal_planner(
                     context_prompt = (
                         f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
                         f"The plan is now Version {new_version} Draft in the Plans tab. "
-                        f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready."
+                        f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready. Do NOT claim their saved profile was changed (it was not)."
                     )
                     final_state.system_message = await supervisor.generate_conversational_response(
                         user_message=user_message,
@@ -1642,7 +2192,7 @@ async def run_meal_planner(
                     )
                     final_state.quick_options = [
                         {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
-                        {"label": "Modify in chat", "value": f"I want to update \"{plan_title}\": "}
+                        {"label": "Update the plan", "value": f"I want to update \"{plan_title}\": "}
                     ]
                     # The update completed - drop any lingering in-progress update state.
                     final_state.pending_workflow = None
@@ -1670,7 +2220,7 @@ async def run_meal_planner(
                     final_state.status = persist_status
                     context_prompt = (
                         f"Successfully generated new meal plan '{p_name}' (Version 1 {persist_status.capitalize()}) with a target of {int(final_state.current_plan.target_calories):,} kcal/day across {len(final_state.current_plan.days)} days. "
-                        f"In natural, polite, friendly conversational English, let the user know their meal plan has been created and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready."
+                        f"In natural, polite, friendly conversational English, let the user know their meal plan has been created and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready. Do NOT claim their saved profile was changed (it was not)."
                     )
                     final_state.system_message = await supervisor.generate_conversational_response(
                         user_message=user_message,
@@ -1680,7 +2230,7 @@ async def run_meal_planner(
                     )
                     final_state.quick_options = [
                         {"label": f"Approve {p_name}", "value": f"Approve \"{p_name}\""},
-                        {"label": "Modify in chat", "value": f"I want to update \"{p_name}\": "}
+                        {"label": "Update the plan", "value": f"I want to update \"{p_name}\": "}
                     ]
                     logger.info(f"[{tid}] Persisted new plan to database as Version 1 Draft.")
             else:
@@ -1707,7 +2257,7 @@ async def run_meal_planner(
                         context_prompt = (
                             f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
                             f"The plan is now Version {new_version} Draft in the Plans tab. "
-                            f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready."
+                            f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready. Do NOT claim their saved profile was changed (it was not)."
                         )
                         final_state.system_message = await supervisor.generate_conversational_response(
                             user_message=user_message,
@@ -1717,7 +2267,7 @@ async def run_meal_planner(
                         )
                         final_state.quick_options = [
                             {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
-                            {"label": "Modify in chat", "value": f"I want to update \"{plan_title}\": "}
+                            {"label": "Update the plan", "value": f"I want to update \"{plan_title}\": "}
                         ]
                         logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
                     else:
@@ -1743,7 +2293,7 @@ async def run_meal_planner(
                         final_state.status = persist_status
                         context_prompt = (
                             f"Successfully generated new meal plan '{p_name}' (Version 1 {persist_status.capitalize()}) with a target of {int(final_state.current_plan.target_calories):,} kcal/day across {len(final_state.current_plan.days)} days. "
-                            f"In natural, polite, friendly conversational English, let the user know their meal plan has been created and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready."
+                            f"In natural, polite, friendly conversational English, let the user know their meal plan has been created and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready. Do NOT claim their saved profile was changed (it was not)."
                         )
                         final_state.system_message = await supervisor.generate_conversational_response(
                             user_message=user_message,
@@ -1753,7 +2303,7 @@ async def run_meal_planner(
                         )
                         final_state.quick_options = [
                             {"label": f"Approve {p_name}", "value": f"Approve \"{p_name}\""},
-                            {"label": "Modify in chat", "value": f"I want to update \"{p_name}\": "}
+                            {"label": "Update the plan", "value": f"I want to update \"{p_name}\": "}
                         ]
         except Exception as e:
             logger.error(f"[{tid}] Failed to persist plan to database: {e}", exc_info=True)

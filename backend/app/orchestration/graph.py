@@ -106,7 +106,8 @@ def create_meal_planner_graph(
                 current_plan=state.current_plan,
                 edit_details=state.edit_details,
                 user_profile=state.user_profile,
-                task_id=state.task_id
+                task_id=state.task_id,
+                exclusions=(state.intent_data.requested_exclusions if state.intent_data else None)
             )
         else:
             msg_start = await sup_agent.log_step(

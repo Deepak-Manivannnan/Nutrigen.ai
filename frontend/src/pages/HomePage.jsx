@@ -51,7 +51,13 @@ export default function HomePage() {
   const navigate = useNavigate();
   const { profile, plans, setActivePlanId } = useApp();
 
-  const userPlans = (plans || []).filter(p => p.days && p.days.length > 0);
+  const planDaysCount = (p) => Array.isArray(p?.days) ? p.days.length : (Number(p?.days) || 0);
+  // Recent plans: approved plans only (drafts stay in the Plans tab until
+  // approved), newest first by creation time.
+  const userPlans = (plans || [])
+    .filter(p => p?.status === 'approved' && planDaysCount(p) > 0)
+    .slice()
+    .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
   const thumbs = [thumb1, thumb2, thumb3];
 
   return (
@@ -188,7 +194,7 @@ export default function HomePage() {
                       <div className="dash-plan-name">{plan.name}</div>
                       <div className="dash-plan-meta">
                         {plan.calorieTarget ? `${plan.calorieTarget.toLocaleString()} kcal/day  •  ` : ''}
-                        {plan.days?.length || plan.daysCount || 7} Days
+                        {planDaysCount(plan)} Days
                       </div>
                       <div className="dash-plan-date">
                         <Calendar size={13} style={{ flexShrink: 0 }} />

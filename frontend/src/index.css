@@ -849,6 +849,24 @@ ol {
   border-color: var(--green-300);
 }
 
+/* Inline tappable plan links inside chat message text (e.g. plan lists) */
+.chat-plan-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--green-700);
+  font-size: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.chat-plan-link:hover {
+  color: var(--green-800);
+}
+
 /* Status Indicator */
 .status-indicator {
   display: flex;

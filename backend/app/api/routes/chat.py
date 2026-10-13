@@ -48,7 +48,8 @@ async def chat_interaction(
             user_profile=user_profile,
             session=session,
             task_id=payload.task_id,
-            history=payload.history
+            history=payload.history,
+            pending_workflow=payload.pending_workflow
         )
     except Exception as e:
         logger.error(f"Error during agent execution: {e}")

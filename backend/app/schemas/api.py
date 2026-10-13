@@ -68,6 +68,7 @@ class ChatRequest(BaseModel):
     message: str
     task_id: Optional[str] = None
     history: Optional[List[Dict[str, Any]]] = None
+    pending_workflow: Optional[Dict[str, Any]] = None
 
 class ChatResponse(BaseModel):
     response: str

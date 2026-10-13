@@ -156,7 +156,7 @@ export async function renamePlanApi(planId, newName) {
 /**
  * Send chat message to orchestrator
  */
-export async function sendChatMessage(userId, message, taskId, history = []) {
+export async function sendChatMessage(userId, message, taskId, history = [], pendingWorkflow = null) {
   const res = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -165,6 +165,7 @@ export async function sendChatMessage(userId, message, taskId, history = []) {
       message,
       task_id: taskId,
       history,
+      pending_workflow: pendingWorkflow || null,
     }),
   });
   if (!res.ok) {

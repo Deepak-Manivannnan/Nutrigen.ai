@@ -61,3 +61,6 @@ class PlanState(BaseModel):
     
     # New field for handling off-topic messages during active meal-planning workflow
     pending_workflow: Optional[PendingWorkflow] = None
+    
+    # Store intent extraction data for graph nodes (e.g., exclusions)
+    intent_data: Optional[Any] = None

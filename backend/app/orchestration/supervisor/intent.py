@@ -1,10 +1,17 @@
-import re
+import os
 from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, field_validator
 from backend.app.llm.client import llm_client, LLMClient, get_llm_client
 from backend.app.observability.logging import get_logger
 
 logger = get_logger("supervisor.intent")
+
+def _load_prompt() -> str:
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompt.md")
+    if os.path.exists(prompt_path):
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "You are the Supervisor. Orchestrate the multi-agent workflow safely."
 
 class FixedMealSlot(BaseModel):
     meal_type: str = Field(..., description="Meal slot: breakfast, lunch, or dinner")
@@ -61,8 +68,16 @@ class UserIntentExtraction(BaseModel):
         description="True if user is confirming or choosing their diet preference after a conflict prompt."
     )
     chosen_diet_type: Optional[str] = Field(
-        None,
+        default=None,
         description="The chosen diet type if confirming a conflict ('veg', 'non-veg', 'vegan')."
+    )
+    calorie_guardrail_confirmed: bool = Field(
+        default=False,
+        description="True if user is confirming or choosing their calorie target after a guardrail prompt."
+    )
+    chosen_calorie_target: Optional[float] = Field(
+        default=None,
+        description="The chosen calorie target if confirming a calorie guardrail."
     )
     fixed_meals: List[FixedMealSlot] = Field(
         default_factory=list,
@@ -140,7 +155,7 @@ def _build_context_from_history(history: Optional[List[Dict[str, Any]]]) -> str:
     if not lines:
         return "No prior conversation history."
     
-    return "Conversation history (most recent last):\n" + "\n".join(lines)
+    return "Conversation history (most recent last):\n" + "\n".join(lines) + "\n\n"
 
 
 INTENT_CLASSIFICATION_PROMPT = """You are the Supervisor Intent Classifier for NutriGen, a specialized clinical meal planning assistant.
@@ -162,7 +177,7 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 ### INTENT CATEGORIES (choose exactly ONE)
 
-1. **chat**: Casual greetings, goodbyes, social pleasantries, polite small talk ("hi", "hello", "good morning", "thanks", "bye")
+1. **chat**: Casual greetings, goodbyes, social pleasantries, polite small talk ("hi", "hello", "good morning", "thanks", "bye"), AND general requests for help/guidance without specific plan parameters ("can you help me create a meal plan?", "I need help with meal planning", "I want to plan my meals", "help me plan my meals")
 
 2. **app_info**: Questions specifically asking what NutriGen does or how its system works ("What can you do?", "How does this work?", "What features do you have?")
 
@@ -172,9 +187,10 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 5. **explain**: Questions about dietary nutrition, calories, macros, or food science ("How are my calories calculated?", "Why 1800 kcal?", "What is protein?")
 
-6. **new_plan**: User requests or confirms creating a NEW multi-day meal plan
-   - "Plan a 5-day vegetarian meal plan", "Generate meals for 1900 kcal"
-   - "Okay go ahead and create it", "Create the plan", "Yes, make it"
+6. **new_plan**: User EXPLICITLY requests or confirms creating a NEW multi-day meal plan WITH specific parameters
+   - "Plan a 5-day vegetarian meal plan", "Generate meals for 1900 kcal", "Create a 7-day meal plan for 2000 kcal"
+   - "Okay go ahead and create it", "Create the plan", "Yes, make it" (after a proposal)
+   - MUST have at least one specific parameter: days, calories, diet type, or explicit confirmation after a proposal
    - CRITICAL: "Create it", "go ahead and create" after a proposal = new_plan, NOT approve_plan
 
 7. **edit_meal**: User explicitly asks to MODIFY, SWAP, REPLACE, ADD, or REMOVE a meal dish/slot in an EXISTING plan
@@ -182,7 +198,7 @@ NutriGen's domain is STRICTLY LIMITED to:
    - "Add a snack to day 3", "Include an evening snack in day 2"
    - "Remove the snack from day 3", "Delete the snack meal on day 2"
    - "Update Good Meal: remove dairy from all days"
-   - "I want to update my meal plan" (general, no specifics) → is_update_request = true
+   - "I want to update my meal plan" (general, no specifics) -> is_update_request = true
    - NEVER select for "delete a meal" or "delete meal" without specific day+slot!
 
 8. **approve_plan**: User wants to APPROVE an already-drafted meal plan to finalize it and compile grocery lists
@@ -213,48 +229,54 @@ NutriGen's domain is STRICTLY LIMITED to:
 ### PARAMETER EXTRACTION RULES
 
 **requested_days**: 
-- "tomorrow" → 1, "for 3 days" → 3, "for a week" → 7, "5-day" → 5
-- If not mentioned → default 7 days (configurable, max 14 days)
+- "tomorrow" -> 1, "for 3 days" -> 3, "for a week" -> 7, "5-day" -> 5
+- If not mentioned -> default 7 days (configurable, max 14 days)
 
 **requested_calories** (DAILY TOTAL ONLY):
-- "1800 kcal", "1900 calories", "2000 cal" → 1800.0, 1900.0, 2000.0
-- If message mentions "breakfast/lunch/dinner/snack" with calories → that's SLOT calories, NOT daily → set requested_calories = null
-- "per day", "daily" + number → daily calories
+- "1800 kcal", "1900 calories", "2000 cal" -> 1800.0, 1900.0, 2000.0
+- If message mentions "breakfast/lunch/dinner/snack" with calories -> that's SLOT calories, NOT daily -> set requested_calories = null
+- "per day", "daily" + number -> daily calories
 
-**requested_diet_type**: "vegetarian"/"veg" → "veg", "vegan" → "vegan", "non-vegetarian"/"non-veg" → "non-veg"
+**requested_diet_type**: "vegetarian"/"veg" -> "veg", "vegan" -> "vegan", "non-vegetarian"/"non-veg" -> "non-veg"
 - Check "non-veg" FIRST to avoid matching "veg" in "non veg"
 
 **requested_exclusions**: Extract ingredients to avoid/exclude
 - "no dairy", "without pork", "exclude beef", "dairy-free", "avoid nuts"
-- Normalize: "egg" → "eggs"
+- Normalize: "egg" -> "eggs"
 
 **diet_conflict_confirmed** + **chosen_diet_type**: 
 - True only if user explicitly CONFIRMS/CHOSES diet after a conflict prompt
-- "Yes, go with vegetarian" → True, "veg"
-- "Use non-veg" → True, "non-veg"
-- "Create vegan plan" → True, "vegan"
+- "Yes, go with vegetarian" -> True, "veg"
+- "Use non-veg" -> True, "non-veg"
+- "Create vegan plan" -> True, "vegan"
+
+**calorie_guardrail_confirmed** + **chosen_calorie_target**: 
+- True only if user explicitly CONFIRMS/CHOSES calorie target after a guardrail prompt
+- "Yes, 2100 kcal" -> True, 2100.0
+- "Go with 2100" -> True, 2100.0
+- "Use recommended" -> True, <suggested_value>
 
 **fixed_meals**: Explicitly locked meals
-- "Fix breakfast as eggs and toast" → [{"meal_type": "breakfast", "dish": "eggs and toast"}]
+- "Fix breakfast as eggs and toast" -> [{"meal_type": "breakfast", "dish": "eggs and toast"}]
 
 **edit_details** (only for edit_meal intent):
-- day: "day 2" → 2, "on day 3" → 3
+- day: "day 2" -> 2, "on day 3" -> 3
 - meal_type: "breakfast"/"lunch"/"dinner"/"snack"
-- target_meal_calories: SLOT calories only (e.g. "400-500 kcal" → 450.0, "500 kcal" → 500.0)
+- target_meal_calories: SLOT calories only (e.g. "400-500 kcal" -> 450.0, "500 kcal" -> 500.0)
 - instructions: Full user message for context
 - dish_to_replace: Specific dish mentioned ("replace paneer tikka")
 - operation: "add" (for "add a snack"), "remove" (for "remove the snack"), "replace" (default for "replace/swap/change")
 
-**explain_query**: For explain intent, the specific question
+**explain_query**: For explain intent, the specific question or topic the user wants explained.
 
-**target_plan_id**: "Plan #9", "Plan 9", "#9" → 9
+**target_plan_id**: "Plan #9", "Plan 9", "#9" -> 9
 
 **target_plan_name**: Plan name in quotes or mentioned
-- "delete 'Good Meal'", "update Good Meal" → "Good Meal"
+- "delete 'Good Meal'", "update Good Meal" -> "Good Meal"
 - Check quotes first: "Good Meal", 'Good Plan'
 
 **new_plan_name**: For rename_plan, the new name
-- "Rename Plan 1 to High Protein" → "High Protein"
+- "Rename Plan 1 to High Protein" -> "High Protein"
 
 **is_delete_confirmation**: 
 - True if user confirms: "yes", "yeah", "confirm", "go ahead", "delete it", "ok"
@@ -265,18 +287,118 @@ NutriGen's domain is STRICTLY LIMITED to:
 - False if specific instructions given (replace, swap, exclusions, etc.)
 
 **target_day**: Day number for edits/snacks
-- "for day 3", "on day 2" → 3, 2
+- "for day 3", "on day 2" -> 3, 2
 
 ---
 
 ### CONVERSATION CONTEXT HANDLING
 
 Use history to resolve:
-- Implicit references ("create it" → refers to previously proposed plan)
+- Implicit references ("create it" -> refers to previously proposed plan)
 - Missing parameters (inherit days/calories/diet from previous turns)
 - Confirmation flows (diet conflict, calorie guardrail, delete confirmation)
-- Plan references ("update it" → which plan was discussed?)
+- Plan references ("update it" -> which plan was discussed?)
 - **Pending workflow context**: If there's a pending workflow (diet conflict, calorie guardrail, edit confirmation pending), the user's response may be an answer to the pending question. Check if the user is answering a pending question, requesting to resume, or canceling the workflow.
+
+### PENDING WORKFLOW RESPONSE HANDLING
+
+When PENDING WORKFLOW CONTEXT is provided, the user's message may be a PARTIAL answer to a pending question. Handle as follows:
+
+1. **If pending_conflicts includes "diet_conflict" and user expresses a diet preference** (e.g., "I prefer vegetarian", "I want vegetarian", "go with veg"):
+   - Set intent = "new_plan" (or original_intent)
+   - Set diet_conflict_confirmed = true
+   - Set chosen_diet_type to the expressed preference ("veg", "non-veg", or "vegan")
+   - Do NOT set requested_days or requested_calories unless explicitly mentioned
+   - The calorie question remains pending
+
+2. **If pending_conflicts includes "calorie_guardrail" and user specifies a calorie target** (e.g., "2100 kcal", "go with 2100"):
+   - Set intent = "new_plan" (or original_intent)
+   - Set requested_calories to the specified value
+   - Set calorie_guardrail_confirmed = true
+   - Set chosen_calorie_target to the specified value
+   - The diet conflict (if any) may still be pending
+
+3. **If user says "resume", "continue", "go ahead", "proceed" with pending workflow**:
+   - Set intent = "resume_request"
+
+4. **If user says "cancel", "stop", "new plan instead" with pending workflow**:
+   - Set intent = "cancel_request"
+
+5. **If user provides a COMPLETE answer resolving ALL pending conflicts** (specifies both diet AND calories):
+   - Set intent = "new_plan" (or original_intent)
+   - Set all relevant confirmation flags
+   - Clear pending workflow
+
+5. **If user provides NEW plan parameters unrelated to pending workflow**:
+   - Treat as new_plan with new parameters
+   - Clear pending workflow
+
+CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers diet preference but not calories), the intent should still be the original intent (e.g., "new_plan") with the appropriate confirmation flags set. Do NOT classify as "chat" or "app_info".
+
+---
+
+### PARAMETER EXTRACTION RULES
+
+**requested_days**: 
+- "tomorrow" -> 1, "for 3 days" -> 3, "for a week" -> 7, "5-day" -> 5
+- If not mentioned -> default 7 days (configurable, max 14 days)
+
+**requested_calories** (DAILY TOTAL ONLY):
+- "1800 kcal", "1900 calories", "2000 cal" -> 1800.0, 1900.0, 2000.0
+- If message mentions "breakfast/lunch/dinner/snack" with calories -> that's SLOT calories, NOT daily -> set requested_calories = null
+- "per day", "daily" + number -> daily calories
+
+**requested_diet_type**: "vegetarian"/"veg" -> "veg", "vegan" -> "vegan", "non-vegetarian"/"non-veg" -> "non-veg"
+- Check "non-veg" FIRST to avoid matching "veg" in "non veg"
+
+**requested_exclusions**: Extract ingredients to avoid/exclude
+- "no dairy", "without pork", "exclude beef", "dairy-free", "avoid nuts"
+- Normalize: "egg" -> "eggs"
+
+**diet_conflict_confirmed** + **chosen_diet_type**: 
+- True only if user explicitly CONFIRMS/CHOSES diet after a conflict prompt
+- "Yes, go with vegetarian" -> True, "veg"
+- "Use non-veg" -> True, "non-veg"
+- "Create vegan plan" -> True, "vegan"
+
+**calorie_guardrail_confirmed** + **chosen_calorie_target**: 
+- True only if user explicitly CONFIRMS/CHOSES calorie target after a guardrail prompt
+- "Yes, 2100 kcal" -> True, 2100.0
+- "Go with 2100" -> True, 2100.0
+- "Use recommended" -> True, <suggested_value>
+
+**fixed_meals**: Explicitly locked meals
+- "Fix breakfast as eggs and toast" -> [{"meal_type": "breakfast", "dish": "eggs and toast"}]
+
+**edit_details** (only for edit_meal intent):
+- day: "day 2" -> 2, "on day 3" -> 3
+- meal_type: "breakfast"/"lunch"/"dinner"/"snack"
+- target_meal_calories: SLOT calories only (e.g. "400-500 kcal" -> 450.0, "500 kcal" -> 500.0)
+- instructions: Full user message for context
+- dish_to_replace: Specific dish mentioned ("replace paneer tikka")
+- operation: "add" (for "add a snack"), "remove" (for "remove the snack"), "replace" (default for "replace/swap/change")
+
+**explain_query**: For explain intent, the specific question or topic the user wants explained.
+
+**target_plan_id**: "Plan #9", "Plan 9", "#9" -> 9
+
+**target_plan_name**: Plan name in quotes or mentioned
+- "delete 'Good Meal'", "update Good Meal" -> "Good Meal"
+- Check quotes first: "Good Meal", 'Good Plan'
+
+**new_plan_name**: For rename_plan, the new name
+- "Rename Plan 1 to High Protein" -> "High Protein"
+
+**is_delete_confirmation**: 
+- True if user confirms: "yes", "yeah", "confirm", "go ahead", "delete it", "ok"
+- Check if previous assistant asked for confirmation (from history)
+
+**is_update_request**: 
+- True ONLY if general "update my meal plan" WITHOUT specific meal slot details
+- False if specific instructions given (replace, swap, exclusions, etc.)
+
+**target_day**: Day number for edits/snacks
+- "for day 3", "on day 2" -> 3, 2
 
 ---
 
@@ -307,7 +429,8 @@ Return a UserIntentExtraction object with ALL fields populated. Use null/empty d
 async def extract_user_intent(
     user_message: str,
     client: Optional[LLMClient] = None,
-    history: Optional[List[Dict[str, Any]]] = None
+    history: Optional[List[Dict[str, Any]]] = None,
+    pending_workflow: Optional[Any] = None
 ) -> UserIntentExtraction:
     """
     Supervisor semantic intent parser using LLM reasoning.
@@ -315,6 +438,21 @@ async def extract_user_intent(
     """
     llm = client or get_llm_client("supervisor")
     context = _build_context_from_history(history)
+    
+    # Include pending workflow context if available
+    workflow_context = ""
+    if pending_workflow:
+        workflow_context = f"""
+PENDING WORKFLOW CONTEXT:
+- Workflow Type: {pending_workflow.workflow_type}
+- Pending Conflicts: {', '.join(pending_workflow.pending_conflicts) if pending_workflow.pending_conflicts else 'None'}
+- Questions Asked: {', '.join(pending_workflow.asked_questions) if pending_workflow.asked_questions else 'None'}
+- Next Expected Decision: {pending_workflow.next_expected_decision or 'None'}
+- Original Intent: {pending_workflow.original_intent or 'None'}
+- Original Message: {pending_workflow.original_message or 'None'}
+- Extracted Info So Far: {pending_workflow.extracted_info}
+"""
+        context = context + workflow_context
     
     prompt = f"{INTENT_CLASSIFICATION_PROMPT}\n\n---\n\nConversation Context:\n{context}\n\nCurrent User Message: \"{user_message}\"\n\nClassify the intent and extract all parameters."
 

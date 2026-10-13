@@ -57,13 +57,15 @@ class SupervisorAgent:
         user_profile: Dict[str, Any],
         requested_calories: Optional[float],
         requested_days: Optional[int],
-        fixed_meals: Optional[Dict[str, Any]] = None
+        fixed_meals: Optional[Dict[str, Any]] = None,
+        requested_diet_type: Optional[str] = None
     ):
         return validate_input_request(
             user_profile=user_profile,
             requested_calories=requested_calories,
             requested_days=requested_days,
-            fixed_meals=fixed_meals
+            fixed_meals=fixed_meals,
+            requested_diet_type=requested_diet_type
         )
 
     def evaluate_reviews(self, state: PlanState) -> RouteDecision:
@@ -189,23 +191,57 @@ class SupervisorAgent:
         """
         Conversational greeting & chat response.
         Friendly, natural human-to-human tone without repetitive greetings in ongoing dialog.
+        Handles meal planning help requests by asking clarifying questions.
         """
         name = (user_name or "").strip() or "there"
         history_ctx = self._format_history_context(history)
         is_first_interaction = not history or len(history) <= 1
 
-        prompt = (
-            f"You are NutriGen, a helpful personal meal planning companion.\n"
-            f"User's name: {name}\n\n"
-            f"{history_ctx}"
-            f"The user says: \"{user_message}\"\n\n"
-            f"Respond naturally, conversationally, and concisely (1 to 2 sentences maximum).\n"
-            f"RULES:\n"
-            f"- If this is the FIRST greeting message, you may say 'Hi {name}! How can I help you today?'.\n"
-            f"- If this is an ONGOING conversation, do NOT say 'Hey {name}' or 'Hi {name}' again! Simply reply directly to what they said in conversation flow.\n"
-            f"- Do NOT dump an unsolicited list of features, bullet points, or instructions.\n"
-            f"- Keep it natural, warm, and human."
-        )
+        # Check if user is asking for help with meal planning (general request without specific params)
+        msg_lower = user_message.lower()
+        is_meal_planning_help = any(phrase in msg_lower for phrase in [
+            "help me create", "help me create a meal plan", "help me plan",
+            "create a meal plan", "create meal plan", "meal plan for me",
+            "plan my meals", "plan meals", "need a meal plan",
+            "want a meal plan", "want to create a meal plan",
+            "help with meal plan", "help with meal planning",
+            "help me create a plan", "create a plan for me", "plan for me",
+            "help me with a plan", "make a plan", "make a meal plan",
+            "can you help me create a plan", "can you create a plan"
+        ])
+
+        if is_meal_planning_help:
+            prompt = (
+                f"You are NutriGen, a helpful personal meal planning companion.\n"
+                f"User's name: {name}\n\n"
+                f"{history_ctx}\n"
+                f"The user says: \"{user_message}\"\n\n"
+                f"The user is asking for help creating a meal plan but hasn't provided specific parameters yet.\n\n"
+                f"Respond naturally, conversationally, and concisely (2-3 sentences max).\n"
+                f"RULES:\n"
+                f"- Acknowledge their request warmly and address them by name.\n"
+                f"- Ask 1-2 clarifying questions to get the minimum needed parameters:\n"
+                f"  * How many days? (default 7)\n"
+                f"  * Target calories per day? (or I can calculate from their profile)\n"
+                f"  * Diet type? (veg/non-veg/vegan - default from profile)\n"
+                f"- Do NOT dump features, bullet points, or instructions.\n"
+                f"- Keep it natural, warm, and conversational.\n"
+                f"- If this is NOT the first interaction, do NOT say 'Hey {name}' or 'Hi {name}' again!\n"
+                f"- End with an open question inviting them to provide details."
+            )
+        else:
+            prompt = (
+                f"You are NutriGen, a helpful personal meal planning companion.\n"
+                f"User's name: {name}\n\n"
+                f"{history_ctx}\n"
+                f"The user says: \"{user_message}\"\n\n"
+                f"Respond naturally, conversationally, and concisely (1 to 2 sentences maximum).\n"
+                f"RULES:\n"
+                f"- If this is the FIRST greeting message, you may say 'Hi {name}! How can I help you today?'.\n"
+                f"- If this is an ONGOING conversation, do NOT say 'Hey {name}' or 'Hi {name}' again! Simply reply directly to what they said in conversation flow.\n"
+                f"- Do NOT dump an unsolicited list of features, bullet points, or instructions.\n"
+                f"- Keep it natural, warm, and human."
+            )
         try:
             return await self.llm.generate_text(prompt)
         except Exception:

@@ -174,6 +174,9 @@ export default function ChatPage() {
   const [showClear, setShowClear] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  // Remembers a pending conflict question (e.g. diet/calorie) so the next
+  // message is understood as an answer to it instead of a brand new request.
+  const pendingWorkflowRef = useRef(null);
 
   const userInitial = profile?.name ? profile.name.trim()[0].toUpperCase() : 'D';
 
@@ -206,10 +209,13 @@ export default function ChatPage() {
         role: m.role,
         content: m.content,
       }));
-      const chatRes = await sendChatMessage(profile?.id || 1, text, taskId, historyPayload);
+      const chatRes = await sendChatMessage(profile?.id || 1, text, taskId, historyPayload, pendingWorkflowRef.current);
 
       setChatStatus(null);
       setIsAgentRunning(false);
+
+      // Keep the pending conflict context so a follow-up answer resolves it.
+      pendingWorkflowRef.current = chatRes.pending_workflow || null;
 
       // Handle deletion response sync
       if (chatRes.deleted_plan_id) {
@@ -366,6 +372,7 @@ export default function ChatPage() {
         <ClearChatConfirm
           onConfirm={() => {
             clearMessages();
+            pendingWorkflowRef.current = null;
             setShowClear(false);
             addToast('Chat cleared', 'default');
           }}

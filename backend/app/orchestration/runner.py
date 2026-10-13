@@ -102,7 +102,8 @@ async def run_meal_planner(
     user_profile: Dict[str, Any],
     session: Optional[AsyncSession] = None,
     task_id: Optional[str] = None,
-    history: Optional[List[Dict[str, Any]]] = None
+    history: Optional[List[Dict[str, Any]]] = None,
+    pending_workflow: Optional[Any] = None
 ) -> PlanState:
     """
     Main entry point for running the multi-agent meal planning workflow:
@@ -117,7 +118,12 @@ async def run_meal_planner(
     logger.info(f"Starting workflow run for task {tid} (user {user_id})")
 
     # Step 1: Supervisor intent extraction with history context
-    intent_data = await extract_user_intent(user_message, history=history)
+    # Pass pending workflow state to handle partial answers to pending questions
+    # Convert dict to PendingWorkflow object if needed
+    if pending_workflow and isinstance(pending_workflow, dict):
+        pending_workflow = PendingWorkflow(**pending_workflow)
+    
+    intent_data = await extract_user_intent(user_message, history=history, pending_workflow=pending_workflow)
     logger.info(f"[{tid}] Extracted intent: {intent_data.intent}, days: {intent_data.requested_days}, calories: {intent_data.requested_calories}, diet: {intent_data.requested_diet_type}")
 
     # Merge standing fixed meals from profile if any
@@ -183,7 +189,8 @@ async def run_meal_planner(
         plan_version=target_version if (existing_plan and intent_data.intent == "edit_meal") else 1,
         round=1,
         max_rounds=3,
-        status="drafting"
+        status="drafting",
+        pending_workflow=pending_workflow
     )
 
     # =========================================================================
@@ -976,26 +983,70 @@ async def run_meal_planner(
     if intent_data.intent == "new_plan":
 
         profile_diet = str(user_profile.get("diet_type", "veg")).lower()
-        req_diet = str(intent_data.requested_diet_type).lower() if intent_data.requested_diet_type else None
-        diet_conflict = bool(req_diet and req_diet != profile_diet and not intent_data.diet_conflict_confirmed)
 
-        req_cal = intent_data.requested_calories or user_profile.get("target_calories")
-        req_days = intent_data.requested_days or settings.default_plan_days
+        # ------------------------------------------------------------------
+        # Resolve requested parameters, carrying forward anything the user has
+        # already told us while resolving a pending conflict question. This is
+        # what lets a partial answer (e.g. "I prefer vegetarian") be honoured
+        # without re-asking the question the user just answered.
+        # ------------------------------------------------------------------
+        pending = state.pending_workflow
+        pending_info = dict(pending.extracted_info) if (pending and pending.extracted_info) else {}
 
-        # Guardrail check with diet conflict detection
-        is_safe, err_msg, meta = supervisor.check_input_guardrail(
-            user_profile=user_profile,
-            requested_calories=req_cal,
-            requested_days=req_days,
-            fixed_meals=fixed,
-            requested_diet_type=intent_data.requested_diet_type
+        msg_lower = user_message.lower()
+        mentions_diet = any(k in msg_lower for k in (
+            "veg", "vegan", "non-veg", "nonveg", "vegetarian", "non vegetarian"
+        ))
+        mentions_cal = bool(re.search(
+            r"(\d[\d,]{2,4}\s*(kcal|calories|cal\b))|((kcal|calories|cal\b)[^\d]{0,8}\d[\d,]{2,4})",
+            msg_lower
+        ))
+
+        # Only trust a diet/calorie value from the LLM when the user actually
+        # mentioned it in THIS message (guards against carries-over from history).
+        user_diet = intent_data.chosen_diet_type or intent_data.requested_diet_type
+        if not (user_diet and mentions_diet):
+            user_diet = None
+        user_cal = (
+            intent_data.chosen_calorie_target
+            if intent_data.chosen_calorie_target is not None
+            else intent_data.requested_calories
         )
+        if not (user_cal is not None and mentions_cal):
+            user_cal = None
 
-        # Handle diet conflict from guardrail (LLM generates natural prompt)
-        if meta and meta.get("action") == "diet_conflict":
-            profile_diet = meta.get("profile_diet", "veg")
-            requested_diet = meta.get("requested_diet", "veg")
-            cal_val = int(req_cal or 2000)
+        req_diet = str(user_diet or pending_info.get("requested_diet") or "").lower() or None
+        req_cal = user_cal if user_cal is not None else pending_info.get("cal_val")
+        req_days = intent_data.requested_days or pending_info.get("days_val") or settings.default_plan_days
+
+        # A conflict question that was already asked is considered resolved when
+        # the user supplies the corresponding detail in this message.
+        diet_pending = bool(pending_info.get("diet_pending"))
+        cal_pending = bool(pending_info.get("cal_pending"))
+        diet_resolved = bool(pending_info.get("diet_resolved")) or (diet_pending and user_diet is not None)
+        cal_resolved = bool(pending_info.get("cal_resolved")) or (cal_pending and user_cal is not None)
+
+        diet_conflict = bool(req_diet and req_diet != profile_diet)
+
+        # ------------------------------------------------------------------
+        # Diet conflict is still open -> ask the user (LLM-generated prompt).
+        # Calorie safety is evaluated separately so a safe calorie target does
+        # not get bundled into the diet question.
+        # ------------------------------------------------------------------
+        if diet_conflict and not diet_resolved:
+            requested_diet = req_diet
+            is_safe, err_msg, meta = supervisor.check_input_guardrail(
+                user_profile=user_profile,
+                requested_calories=req_cal,
+                requested_days=req_days,
+                fixed_meals=fixed,
+                requested_diet_type=None
+            )
+            meta = dict(meta or {})
+            meta["action"] = "diet_conflict"
+            meta["profile_diet"] = profile_diet
+            meta["requested_diet"] = requested_diet
+            cal_val = int(req_cal or 0) or int(meta.get("suggested_target", 2000))
             days_val = req_days
             is_calorie_unsafe = not is_safe
 
@@ -1036,19 +1087,33 @@ async def run_meal_planner(
                 content=conflict_prompt,
                 payload={"action": "diet_conflict_prompt", "profile_diet": profile_diet, "requested_diet": requested_diet}
             )
+            
+            # Set pending workflow for diet conflict (and potentially calorie guardrail)
+            state.pending_workflow = PendingWorkflow(
+                workflow_type="new_plan",
+                pending_conflicts=["diet_conflict"] + (["calorie_guardrail"] if is_calorie_unsafe else []),
+                asked_questions=["diet_preference"] + (["calorie_confirmation"] if is_calorie_unsafe else []),
+                extracted_info={
+                    "profile_diet": profile_diet,
+                    "requested_diet": requested_diet,
+                    "cal_val": cal_val,
+                    "days_val": days_val,
+                    "is_calorie_unsafe": is_calorie_unsafe,
+                    "diet_pending": True,
+                    "cal_pending": bool(is_calorie_unsafe),
+                    "diet_resolved": False,
+                    "cal_resolved": False,
+                },
+                next_expected_decision="diet_conflict_resolution",
+                original_intent="new_plan",
+                original_message=user_message,
+                user_profile_at_start=user_profile.copy(),
+                created_at=datetime.utcnow().isoformat()
+            )
             return state
 
-        # If user confirmed diet conflict, proceed with chosen diet
-        if intent_data.diet_conflict_confirmed and intent_data.chosen_diet_type:
-            effective_diet = intent_data.chosen_diet_type
-            # Clear pending workflow as conflict is resolved
-            state.pending_workflow = None
-        else:
-            # No conflict or not confirmed - use effective diet logic
-            effective_diet = intent_data.chosen_diet_type or req_diet or profile_diet
-
         # Resolved effective diet type for this plan
-        effective_diet = intent_data.chosen_diet_type or req_diet or profile_diet
+        effective_diet = user_diet or req_diet or profile_diet
         user_profile["diet_type"] = effective_diet
         state.user_profile["diet_type"] = effective_diet
         state.current_plan = None
@@ -1059,48 +1124,65 @@ async def run_meal_planner(
         if getattr(intent_data, "new_plan_name", None):
             state.plan_name = intent_data.new_plan_name
 
-        # Calorie Guardrail Check (if user did not confirm conflict)
-        if not is_safe and not intent_data.diet_conflict_confirmed:
-            msg = err_msg or "The requested calorie target is outside safe clinical guidelines for your profile."
-            state.system_message = msg
-            state.status = "conversational"
-            suggested = meta.get("suggested_target", 2350.0)
-            min_safe = meta.get("min_safe", 2250.0)
-            max_safe = meta.get("max_safe", 2450.0)
-            diet_lbl = {"veg": "veg", "non-veg": "non-veg", "vegan": "vegan"}.get(effective_diet, "veg")
-            state.quick_options = [
-                {"label": f"Plan at {int(suggested):,} kcal (Recommended)", "value": f"Plan {req_days} days {diet_lbl} for {int(suggested)} kcal"},
-                {"label": f"Plan at {int(min_safe):,} kcal (Min Safe)", "value": f"Plan {req_days} days {diet_lbl} for {int(min_safe)} kcal"},
-                {"label": f"Plan at {int(max_safe):,} kcal (Max Safe)", "value": f"Plan {req_days} days {diet_lbl} for {int(max_safe)} kcal"}
-            ]
-            await supervisor.log_step(
-                state=state,
-                from_agent="supervisor",
-                to_agent="user",
-                msg_type="feedback",
-                content=msg,
-                payload={"action": "guardrail_block", "calories": req_cal, "suggested": suggested}
+        # Calorie Guardrail Check: evaluate against the resolved diet (no diet
+        # conflict) so a confirmed diet no longer re-triggers the diet question.
+        if not cal_resolved:
+            is_safe, err_msg, meta = supervisor.check_input_guardrail(
+                user_profile=user_profile,
+                requested_calories=req_cal,
+                requested_days=req_days,
+                fixed_meals=fixed,
+                requested_diet_type=None
             )
-            # Store pending workflow for potential off-topic interruption
-            state.pending_workflow = PendingWorkflow(
-                workflow_type="new_plan",
-                pending_conflicts=["calorie_guardrail"],
-                asked_questions=[msg],
-                extracted_info={
-                    "effective_diet": effective_diet,
-                    "req_cal": req_cal,
-                    "suggested": suggested,
-                    "min_safe": min_safe,
-                    "max_safe": max_safe,
-                    "req_days": req_days,
-                },
-                next_expected_decision="calorie_guardrail_resolution",
-                original_intent="new_plan",
-                original_message=user_message,
-                user_profile_at_start=user_profile.copy(),
-                created_at=datetime.utcnow().isoformat()
-            )
-            return state
+            if not is_safe:
+                msg = err_msg or "The requested calorie target is outside safe clinical guidelines for your profile."
+                state.system_message = msg
+                state.status = "conversational"
+                suggested = meta.get("suggested_target", 2350.0)
+                min_safe = meta.get("min_safe", 2250.0)
+                max_safe = meta.get("max_safe", 2450.0)
+                diet_lbl = {"veg": "veg", "non-veg": "non-veg", "vegan": "vegan"}.get(effective_diet, "veg")
+                state.quick_options = [
+                    {"label": f"Plan at {int(suggested):,} kcal (Recommended)", "value": f"Plan {req_days} days {diet_lbl} for {int(suggested)} kcal"},
+                    {"label": f"Plan at {int(min_safe):,} kcal (Min Safe)", "value": f"Plan {req_days} days {diet_lbl} for {int(min_safe)} kcal"},
+                    {"label": f"Plan at {int(max_safe):,} kcal (Max Safe)", "value": f"Plan {req_days} days {diet_lbl} for {int(max_safe)} kcal"}
+                ]
+                await supervisor.log_step(
+                    state=state,
+                    from_agent="supervisor",
+                    to_agent="user",
+                    msg_type="feedback",
+                    content=msg,
+                    payload={"action": "guardrail_block", "calories": req_cal, "suggested": suggested}
+                )
+                # Store pending workflow so the next partial answer is understood
+                state.pending_workflow = PendingWorkflow(
+                    workflow_type="new_plan",
+                    pending_conflicts=["calorie_guardrail"],
+                    asked_questions=[msg],
+                    extracted_info={
+                        "effective_diet": effective_diet,
+                        "requested_diet": req_diet,
+                        "diet_resolved": True,
+                        "cal_pending": True,
+                        "cal_resolved": False,
+                        "cal_val": req_cal if req_cal is not None else suggested,
+                        "days_val": req_days,
+                        "suggested": suggested,
+                        "min_safe": min_safe,
+                        "max_safe": max_safe,
+                        "req_days": req_days,
+                    },
+                    next_expected_decision="calorie_guardrail_resolution",
+                    original_intent="new_plan",
+                    original_message=user_message,
+                    user_profile_at_start=user_profile.copy(),
+                    created_at=datetime.utcnow().isoformat()
+                )
+                return state
+
+        # All conflicts resolved - clear any pending workflow before planning
+        state.pending_workflow = None
 
     # If editing existing plan, make sure user_profile["diet_type"] reflects the existing plan's diet
     if intent_data.intent == "edit_meal" and existing_plan:
@@ -1110,6 +1192,8 @@ async def run_meal_planner(
     # =========================================================================
     # Step 9: Execute LangGraph Workflow
     # =========================================================================
+    # Store intent_data in state for graph nodes that need it (e.g., exclusions)
+    state.intent_data = intent_data
     graph = create_meal_planner_graph()
     result = await graph.ainvoke(state)
 
@@ -1129,6 +1213,7 @@ async def run_meal_planner(
     if final_state.current_plan and final_state.status in ("reviewing", "approved", "escalated", "failed"):
         try:
             if session:
+                logger.info(f"[{tid}] Persisting plan to database for user {user_id}")
                 repo = PlanRepository(session)
                 if intent_data.intent == "edit_meal" and existing_plan and db_plan_id:
                     is_edit_previously_approved = bool(matched_plan and getattr(matched_plan, "status", None) == "approved")
@@ -1165,6 +1250,7 @@ async def run_meal_planner(
                     ]
                     logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
                 else:
+                    persist_status = final_state.status if final_state.status in ("escalated", "failed") else "draft"
                     plan_diet_str = getattr(final_state.current_plan, "diet_type", None) or user_profile.get("diet_type", "veg")
                     final_state.current_plan.diet_type = plan_diet_str
                     display_diet = "Non-Veg" if plan_diet_str == "non-veg" else plan_diet_str.capitalize()
@@ -1272,6 +1358,6 @@ async def run_meal_planner(
                             {"label": "Modify in chat", "value": f"I want to update \"{p_name}\": "}
                         ]
         except Exception as e:
-            logger.error(f"[{tid}] Failed to persist plan to database: {e}")
+            logger.error(f"[{tid}] Failed to persist plan to database: {e}", exc_info=True)
 
     return final_state

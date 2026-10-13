@@ -17,6 +17,8 @@ IntentType = Literal[
     "delete_plan",
     "rename_plan",
     "add_snack",
+    "resume_request",
+    "cancel_request",
 ]
 
 class PendingWorkflow(BaseModel):

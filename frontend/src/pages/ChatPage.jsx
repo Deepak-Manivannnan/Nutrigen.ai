@@ -167,6 +167,7 @@ export default function ChatPage() {
     profile, messages, addMessage, clearMessages,
     isAgentRunning, setIsAgentRunning,
     chatStatus, setChatStatus,
+    pendingWorkflow, setPendingWorkflow,
     addPlan, deletePlan, refreshPlans, setGrocery, addToast,
   } = useApp();
 
@@ -174,9 +175,9 @@ export default function ChatPage() {
   const [showClear, setShowClear] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-  // Remembers a pending conflict question (e.g. diet/calorie) so the next
-  // message is understood as an answer to it instead of a brand new request.
-  const pendingWorkflowRef = useRef(null);
+  // Pending conflict questions (e.g. diet/calorie) and in-progress updates live
+  // in AppContext so they survive navigation between tabs. The next message is
+  // then understood as an answer to them instead of a brand new request.
 
   const userInitial = profile?.name ? profile.name.trim()[0].toUpperCase() : 'D';
 
@@ -209,13 +210,14 @@ export default function ChatPage() {
         role: m.role,
         content: m.content,
       }));
-      const chatRes = await sendChatMessage(profile?.id || 1, text, taskId, historyPayload, pendingWorkflowRef.current);
+      const chatRes = await sendChatMessage(profile?.id || 1, text, taskId, historyPayload, pendingWorkflow);
 
       setChatStatus(null);
       setIsAgentRunning(false);
 
-      // Keep the pending conflict context so a follow-up answer resolves it.
-      pendingWorkflowRef.current = chatRes.pending_workflow || null;
+      // Keep the pending conflict context so a follow-up answer resolves it
+      // (context-level, survives navigating to the Plans tab and back).
+      setPendingWorkflow(chatRes.pending_workflow || null);
 
       // Handle deletion response sync
       if (chatRes.deleted_plan_id) {
@@ -282,6 +284,17 @@ export default function ChatPage() {
     else if (msg.actionTarget === 'grocery') navigate('/app/grocery');
   }
 
+  // Quick options either send a chat message, or — for plan shortcuts emitted by
+  // the "list my plans" response — navigate straight to that plan in the Plans tab.
+  function handleQuickOption(value) {
+    const m = typeof value === 'string' && value.match(/^__open_plan__:(\d+)$/);
+    if (m) {
+      navigate('/app/plans', { state: { focusPlanId: Number(m[1]) } });
+      return;
+    }
+    handleSend(value);
+  }
+
   const hasContent = messages.length > 0 || chatStatus;
 
   return (
@@ -329,7 +342,7 @@ export default function ChatPage() {
                   key={msg.id}
                   msg={msg}
                   onAction={handleAction}
-                  onQuickOption={handleSend}
+                  onQuickOption={handleQuickOption}
                   userInitial={userInitial}
                 />
               ))}
@@ -372,7 +385,7 @@ export default function ChatPage() {
         <ClearChatConfirm
           onConfirm={() => {
             clearMessages();
-            pendingWorkflowRef.current = null;
+            setPendingWorkflow(null);
             setShowClear(false);
             addToast('Chat cleared', 'default');
           }}

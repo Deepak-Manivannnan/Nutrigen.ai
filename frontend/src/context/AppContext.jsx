@@ -44,6 +44,29 @@ function getStoredUser() {
   }
 }
 
+function loadPendingWorkflow(userId) {
+  if (!userId) return null;
+  try {
+    const raw = localStorage.getItem(`nutrigen_pending_workflow_${userId}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingWorkflow(userId, wf) {
+  if (!userId) return;
+  try {
+    if (wf) {
+      localStorage.setItem(`nutrigen_pending_workflow_${userId}`, JSON.stringify(wf));
+    } else {
+      localStorage.removeItem(`nutrigen_pending_workflow_${userId}`);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
 export function AppProvider({ children }) {
   // Auth & profile state
   const stored = getStoredUser();
@@ -67,6 +90,19 @@ export function AppProvider({ children }) {
   const [workflowState, setWorkflowState] = useState(null);
   const [chatStatus, setChatStatus] = useState(null);
   const [showWorkflow, setShowWorkflow] = useState(false);
+  // Pending chat workflow (e.g. an unanswered diet/calorie confirmation or an
+  // in-progress plan update). Kept at the app level (and persisted per user) so
+  // it survives navigation between tabs - and even a page refresh - so the user
+  // can continue exactly where they left off.
+  const [pendingWorkflow, setPendingWorkflowState] = useState(() =>
+    loadPendingWorkflow(stored ? stored.id : null)
+  );
+
+  const setPendingWorkflow = useCallback((wf) => {
+    const uid = user?.id || profile?.id;
+    setPendingWorkflowState(wf);
+    if (uid) savePendingWorkflow(uid, wf);
+  }, [user?.id, profile?.id]);
 
   // Toasts
   const [toasts, setToasts] = useState([]);
@@ -142,6 +178,7 @@ export function AppProvider({ children }) {
     try {
       setUser(userData);
       localStorage.setItem('nutrigen_auth_user', JSON.stringify(userData));
+      setPendingWorkflowState(loadPendingWorkflow(userData.id));
       await loadUserData(userData.id, userData.profile);
     } catch (err) {
       console.warn('Sign in sync error:', err);
@@ -149,6 +186,7 @@ export function AppProvider({ children }) {
   }, [loadUserData]);
 
   const signOut = useCallback(() => {
+    if (user?.id) savePendingWorkflow(user.id, null);
     localStorage.removeItem('nutrigen_auth_user');
     setUser(null);
     setProfile(null);
@@ -161,8 +199,9 @@ export function AppProvider({ children }) {
     setIsAgentRunning(false);
     setChatStatus(null);
     setShowWorkflow(false);
+    setPendingWorkflowState(null);
     setActivePlanId(null);
-  }, []);
+  }, [user?.id]);
 
   const createProfile = useCallback(async (profileData) => {
     try {
@@ -311,7 +350,9 @@ export function AppProvider({ children }) {
     setChatStatus(null);
     setShowWorkflow(false);
     setIsAgentRunning(false);
-  }, []);
+    setPendingWorkflowState(null);
+    if (user?.id || profile?.id) savePendingWorkflow(user?.id || profile?.id, null);
+  }, [user?.id, profile?.id]);
 
   const value = {
     user, setUser, profile, setProfile,
@@ -325,6 +366,7 @@ export function AppProvider({ children }) {
     workflowState, setWorkflowState,
     chatStatus, setChatStatus,
     showWorkflow, setShowWorkflow,
+    pendingWorkflow, setPendingWorkflow,
     toasts, addToast,
     signIn, signOut,
     createProfile, updateProfile,

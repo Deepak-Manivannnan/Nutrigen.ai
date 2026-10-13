@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   CalendarDays,
   CheckCircle2,
@@ -92,6 +92,7 @@ function getPlanTimestamps(plan) {
 
 export default function PlansPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const {
     plans,
     activePlanId,
@@ -108,6 +109,23 @@ export default function PlansPage() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
   const [expandedInstructions, setExpandedInstructions] = useState({});
+
+  // Opening a plan from a chat shortcut ("Open <plan name>") focuses that plan
+  // here and scrolls to its selector tab.
+  useEffect(() => {
+    const focusId = location.state?.focusPlanId;
+    if (focusId) {
+      setActivePlanId(focusId);
+      setActiveDayIndex(0);
+      setTimeout(() => {
+        document.getElementById(`plan-tab-${focusId}`)?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+        });
+      }, 200);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location]);
 
   const LIQUID_KEYWORDS = ['oil', 'milk', 'juice', 'water', 'sauce', 'vinegar', 'broth', 'stock', 'syrup', 'honey', 'dressing', 'buttermilk'];
   function isLiquid(name) {
@@ -231,6 +249,7 @@ export default function PlansPage() {
             return (
               <button
                 key={p.id}
+                id={`plan-tab-${p.id}`}
                 onClick={() => {
                   setActivePlanId(p.id);
                   setActiveDayIndex(0);

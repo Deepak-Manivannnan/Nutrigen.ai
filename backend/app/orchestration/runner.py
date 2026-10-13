@@ -96,6 +96,182 @@ def find_referenced_plan(
         return all_plans[0]
     return None
 
+# =========================================================================
+# Pending-workflow interruption helpers
+# =========================================================================
+
+_NEW_PLAN_MARKERS = (
+    "new meal plan", "new plan", "another meal plan", "another plan",
+    "start a new", "make a new", "create another", "fresh meal plan",
+    "fresh plan", "new one", "a different plan", "different meal plan",
+    "start over", "start fresh",
+    "new veg", "new vegetarian", "new vegan", "new non-veg", "new nonveg",
+    "another veg", "another vegetarian", "another vegan", "another non-veg",
+)
+
+_PLAN_CREATE_VERBS = ("create", "make", "build", "generate", "plan a", "plan an", "plan another")
+
+# Explicit acknowledgements that the user wants to abandon the pending workflow
+# and start over with a brand-new plan (as opposed to a fresh competing request
+# that should itself be interrupted).
+_NEW_CHOICE_PHRASES = (
+    "new plan instead", "new meal plan instead", "start a new plan instead",
+    "start fresh", "start over", "yes, create a new", "no, create a new",
+    "yes, start a new", "no, start a new", "create a new plan instead",
+    "create a new meal plan instead", "let's start fresh", "lets start fresh",
+    "forget it and create a new", "drop it and create a new",
+)
+
+_LIST_PLANS_PATTERNS = (
+    "list my plans", "list my meal plans", "list the plans", "list the meal plans",
+    "list my plan", "list my meal plan", "list the plan", "list the meal plan",
+    "show my plans", "show my meal plans", "show me my plans", "show me my meal plans",
+    "show existing plans", "view my plans", "view my meal plans", "view existing plans",
+    "view existing plan", "view my plan",
+    "what plans do i have", "which plans do i have",
+    "all my plans", "all my meal plans", "my plan list",
+)
+
+
+def _mentions_diet(msg_lower: str) -> bool:
+    return any(k in msg_lower for k in (
+        "veg", "vegan", "non-veg", "nonveg", "vegetarian", "non vegetarian"
+    ))
+
+
+def _mentions_calories(msg_lower: str) -> bool:
+    return bool(re.search(
+        r"(\d[\d,]{2,4}\s*(kcal|calories|cal\b))|((kcal|calories|cal\b)[^\d]{0,8}\d[\d,]{2,4})",
+        msg_lower
+    ))
+
+
+def is_new_plan_request(user_message: str) -> bool:
+    low = user_message.lower()
+    return any(m in low for m in _NEW_PLAN_MARKERS)
+
+
+def is_list_plans_request(user_message: str) -> bool:
+    low = user_message.lower()
+    return any(p in low for p in _LIST_PLANS_PATTERNS)
+
+
+def _answered_pending_questions(user_message: str, intent_data) -> dict:
+    """Whether THIS message answers the diet/calorie confirmation questions."""
+    low = user_message.lower()
+    d = _mentions_diet(low)
+    c = _mentions_calories(low)
+    user_diet = (intent_data.chosen_diet_type or intent_data.requested_diet_type) if d else None
+    user_cal = (
+        intent_data.chosen_calorie_target
+        if intent_data.chosen_calorie_target is not None
+        else intent_data.requested_calories
+    ) if c else None
+    return {"answered_diet": user_diet is not None, "answered_cal": user_cal is not None}
+
+
+def _interruption_prompt_text(pending, intent_data) -> str:
+    """Deterministic text asking whether to continue pending work or do the new request."""
+    if pending.workflow_type == "edit_meal":
+        workflow_desc = "updating your meal plan"
+    else:
+        workflow_desc = "creating your new meal plan"
+    req_label = {
+        "new_plan": "create a new meal plan",
+        "rename_plan": "rename one of your existing plans",
+        "delete_plan": "delete a meal plan",
+        "approve_plan": "approve a meal plan",
+        "edit_meal": "update an existing meal plan",
+    }.get(intent_data.intent, "do that for you")
+    return (
+        f"I can help you with that — you'd like me to {req_label}.\n\n"
+        f"Just to keep things straight: we were in the middle of {workflow_desc} for you, "
+        f"and the pending questions haven't been answered yet.\n\n"
+        f"Which would you like to do?"
+    )
+
+
+def _interruption_quick_options(pending, intent_data, interrupted_message: str) -> list:
+    resume_label = "Continue the update" if pending.workflow_type == "edit_meal" else "Continue existing plan"
+    new_label = {
+        "new_plan": "Create the new plan",
+        "rename_plan": "Rename the plan",
+        "delete_plan": "Delete the plan",
+        "approve_plan": "Approve the plan",
+        "edit_meal": "Update the plan",
+    }.get(intent_data.intent, "Do it instead")
+    return [
+        {"label": resume_label, "value": "Resume the plan"},
+        # Echoing the competing request lets the next click re-run it fresh once
+        # the pending workflow is dropped.
+        {"label": new_label, "value": interrupted_message},
+        {"label": "Cancel", "value": "Cancel"},
+    ]
+
+
+def append_resume_prompt(state, response_text: str, pending) -> None:
+    """Answer a question, then ask whether to continue the pending workflow or start fresh."""
+    workflow_desc = (
+        "updating your meal plan" if pending.workflow_type == "edit_meal" else "creating your meal plan"
+    )
+    resume_prompt = (
+        f"\n\nWe were in the middle of {workflow_desc} for you. "
+        f"Would you like to continue with that, or start a new plan instead?"
+    )
+    state.system_message = f"{response_text}{resume_prompt}"
+    state.status = "conversational"
+    resume_label = "Continue the update" if pending.workflow_type == "edit_meal" else "Resume"
+    state.quick_options = [
+        {"label": resume_label, "value": "Continue creating the plan"},
+        {"label": "New Plan", "value": "Create a new plan instead"},
+    ] + list(state.quick_options or [])
+
+
+def ask_for_new_plan_specs(state, user_profile) -> None:
+    """After the user abandons a pending workflow for a new plan, ask for the specs."""
+    sug = int(user_profile.get("suggested_target_calories") or 2100)
+    p_diet = str(user_profile.get("diet_type", "veg")).lower()
+    state.pending_workflow = None
+    state.system_message = (
+        "Got it — let's start a fresh meal plan. Tell me how many days (e.g. 3, 5, or 7), "
+        "your calorie target, and your diet preference (veg / non-veg / vegan), "
+        "and I'll put one together for you."
+    )
+    state.status = "conversational"
+    state.quick_options = [
+        {"label": f"Plan 3 days ({sug:,} kcal)", "value": f"Plan a 3-day {p_diet} meal plan for {sug} kcal"},
+        {"label": f"Plan 7 days ({sug:,} kcal)", "value": f"Plan a 7-day {p_diet} meal plan for {sug} kcal"},
+    ]
+
+
+def make_edit_pending(
+    response_text: str,
+    quick_options: list,
+    stage: str,
+    target_plan_name: str,
+    user_message: str,
+    user_profile: Dict[str, Any],
+) -> PendingWorkflow:
+    """Persist an in-progress plan-update clarification so it survives navigation
+    and can be resumed after an interruption (e.g. the user asks for a new plan)."""
+    return PendingWorkflow(
+        workflow_type="edit_meal",
+        pending_conflicts=["edit_clarification"],
+        asked_questions=[response_text],
+        extracted_info={
+            "edit_stage": stage,
+            "target_plan_name": target_plan_name,
+            "reprompt_text": response_text,
+            "reprompt_quick_options": list(quick_options or []),
+        },
+        next_expected_decision="edit_clarification",
+        original_intent="edit_meal",
+        original_message=user_message,
+        user_profile_at_start=dict(user_profile or {}),
+        created_at=datetime.utcnow().isoformat()
+    )
+
+
 async def run_meal_planner(
     user_id: int,
     user_message: str,
@@ -125,6 +301,12 @@ async def run_meal_planner(
     
     intent_data = await extract_user_intent(user_message, history=history, pending_workflow=pending_workflow)
     logger.info(f"[{tid}] Extracted intent: {intent_data.intent}, days: {intent_data.requested_days}, calories: {intent_data.requested_calories}, diet: {intent_data.requested_diet_type}")
+
+    # A "resume"/"continue" answer re-activates the pending workflow's original
+    # intent BEFORE PlanState is built (PlanState.intent is a typed literal, and
+    # the graph routes on it - so it must hold the real intent, not 'resume_request').
+    if intent_data.intent == "resume_request" and pending_workflow and pending_workflow.original_intent:
+        intent_data.intent = pending_workflow.original_intent
 
     # Merge standing fixed meals from profile if any
     fixed = {}
@@ -193,6 +375,10 @@ async def run_meal_planner(
         pending_workflow=pending_workflow
     )
 
+    # Supervisor is needed by the resume/cancel branches below, so instantiate it
+    # before the pending-workflow handling.
+    supervisor = SupervisorAgent()
+
     # =========================================================================
     # Handle Pending Workflow: Check for pending workflow and handle resume/cancel/out_of_scope
     # =========================================================================
@@ -232,7 +418,214 @@ async def run_meal_planner(
         ]
         return state
 
-    supervisor = SupervisorAgent()
+    # =========================================================================
+    # Plan Listing (anytime): "show my meal plans" / "list my plans"
+    # Lists the user's saved plans with per-plan shortcuts to the Plans tab.
+    # If a workflow is pending, the list is followed by a continue/new prompt.
+    # =========================================================================
+    if is_list_plans_request(user_message):
+        if not all_plans:
+            list_text = (
+                "You don't have any saved meal plans yet. I can create one for you — just "
+                "tell me how many days, your calorie target, and your diet preference."
+            )
+            state.quick_options = [
+                {"label": "Plan 3 days", "value": "Plan 3 days for 1800 kcal"},
+                {"label": "Plan 7 days", "value": "Plan 7 days vegetarian meal plan"},
+            ]
+        else:
+            status_lbl = {
+                "approved": "Approved", "draft": "Draft", "reviewing": "Reviewing",
+                "escalated": "Escalated", "failed": "Failed",
+            }
+            lines = ["Here are your saved meal plans:"]
+            for p in all_plans:
+                name = getattr(p, "name", None) or f"Plan #{p.id}"
+                days = getattr(p, "days", 0)
+                cal = getattr(p, "calorie_target", None) or getattr(p, "target_calories", None)
+                diet = str(getattr(p, "diet_type", "") or "").lower()
+                diet_txt = "Non-Veg" if diet == "non-veg" else (diet.capitalize() if diet else "—")
+                cal_txt = f"{int(cal):,} kcal" if cal else "—"
+                st = status_lbl.get(getattr(p, "status", ""), "Draft")
+                lines.append(f"- **{name}** — {days} days · {cal_txt} · {diet_txt} ({st})")
+            list_text = "\n".join(lines)
+            state.quick_options = [
+                {"label": f"Open {getattr(p, 'name', None) or f'Plan #{p.id}'}", "value": f"__open_plan__:{p.id}"}
+                for p in all_plans
+            ] + [{"label": "Create new plan", "value": "Create a new meal plan"}]
+
+        if state.pending_workflow:
+            append_resume_prompt(state, list_text, state.pending_workflow)
+        else:
+            state.system_message = list_text
+            state.status = "conversational"
+        await supervisor.log_step(
+            state=state,
+            from_agent="supervisor",
+            to_agent="user",
+            msg_type="approve",
+            content=str(state.system_message or "")[:120] + "...",
+            payload={"action": "list_plans"}
+        )
+        return state
+
+    # =========================================================================
+    # PENDING-WORKFLOW INTERRUPTION GATE
+    # When a pending workflow exists (diet/calorie confirmation, or an in-progress
+    # plan update), a competing request (new plan, rename, delete, approve, edit)
+    # must not silently discard it. We either resolve an open interruption choice,
+    # or ask the user whether to continue the pending work or proceed with the new
+    # request. Informational questions get answered AND followed by that prompt.
+    # =========================================================================
+    pending_workflow = state.pending_workflow
+    if pending_workflow:
+        pinfo = dict(pending_workflow.extracted_info or {})
+        awaiting_choice = bool(pinfo.get("awaiting_interruption_choice"))
+        msg_lower = user_message.lower()
+        is_resume_msg = (
+            intent_data.intent == "resume_request"
+            or any(k in msg_lower for k in (
+                "resume", "continue", "carry on", "keep going", "keep it", "go on",
+            ))
+        )
+
+        if awaiting_choice:
+            if is_resume_msg:
+                # Re-present the pending question(s) exactly as the user saw them.
+                if pending_workflow.workflow_type == "edit_meal":
+                    text = pinfo.get("reprompt_text") or "Where would you like to continue with your update?"
+                    quick = pinfo.get("reprompt_quick_options")
+                else:
+                    text = pinfo.get("prompt_text") or "Let's continue creating your meal plan."
+                    quick = pinfo.get("prompt_quick_options")
+                new_info = {k: v for k, v in pinfo.items()
+                            if k not in ("awaiting_interruption_choice", "interrupted_by", "interrupted_intent")}
+                state.pending_workflow = pending_workflow.model_copy(update={"extracted_info": new_info})
+                state.system_message = text
+                state.status = "conversational"
+                state.quick_options = quick or [
+                    {"label": "Resume", "value": "Continue creating the plan"},
+                    {"label": "New Plan", "value": "Create a new plan instead"},
+                ]
+                await supervisor.log_step(
+                    state=state, from_agent="supervisor", to_agent="user",
+                    msg_type="feedback", content=str(text)[:120] + "...",
+                    payload={"action": "pending_resume"}
+                )
+                return state
+            if intent_data.intent in ("chat", "app_info", "explain", "profile_info", "out_of_scope") and not any(
+                phr in msg_lower for phr in _NEW_CHOICE_PHRASES
+            ):
+                # Answer the new question, then keep the interruption choice alive.
+                answer = await supervisor.handle_conversational_intent(
+                    state=state, user_message=user_message,
+                    intent=intent_data.intent, history=history
+                )
+                workflow_desc = (
+                    "updating your meal plan" if pending_workflow.workflow_type == "edit_meal"
+                    else "creating your meal plan"
+                )
+                resume_prompt = (
+                    f"\n\nWe were in the middle of {workflow_desc} for you. "
+                    f"Would you like to continue with that, or start a new plan instead?"
+                )
+                state.system_message = f"{answer}{resume_prompt}"
+                state.status = "conversational"
+                resume_label = "Continue the update" if pending_workflow.workflow_type == "edit_meal" else "Resume"
+                state.quick_options = [
+                    {"label": resume_label, "value": "Continue creating the plan"},
+                    {"label": "New Plan", "value": "Create a new plan instead"},
+                ]
+                return state
+            # Anything else while awaiting = the user chose the competing request:
+            # drop the pending workflow and handle this message as a fresh request.
+            chosen_new = any(phr in msg_lower for phr in _NEW_CHOICE_PHRASES)
+            has_params = _mentions_diet(msg_lower) or _mentions_calories(msg_lower)
+            state.pending_workflow = None
+            if (chosen_new or intent_data.intent == "new_plan") and not has_params:
+                # Explicit "start a new plan instead" (or a bare "create a new meal
+                # plan" echo): abandon the pending flow and ask for the new specs.
+                ask_for_new_plan_specs(state, user_profile)
+                await supervisor.log_step(
+                    state=state, from_agent="supervisor", to_agent="user",
+                    msg_type="feedback", content=str(state.system_message)[:120] + "...",
+                    payload={"action": "new_plan_specs_request"}
+                )
+                return state
+            # A concrete competing request (carries params, or a rename/delete/
+            # approve/edit echo) continues below the gate with no pending workflow.
+        elif is_resume_msg and pending_workflow.workflow_type == "edit_meal":
+            # Resuming an in-progress update: re-present the stored question.
+            text = pinfo.get("reprompt_text") or "Where would you like to continue with your update?"
+            quick = pinfo.get("reprompt_quick_options")
+            state.pending_workflow = pending_workflow
+            state.system_message = text
+            state.status = "conversational"
+            state.quick_options = quick or [
+                {"label": "Swap breakfast", "value": "Swap day 1 breakfast"},
+                {"label": "Add a healthy snack", "value": "Add a snack to my meal plan"},
+            ]
+            await supervisor.log_step(
+                state=state, from_agent="supervisor", to_agent="user",
+                msg_type="feedback", content=str(text)[:120] + "...",
+                payload={"action": "edit_pending_resume"}
+            )
+            return state
+        elif not is_resume_msg:
+            chosen_new = any(phr in msg_lower for phr in _NEW_CHOICE_PHRASES)
+            if chosen_new:
+                # The user answered a resume/new prompt with "start a new plan
+                # instead": drop the pending flow (no re-interruption) and ask for
+                # the new specs, or if this message already carries diet/calorie
+                # params, fall through to process the concrete request fresh.
+                if _mentions_diet(msg_lower) or _mentions_calories(msg_lower):
+                    state.pending_workflow = None
+                else:
+                    ask_for_new_plan_specs(state, user_profile)
+                    await supervisor.log_step(
+                        state=state, from_agent="supervisor", to_agent="user",
+                        msg_type="feedback", content=str(state.system_message)[:120] + "...",
+                        payload={"action": "new_plan_specs_request"}
+                    )
+                    return state
+            elif intent_data.intent in ("rename_plan", "delete_plan", "approve_plan"):
+                competing = True
+            elif intent_data.intent == "edit_meal":
+                # A fresh update request interrupts plan CREATION; a follow-up to an
+                # in-progress update is a continuation and is handled by the edit flow.
+                competing = pending_workflow.workflow_type != "edit_meal"
+            elif intent_data.intent == "new_plan":
+                if pending_workflow.workflow_type == "edit_meal":
+                    # Any new-plan request interrupts an in-progress update.
+                    competing = True
+                elif is_new_plan_request(user_message):
+                    # An explicit "new plan" request interrupts pending confirmations.
+                    competing = True
+                else:
+                    answered = _answered_pending_questions(user_message, intent_data)
+                    resolved_any = answered["answered_diet"] or answered["answered_cal"]
+                    has_create_verb = any(v in msg_lower for v in _PLAN_CREATE_VERBS)
+                    competing = has_create_verb and not resolved_any
+            else:
+                competing = False
+
+            if competing:
+                state.system_message = _interruption_prompt_text(pending_workflow, intent_data)
+                state.status = "conversational"
+                state.quick_options = _interruption_quick_options(pending_workflow, intent_data, user_message)
+                new_info = {
+                    **pinfo,
+                    "awaiting_interruption_choice": True,
+                    "interrupted_by": user_message,
+                    "interrupted_intent": intent_data.intent,
+                }
+                state.pending_workflow = pending_workflow.model_copy(update={"extracted_info": new_info})
+                await supervisor.log_step(
+                    state=state, from_agent="supervisor", to_agent="user",
+                    msg_type="feedback", content=str(state.system_message)[:120] + "...",
+                    payload={"action": "interruption_prompt", "competing_intent": intent_data.intent}
+                )
+                return state
 
     # =========================================================================
     # Step 2: Handle Profile Info Inquiry ("Tell about my profile")
@@ -256,6 +649,10 @@ async def run_meal_planner(
             {"label": f"Plan 3 days ({sug:,} kcal)", "value": f"Plan a 3-day {p_diet} meal plan for {sug} kcal"},
             {"label": f"Plan 7 days ({sug:,} kcal)", "value": f"Plan a 7-day {p_diet} meal plan for {sug} kcal"}
         ]
+        # A pending workflow is not discarded by a profile inquiry: answer it and
+        # ask whether to continue the pending work or start a new plan.
+        if state.pending_workflow:
+            append_resume_prompt(state, response_text, state.pending_workflow)
         await supervisor.log_step(
             state=state,
             from_agent="supervisor",
@@ -830,6 +1227,10 @@ async def run_meal_planner(
                     {"label": "Add a healthy snack", "value": f"Add a snack to \"{target_plan_to_use.name}\""},
                     {"label": "Change diet to vegetarian", "value": f"Update \"{target_plan_to_use.name}\" to vegetarian"}
                 ]
+                state.pending_workflow = make_edit_pending(
+                    response_text, state.quick_options, "which_meal",
+                    target_plan_to_use.name, user_message, user_profile
+                )
                 return state
             else:
                 context_prompt = (
@@ -848,6 +1249,10 @@ async def run_meal_planner(
                     {"label": f"Update {p.name}", "value": f"I want to update \"{p.name}\": "}
                     for p in all_plans
                 ]
+                state.pending_workflow = make_edit_pending(
+                    response_text, state.quick_options, "which_plan",
+                    "your meal plan", user_message, user_profile
+                )
                 return state
 
         # If user provided meal edit instructions, check if essential parameters are missing or ambiguous
@@ -898,6 +1303,10 @@ async def run_meal_planner(
                         {"label": f"Day {d.day_number} {target_meal_type.capitalize()}", "value": f"Replace Day {d.day_number} {target_meal_type} in \"{plan_name_disp}\""}
                         for d in existing_plan.days
                     ]
+                    state.pending_workflow = make_edit_pending(
+                        response_text, state.quick_options, "which_day",
+                        plan_name_disp, user_message, user_profile
+                    )
                     return state
 
                 # Check if day is specified, but meal slot is missing/ambiguous
@@ -921,6 +1330,10 @@ async def run_meal_planner(
                         {"label": f"Day {target_day} {m.meal_type.capitalize()}", "value": f"Replace Day {target_day} {m.meal_type} in \"{plan_name_disp}\""}
                         for m in meals_avail
                     ]
+                    state.pending_workflow = make_edit_pending(
+                        response_text, state.quick_options, "which_slot",
+                        plan_name_disp, user_message, user_profile
+                    )
                     return state
 
     # =========================================================================
@@ -930,44 +1343,19 @@ async def run_meal_planner(
     # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
     # =========================================================================
     if intent_data.intent in ("chat", "app_info", "out_of_scope", "explain"):
-        # If there's a pending workflow and the user sends an out_of_scope message,
-        # respond to the off-topic question but also prompt to continue/cancel the pending workflow
-        if intent_data.intent == "out_of_scope" and state.pending_workflow:
-            # User asked an off-topic question while a workflow is pending
-            # First, respond to the off-topic question
-            off_topic_response = await supervisor.handle_conversational_intent(
-                state=state,
-                user_message=user_message,
-                intent="out_of_scope",
-                history=history
-            )
-            # Then prompt to continue or cancel the pending workflow
-            pending = state.pending_workflow
-            workflow_desc = "meal plan creation" if pending.original_intent == "new_plan" else "meal plan update"
-            resume_prompt = (
-                f"\n\nWe were in the middle of {workflow_desc} for you. "
-                f"Would you like to continue {workflow_desc}, or would you like to start a new plan instead?"
-            )
-            # Combine the responses
-            combined_response = f"{off_topic_response}{resume_prompt}"
-            state.system_message = combined_response
-            state.status = "conversational"
-            # Provide quick options for resume/cancel
-            state.quick_options = [
-                {"label": "Resume", "value": "Continue creating the plan"},
-                {"label": "New Plan", "value": "Create a new plan instead"}
-            ]
-            # Preserve the pending workflow
-            return state
-        
+        # Answer the user's question first. If a workflow is pending, also ask
+        # whether they'd like to continue it or start a new plan instead.
         response_text = await supervisor.handle_conversational_intent(
             state=state,
             user_message=user_message,
             intent=intent_data.intent,
             history=history
         )
-        state.system_message = response_text
-        state.status = "conversational" if intent_data.intent != "out_of_scope" else "out_of_scope"
+        if state.pending_workflow:
+            append_resume_prompt(state, response_text, state.pending_workflow)
+        else:
+            state.system_message = response_text
+            state.status = "conversational" if intent_data.intent != "out_of_scope" else "out_of_scope"
         return state
 
     # =========================================================================
@@ -1103,6 +1491,10 @@ async def run_meal_planner(
                     "cal_pending": bool(is_calorie_unsafe),
                     "diet_resolved": False,
                     "cal_resolved": False,
+                    # Snapshot of the exact prompt shown, so resuming after an
+                    # interruption re-presents the same question to the user.
+                    "prompt_text": conflict_prompt,
+                    "prompt_quick_options": list(state.quick_options or []),
                 },
                 next_expected_decision="diet_conflict_resolution",
                 original_intent="new_plan",
@@ -1172,6 +1564,10 @@ async def run_meal_planner(
                         "min_safe": min_safe,
                         "max_safe": max_safe,
                         "req_days": req_days,
+                        # Snapshot of the exact prompt shown, so resuming after an
+                        # interruption re-presents the same question to the user.
+                        "prompt_text": msg,
+                        "prompt_quick_options": list(state.quick_options or []),
                     },
                     next_expected_decision="calorie_guardrail_resolution",
                     original_intent="new_plan",
@@ -1203,7 +1599,7 @@ async def run_meal_planner(
         final_state = PlanState.model_validate(result)
 
     # Clear pending workflow on successful workflow completion
-    if final_state.current_plan and final_state.status in ("reviewing", "approved"):
+    if final_state.current_plan and final_state.status in ("reviewing", "approved", "draft"):
         final_state.pending_workflow = None
 
     # =========================================================================
@@ -1248,6 +1644,8 @@ async def run_meal_planner(
                         {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
                         {"label": "Modify in chat", "value": f"I want to update \"{plan_title}\": "}
                     ]
+                    # The update completed - drop any lingering in-progress update state.
+                    final_state.pending_workflow = None
                     logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
                 else:
                     persist_status = final_state.status if final_state.status in ("escalated", "failed") else "draft"

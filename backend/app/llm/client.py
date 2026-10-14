@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import time
 from google import genai
@@ -6,6 +7,8 @@ from google.genai import types
 from typing import Optional, Dict, Any, Type
 from pydantic import BaseModel
 from backend.app.config import settings
+
+logger = logging.getLogger("llm.client")
 
 
 class LLMUnavailableError(Exception):
@@ -31,6 +34,29 @@ _circuit_state: Dict[str, Dict[str, float]] = {}
 # A quota retry-delay longer than this means "exhausted for hours" — fail fast
 # instead of sleeping through pointless retries.
 _QUOTA_FAST_FAIL_S = 120.0
+
+# Tried in order when the configured model is unavailable. Google fronts these
+# endpoints for capacity independently, so when one returns 503 (high demand)
+# the next is usually healthy — this keeps a single flaky model from degrading
+# every conversational turn into a canned fallback.
+_FALLBACK_MODELS = ("gemini-3.5-flash-lite", "gemini-2.5-flash")
+
+
+def _is_retryable(err_str: str) -> bool:
+    """Transient failures worth another attempt.
+
+    Covers quota (429) and capacity/server errors (500/502/503/504,
+    UNAVAILABLE, overloaded). These routinely clear in seconds, so retrying is
+    correct; any other 4xx is a real request problem and is raised at once.
+    """
+    return (
+        "429" in err_str
+        or "RESOURCE_EXHAUSTED" in err_str
+        or "UNAVAILABLE" in err_str
+        or "InternalServerError" in err_str
+        or "overloaded" in err_str.lower()
+        or bool(re.search(r"\b50[0234]\b", err_str))
+    )
 
 
 def _parse_retry_delay_s(err_str: str) -> Optional[float]:
@@ -87,33 +113,57 @@ class LLMClient:
             config.system_instruction = system_instruction
 
         _circuit_check(self.model)
-        for attempt in range(3):
-            try:
-                response = await self.client.aio.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=config
+        models = [self.model] + [m for m in _FALLBACK_MODELS if m != self.model]
+        last_err: Optional[Exception] = None
+
+        for model_index, model in enumerate(models):
+            if model_index > 0:
+                logger.warning(
+                    f"[LLM] {self.model} unavailable; retrying this call on {model}"
                 )
-                _circuit_record(self.model, True)
-                return response.text or ""
-            except LLMUnavailableError:
-                raise
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            for attempt in range(3):
+                try:
+                    response = await self.client.aio.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=config
+                    )
+                    _circuit_record(self.model, True)
+                    return response.text or ""
+                except LLMUnavailableError:
+                    raise
+                except Exception as e:
+                    err_str = str(e)
+                    last_err = e
+                    if not _is_retryable(err_str):
+                        # Real request problem (bad key, bad schema, 4xx) —
+                        # retrying or switching models will not help.
+                        if model_index == 0:
+                            _circuit_record(self.model, False)
+                        raise
                     delay = _parse_retry_delay_s(err_str)
                     if delay is not None and delay > _QUOTA_FAST_FAIL_S:
-                        _circuit_record(self.model, False)
+                        # "Exhausted for hours" — fail fast, don't burn time.
+                        if model_index == 0:
+                            _circuit_record(self.model, False)
                         hours, remainder = divmod(int(delay), 3600)
-                        raise LLMUnavailableError(
-                            f"LLM quota exhausted for model {self.model} (retry in ~{hours}h{remainder // 60:02d}m)",
-                            retry_after_s=delay,
-                        )
+                        if model_index == len(models) - 1:
+                            raise LLMUnavailableError(
+                                f"LLM quota exhausted for model {model} "
+                                f"(retry in ~{hours}h{remainder // 60:02d}m)",
+                                retry_after_s=delay,
+                            )
+                        break
                     if attempt < 2:
                         await asyncio.sleep(min(delay if delay else (attempt + 1) * 3, 15))
                         continue
+                    break  # this model is unusable — try the next one
+            if model_index == 0:
                 _circuit_record(self.model, False)
-                raise
+
+        if last_err is not None:
+            raise last_err
+        raise LLMUnavailableError(f"No usable model available (tried {', '.join(models)})")
 
     async def generate_structured(
         self,
@@ -137,38 +187,59 @@ class LLMClient:
             config.system_instruction = system_instruction
 
         _circuit_check(self.model)
-        for attempt in range(3):
-            try:
-                response = await self.client.aio.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=config
+        models = [self.model] + [m for m in _FALLBACK_MODELS if m != self.model]
+        last_err: Optional[Exception] = None
+
+        for model_index, model in enumerate(models):
+            if model_index > 0:
+                logger.warning(
+                    f"[LLM] {self.model} unavailable; retrying this call on {model}"
                 )
-            except LLMUnavailableError:
-                raise
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            for attempt in range(3):
+                try:
+                    response = await self.client.aio.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=config
+                    )
+                except LLMUnavailableError:
+                    raise
+                except Exception as e:
+                    err_str = str(e)
+                    last_err = e
+                    if not _is_retryable(err_str):
+                        if model_index == 0:
+                            _circuit_record(self.model, False)
+                        raise
                     delay = _parse_retry_delay_s(err_str)
                     if delay is not None and delay > _QUOTA_FAST_FAIL_S:
-                        _circuit_record(self.model, False)
+                        if model_index == 0:
+                            _circuit_record(self.model, False)
                         hours, remainder = divmod(int(delay), 3600)
-                        raise LLMUnavailableError(
-                            f"LLM quota exhausted for model {self.model} (retry in ~{hours}h{remainder // 60:02d}m)",
-                            retry_after_s=delay,
-                        )
+                        if model_index == len(models) - 1:
+                            raise LLMUnavailableError(
+                                f"LLM quota exhausted for model {model} "
+                                f"(retry in ~{hours}h{remainder // 60:02d}m)",
+                                retry_after_s=delay,
+                            )
+                        break
                     if attempt < 2:
                         await asyncio.sleep(min(delay if delay else (attempt + 1) * 3, 15))
                         continue
+                    break
+                else:
+                    _circuit_record(self.model, True)
+                    # Parse into Pydantic model (local step; failures here are
+                    # not backend outages and must not trip the breaker).
+                    if hasattr(response, "parsed") and response.parsed:
+                        return response.parsed
+                    return response_schema.model_validate_json(response.text)
+            if model_index == 0:
                 _circuit_record(self.model, False)
-                raise
-            else:
-                _circuit_record(self.model, True)
-                # Parse into Pydantic model (local step; failures here are not
-                # backend outages and must not trip the circuit breaker).
-                if hasattr(response, "parsed") and response.parsed:
-                    return response.parsed
-                return response_schema.model_validate_json(response.text)
+
+        if last_err is not None:
+            raise last_err
+        raise LLMUnavailableError(f"No usable model available (tried {', '.join(models)})")
 
 
 llm_client = LLMClient()

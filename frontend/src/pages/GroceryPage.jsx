@@ -6,6 +6,7 @@ import {
   Search,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import PlanSelect from '../components/PlanSelect';
 import { adaptBackendGrocery } from '../utils/api';
 import { generateDemoGrocery } from '../utils/workflowSimulator';
 
@@ -14,10 +15,22 @@ export default function GroceryPage() {
   const { plans, activePlanId, setActivePlanId, groceryList, setGrocery, addToast } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
 
-  const plansArray = Array.isArray(plans) ? plans : [];
+  // Only approved plans have a grocery list, so drafts are excluded here and
+  // the selector never offers one. Sorted newest-first; the most recent
+  // approved plan is the default when the active id points elsewhere (e.g. the
+  // user left a draft selected in the Plans tab).
+  const approvedPlans = (Array.isArray(plans) ? plans : [])
+    .filter(p => p.status === 'approved')
+    .slice()
+    .sort((a, b) => {
+      const ta = new Date(a.created_at || 0).getTime();
+      const tb = new Date(b.created_at || 0).getTime();
+      if (ta !== tb) return tb - ta;
+      return (b.id || 0) - (a.id || 0);
+    });
 
   // Resolve active plan and its specific grocery checklist
-  const activePlan = plansArray.find(p => p.id === activePlanId) || plansArray[0] || null;
+  const activePlan = approvedPlans.find(p => p.id === activePlanId) || approvedPlans[0] || null;
   const currentGrocery = (activePlan && activePlan.grocery_list)
     ? adaptBackendGrocery(activePlan.grocery_list, activePlan.days)
     : (activePlan ? null : groceryList);
@@ -143,24 +156,13 @@ export default function GroceryPage() {
         )}
       </div>
 
-      {/* Plan Selector tabs if multiple plans */}
-      {plansArray.length > 1 && (
-        <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-6)', overflowX: 'auto', paddingBottom: 4 }}>
-          {plansArray.map(p => {
-            const isSelected = p.id === (activePlan?.id);
-            return (
-              <button
-                key={p.id}
-                onClick={() => setActivePlanId(p.id)}
-                className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-outline'}`}
-                style={{ borderRadius: 'var(--radius-full)' }}
-              >
-                {p.name} · {p.status === 'approved' ? 'Approved' : 'Draft'}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* Plan selector — approved plans only, newest first */}
+      <PlanSelect
+        plans={approvedPlans}
+        activePlanId={activePlanId}
+        onSelect={(id) => setActivePlanId(id)}
+        idPrefix="grocery-plan-select"
+      />
 
       {/* Empty State when no approved grocery list exists */}
       {(!currentGrocery || !currentGrocery.categories || allCategories.length === 0) ? (

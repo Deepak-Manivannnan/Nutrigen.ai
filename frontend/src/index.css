@@ -1615,6 +1615,236 @@ ol {
   color: #15803d;
 }
 
+/* Plan Selector Toggle Bar */
+.plan-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.plan-select-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--gray-600);
+  flex-shrink: 0;
+}
+
+/* Holds the toggle so the menu can size itself to the toggle box rather than
+   spanning the whole selector row. */
+.plan-select-field {
+  position: relative;
+  width: 280px;
+  max-width: 100%;
+}
+
+.plan-select-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  padding: 8px 32px 8px 12px;
+  background: #fff;
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--gray-900);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.plan-select-toggle:hover {
+  border-color: var(--green-300);
+  background: var(--green-50);
+}
+
+.plan-select-toggle[aria-expanded='true'] {
+  border-color: var(--green-400);
+  background: var(--green-50);
+}
+
+.plan-select-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-select-caret {
+  position: absolute;
+  right: 11px;
+  color: var(--gray-400);
+  flex-shrink: 0;
+  transition: transform var(--transition-fast);
+}
+
+.plan-select-caret.open {
+  transform: rotate(180deg);
+}
+
+.plan-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.plan-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 9px 10px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.plan-select-option:hover {
+  background: var(--gray-50);
+}
+
+.plan-select-option.active {
+  background: var(--green-50);
+}
+
+.plan-select-option-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.plan-select-option-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--gray-900);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-select-option-meta {
+  font-size: var(--text-xs);
+  color: var(--gray-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Meal Card ΓÇö fixed frame; body scrolls so steps never resize the card */
+.meal-card {
+  display: flex;
+  flex-direction: column;
+  height: 400px;
+  min-width: 0;
+  overflow: hidden;
+  padding: var(--space-5);
+}
+
+/* min-height:0 lets this column shrink below its content size, so the step
+   area can scroll instead of pushing the macros past the card edge. */
+.meal-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Only the step list may absorb the shortfall ΓÇö the title, ingredients and
+   macros keep their natural height instead of being squashed. */
+.meal-card-body > * {
+  flex-shrink: 0;
+}
+
+/* Instructions render inline with the title/ingredients ΓÇö no nested box.
+   The heading stays put; only the step list scrolls, and only when the recipe
+   has more steps than the fixed card can show. The scrollbar stays hidden
+   until the pointer is over the steps. */
+.meal-instructions {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--text-xs);
+  color: var(--gray-500);
+  line-height: 1.5;
+}
+
+.meal-instructions-label {
+  flex-shrink: 0;
+  margin-bottom: 3px;
+  color: var(--gray-700);
+}
+
+/* Matches the Cooking Instructions label so both section headings read alike. */
+.meal-ingredients-label {
+  color: var(--gray-700);
+}
+
+.meal-steps-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.meal-steps-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.meal-steps-list:hover {
+  scrollbar-width: thin;
+}
+
+.meal-steps-list:hover::-webkit-scrollbar {
+  width: 5px;
+}
+
+/* The global reset kills ol markers, so the number is rendered explicitly. */
+.meal-step {
+  display: flex;
+  gap: 6px;
+}
+
+.meal-step-num {
+  flex-shrink: 0;
+  min-width: 11px;
+  font-weight: 600;
+  color: var(--gray-700);
+}
+
+.meal-step-text {
+  min-width: 0;
+}
+
+.meal-step + .meal-step {
+  margin-top: 3px;
+}
+
 /* Plans Tab */
 .plans-list {
   display: flex;

@@ -12,9 +12,6 @@ import {
   Plus,
   Trash2,
   ChevronRight,
-  ChevronDown,
-  ChevronUp,
-  ChefHat,
   Sun,
   Sunrise,
   Sunset,
@@ -26,6 +23,7 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import PlanSelect from '../components/PlanSelect';
 import { generateDemoPlan } from '../utils/workflowSimulator';
 
 const MEAL_ICONS = {
@@ -34,6 +32,43 @@ const MEAL_ICONS = {
   Dinner: Sunset,
   Snack: Apple,
 };
+
+const DEFAULT_STEPS = [
+  'Prep all fresh ingredients and seasonings.',
+  'Heat a pan over medium heat with a splash of oil.',
+  'Cook ingredients until thoroughly tender and fragrant.',
+  'Season to taste and serve warm.',
+];
+
+// Cooking instructions arrive as one blob: sometimes newline-separated, often
+// a run-on paragraph with inline "1." / "2." markers. Split on newlines first,
+// then on any numbered marker still inside a line, so every step renders on
+// its own line instead of trailing the end of the previous one.
+function splitSteps(instructions) {
+  const raw = (instructions || '').trim();
+  if (!raw) return DEFAULT_STEPS;
+
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const parts = lines.length ? lines : [raw];
+
+  const steps = [];
+  for (const part of parts) {
+    // Split before each "1." / "2." style marker that starts a step.
+    const chunks = part.split(/(?=(?:^|\s)\d{1,2}[.)]\s)/).map((c) => c.trim());
+    const meaningful = chunks.filter(Boolean);
+    if (meaningful.length > 1) {
+      steps.push(...meaningful.map((c) => c.replace(/^(?:^|\s)\d{1,2}[.)]\s*/, '')));
+    } else {
+      steps.push(part);
+    }
+  }
+
+  return steps.length ? steps : DEFAULT_STEPS;
+}
 
 function formatTimestamp(ts) {
   if (!ts) return '—';
@@ -108,8 +143,6 @@ export default function PlansPage() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
-  const [expandedInstructions, setExpandedInstructions] = useState({});
-
   // Opening a plan from a chat shortcut ("Open <plan name>") focuses that plan
   // here and scrolls to its selector tab.
   useEffect(() => {
@@ -126,6 +159,12 @@ export default function PlansPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location]);
+
+  function handleSelectPlan(planId) {
+    setActivePlanId(planId);
+    setActiveDayIndex(0);
+    setShowPlanMenu(false);
+  }
 
   const LIQUID_KEYWORDS = ['oil', 'milk', 'juice', 'water', 'sauce', 'vinegar', 'broth', 'stock', 'syrup', 'honey', 'dressing', 'buttermilk'];
   function isLiquid(name) {
@@ -144,15 +183,15 @@ export default function PlansPage() {
     return `${name} (${amt}${unit})`;
   }
 
-  function toggleInstructions(mealKey) {
-    setExpandedInstructions(prev => ({
-      ...prev,
-      [mealKey]: !prev[mealKey]
-    }));
-  }
-
-  // Active plan lookup
-  const plansArray = Array.isArray(plans) ? plans : [];
+  // Active plan lookup. Sorted newest-first so "recent" tracks created_at
+  // rather than last-edited; falls back to the newest plan when nothing is
+  // selected, so the most recent plan loads by default.
+  const plansArray = (Array.isArray(plans) ? plans : []).slice().sort((a, b) => {
+    const ta = new Date(a.created_at || 0).getTime();
+    const tb = new Date(b.created_at || 0).getTime();
+    if (ta !== tb) return tb - ta;
+    return (b.id || 0) - (a.id || 0);
+  });
   const activePlan = plansArray.find(p => p.id === activePlanId) || plansArray[0] || null;
 
   function handleApprove(planId) {
@@ -186,7 +225,7 @@ export default function PlansPage() {
     return (
       <div className="page-content" id="plans-page">
         <div className="page-header">
-          <h1 className="page-title">Weekly Meal Plans</h1>
+          <h1 className="page-title">Meal Plans</h1>
           <p className="page-subtitle">Review, adjust, and approve your agent-generated meal plans.</p>
         </div>
 
@@ -225,7 +264,7 @@ export default function PlansPage() {
       {/* Top Header */}
       <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
         <div>
-          <h1 className="page-title">Weekly Meal Plans</h1>
+          <h1 className="page-title">Meal Plans</h1>
           <p className="page-subtitle">Inspect daily meals, nutritional macros, and allergy verification reports.</p>
         </div>
         <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
@@ -240,29 +279,8 @@ export default function PlansPage() {
         </div>
       </div>
 
-      {/* Plan Selector tabs if multiple plans */}
-      {plansArray.length > 1 && (
-        <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-6)', overflowX: 'auto', paddingBottom: 4 }}>
-          {plansArray.map(p => {
-            const isSelected = p.id === activePlan.id;
-            const statusLabel = p.status === 'approved' ? `Version ${p.version || 1}` : 'Draft';
-            return (
-              <button
-                key={p.id}
-                id={`plan-tab-${p.id}`}
-                onClick={() => {
-                  setActivePlanId(p.id);
-                  setActiveDayIndex(0);
-                }}
-                className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-outline'}`}
-                style={{ borderRadius: 'var(--radius-full)' }}
-              >
-                {p.name} · {statusLabel}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* Plan selector: toggle bar listing every saved plan, newest first */}
+      <PlanSelect plans={plansArray} activePlanId={activePlanId} onSelect={handleSelectPlan} />
 
       {/* Plan Header Card */}
       <div
@@ -489,24 +507,14 @@ export default function PlansPage() {
           >
             {currentDay.meals?.map((meal, mIdx) => {
               const MealIcon = MEAL_ICONS[meal.type] || Sunrise;
-              const isExpanded = !!expandedInstructions[`meal-${currentDay.day}-${mIdx}`];
+              const steps = splitSteps(meal.instructions);
               return (
                 <div
                   key={mIdx}
-                  className="card"
-                  style={{
-                    padding: 'var(--space-5)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    justifyContent: 'space-between',
-                    position: 'relative',
-                    transition: 'all var(--transition-fast)',
-                    minHeight: isExpanded ? 'auto' : '290px',
-                    height: isExpanded ? 'auto' : '290px',
-                  }}
+                  className="card meal-card"
                   id={`meal-card-${currentDay.day}-${mIdx}`}
                 >
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                  <div className="meal-card-body">
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-3)' }}>
                       <span
                         style={{
@@ -537,7 +545,7 @@ export default function PlansPage() {
 
                     {meal.ingredients && (
                       <p style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginBottom: 'var(--space-3)', lineHeight: 1.5, minHeight: '38px' }}>
-                        <strong>Ingredients:</strong>{' '}
+                        <strong className="meal-ingredients-label">Ingredients:</strong>{' '}
                         {Array.isArray(meal.ingredients)
                           ? meal.ingredients
                             .map(formatIngredient)
@@ -547,61 +555,20 @@ export default function PlansPage() {
                       </p>
                     )}
 
-                    {/* Cooking Instructions Dropdown */}
-                    <div style={{ marginBottom: 'var(--space-3)', marginTop: isExpanded ? '0' : 'auto' }}>
-                      <button
-                        type="button"
-                        onClick={() => toggleInstructions(`meal-${currentDay.day}-${mIdx}`)}
-                        className="btn btn-ghost btn-xs"
-                        style={{
-                          padding: '3px 8px',
-                          fontSize: '11px',
-                          color: 'var(--green-700)',
-                          background: 'var(--green-50)',
-                          border: '1px solid var(--green-200)',
-                          borderRadius: 'var(--radius-md)',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 5,
-                          cursor: 'pointer',
-                          fontWeight: 600,
-                        }}
-                        id={`cooking-instructions-btn-${currentDay.day}-${mIdx}`}
-                      >
-                        <ChefHat size={12} />
-                        Cooking Instructions
-                        {expandedInstructions[`meal-${currentDay.day}-${mIdx}`] ? (
-                          <ChevronUp size={12} />
-                        ) : (
-                          <ChevronDown size={12} />
-                        )}
-                      </button>
-
-                      {expandedInstructions[`meal-${currentDay.day}-${mIdx}`] && (
-                        <div
-                          style={{
-                            marginTop: 'var(--space-2)',
-                            padding: 'var(--space-3)',
-                            background: 'var(--gray-50)',
-                            border: '1px solid var(--gray-200)',
-                            borderRadius: 'var(--radius-md)',
-                            fontSize: '11.5px',
-                            color: 'var(--gray-700)',
-                            lineHeight: 1.6,
-                            whiteSpace: 'pre-line',
-                          }}
-                        >
-                          <div style={{ fontWeight: 600, color: 'var(--green-800)', marginBottom: '3px', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <span>👨‍🍳</span> Step-by-Step Guidance:
-                          </div>
-                          {meal.instructions || "1. Prep all fresh ingredients and seasonings.\n2. Heat a pan over medium heat with a splash of oil.\n3. Cook ingredients until thoroughly tender and fragrant.\n4. Season to taste and serve warm."}
-                        </div>
-                      )}
+                    {/* Cooking instructions, always visible, one numbered step per line */}
+                    <div className="meal-instructions">
+                      <strong className="meal-instructions-label">Cooking Instructions</strong>
+                      <ol className="meal-steps-list">
+                        {steps.map((step, sIdx) => (
+                          <li key={sIdx} className="meal-step">
+                            <span className="meal-step-num">{sIdx + 1}.</span>
+                            <span className="meal-step-text">{step}</span>
+                          </li>
+                        ))}
+                      </ol>
                     </div>
-                  </div>
 
-                  <div>
-                    <div className="macro-row" style={{ marginTop: 'var(--space-2)' }}>
+                    <div className="macro-row" style={{ marginTop: 'var(--space-3)' }}>
                       <span className="macro-pill macro-protein">P: {meal.protein}g</span>
                       <span className="macro-pill macro-carbs">C: {meal.carbs}g</span>
                       <span className="macro-pill macro-fat">F: {meal.fat}g</span>

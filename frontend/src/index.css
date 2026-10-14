@@ -364,6 +364,10 @@ ol {
 .app-layout {
   display: flex;
   height: 100vh;
+  /* dvh tracks the real viewport, so full-height screens are not pushed
+     under the collapsing mobile browser toolbar. The vh line above is the
+     fallback for browsers without dvh support. */
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -371,6 +375,10 @@ ol {
 .sidebar {
   width: var(--sidebar-width);
   height: 100vh;
+  /* dvh tracks the real viewport, so full-height screens are not pushed
+     under the collapsing mobile browser toolbar. The vh line above is the
+     fallback for browsers without dvh support. */
+  height: 100dvh;
   background: #fff;
   border-right: 1px solid var(--color-border);
   display: flex;
@@ -2109,6 +2117,10 @@ ol {
 /* Landing */
 .landing-page {
   min-height: 100vh;
+  /* dvh tracks the real viewport, so full-height screens are not pushed
+     under the collapsing mobile browser toolbar. The vh line above is the
+     fallback for browsers without dvh support. */
+  min-height: 100dvh;
 }
 
 .landing-nav {
@@ -2506,6 +2518,10 @@ ol {
 /* Auth */
 .auth-page {
   min-height: 100vh;
+  /* dvh tracks the real viewport, so full-height screens are not pushed
+     under the collapsing mobile browser toolbar. The vh line above is the
+     fallback for browsers without dvh support. */
+  min-height: 100dvh;
   background: #fff;
   display: flex;
   align-items: center;
@@ -2689,6 +2705,10 @@ ol {
    empty dashboard before redirecting to sign-in. */
 .app-auth-loading {
   height: 100vh;
+  /* dvh tracks the real viewport, so full-height screens are not pushed
+     under the collapsing mobile browser toolbar. The vh line above is the
+     fallback for browsers without dvh support. */
+  height: 100dvh;
   background: var(--gray-50);
   display: flex;
   flex-direction: column;
@@ -2702,7 +2722,12 @@ ol {
 /* Onboarding */
 .onboarding-page {
   height: 100vh;
+  /* dvh tracks the real viewport, so full-height screens are not pushed
+     under the collapsing mobile browser toolbar. The vh line above is the
+     fallback for browsers without dvh support. */
+  height: 100dvh;
   max-height: 100vh;
+  max-height: 100dvh;
   background: var(--gray-50);
   display: flex;
   flex-direction: column;
@@ -3310,7 +3335,7 @@ ol {
   .landing-section {
     padding: 40px var(--space-5);
   }
-}
+
 
 @media (max-width: 480px) {
   .page-content {

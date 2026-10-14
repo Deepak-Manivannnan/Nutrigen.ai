@@ -176,6 +176,21 @@ export async function sendChatMessage(userId, message, taskId, history = [], pen
 }
 
 /**
+ * Fetch a finished chat response by task_id (delivery inbox, used after a
+ * reload to collect a reply whose original request was aborted).
+ * Returns the ChatResponse object, or null when not (yet) available.
+ */
+export async function fetchChatResult(taskId) {
+  const res = await fetch(`${API_BASE}/chat/result/${encodeURIComponent(taskId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || `Result request failed with ${res.status}`);
+  }
+  return await res.json();
+}
+
+/**
  * Connect to SSE timeline stream for task
  */
 export function connectStreaming(taskId, onEvent, onError) {

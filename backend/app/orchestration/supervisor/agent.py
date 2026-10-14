@@ -241,26 +241,33 @@ class SupervisorAgent:
         self,
         user_name: str,
         user_message: str,
-        history: Optional[List[Dict[str, Any]]] = None
+        history: Optional[List[Dict[str, Any]]] = None,
+        profile_snapshot: Optional[str] = None
     ) -> str:
         """
         Conversational greeting & chat response.
         The LLM reads the user's message and decides: warm reply, or — when the
         user asks for meal-planning help without giving parameters — ask 1-2
         clarifying questions. No keyword lists: understanding lives in the model.
+        A compact profile snapshot grounds the model so profile-mentioning
+        questions can never be answered with invented "missing details".
         """
         name = (user_name or "").strip() or "there"
         history_ctx = self._format_history_context(history)
         is_first_interaction = not history or len(history) <= 1
+        profile_ctx = f"Saved profile facts (ground truth about THIS user):\n{profile_snapshot}\n\n" if profile_snapshot else ""
 
         prompt = (
             f"You are NutriGen, a helpful personal meal planning companion talking with {name}.\n"
             f"{history_ctx}"
+            f"{profile_ctx}"
             f"The user says: \"{user_message}\"\n\n"
             f"Understand what the user means and respond naturally, warmly, and concisely (1 to 3 sentences maximum).\n"
             f"RULES:\n"
             f"- If this is the FIRST greeting, you may say 'Hi {name}! How can I help you today?'.\n"
             f"- In an ONGOING conversation, do NOT repeat greetings ('Hey {name}'/'Hi {name}'). Reply directly in flow.\n"
+            f"- If the user asks about their profile, account details, or preferences, answer ONLY from the saved profile facts above — "
+            f"never claim details are missing when they are listed there.\n"
             f"- If the user is asking for help creating a meal plan but has NOT given specifics (no days, calories, or diet), "
             f"acknowledge warmly by name and ask the 1-2 most useful clarifying questions "
             f"(how many days? target calories per day? diet type veg/non-veg/vegan?). End with an open question.\n"
@@ -450,14 +457,39 @@ class SupervisorAgent:
         if intent == "profile_info":
             return await self.generate_profile_info_response(state, user_message, history=history)
         elif intent == "chat":
-            return await self.generate_chat_response(user_name, user_message, history=history)
+            return await self.generate_chat_response(
+                user_name, user_message, history=history,
+                profile_snapshot=self._compact_profile_snapshot(state.user_profile)
+            )
         elif intent == "app_info":
             return await self.generate_app_info_response(user_name, user_message, history=history)
         elif intent == "out_of_scope":
             return await self.generate_out_of_scope_response(user_message, history=history)
         elif intent == "explain":
             return await self.generate_explanation(state, user_message, history=history)
-        return await self.generate_chat_response(user_name, user_message, history=history)
+        return await self.generate_chat_response(
+            user_name, user_message, history=history,
+            profile_snapshot=self._compact_profile_snapshot(state.user_profile)
+        )
+
+    @staticmethod
+    def _compact_profile_snapshot(user_profile: Optional[Dict[str, Any]]) -> Optional[str]:
+        """One-line ground truth about the user for chat grounding (~40 tokens)."""
+        if not user_profile:
+            return None
+        diet = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(
+            str(user_profile.get("diet_type", "")).lower(), str(user_profile.get("diet_type", "veg")))
+        bits = [f"diet preference: {diet}"]
+        try:
+            if user_profile.get("suggested_target_calories") is not None:
+                bits.append(f"suggested ~{int(user_profile['suggested_target_calories']):,} kcal/day")
+        except (TypeError, ValueError):
+            pass
+        if user_profile.get("goal"):
+            bits.append(f"goal: {user_profile['goal']}")
+        if user_profile.get("allergies"):
+            bits.append(f"allergies: {', '.join(user_profile['allergies'])}")
+        return "- " + "; ".join(bits) if bits else None
 
     async def generate_conversational_response(
         self,

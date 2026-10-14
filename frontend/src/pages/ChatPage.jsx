@@ -1,13 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Send, Trash2, ChevronRight } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp, loadInflight, saveInflight } from '../context/AppContext';
 import {
   sendChatMessage,
+  fetchChatResult,
   fetchPlanById,
   adaptBackendPlan,
   adaptBackendGrocery,
 } from '../utils/api';
+
+// Delivery machinery: how the client behaves when the page reloads mid-run.
+// INFLIGHT_TIMEOUT_MS — max wait for an orphaned run before an honest
+// timeout note replaces "typing…". BOOT_GRACE_MS — extra wait granted on
+// boot so a slow-but-alive run can still deliver after a late reload.
+const INFLIGHT_TIMEOUT_MS = 10 * 60 * 1000;
+const BOOT_GRACE_MS = 3 * 60 * 1000;
+const RECONCILE_POLL_MS = 5000;
 
 const SUGGESTIONS = [
   'Plan 7 days — 1,800 calories',
@@ -45,20 +54,7 @@ function renderInlineMarkdown(str, onPlanLink) {
     }
   };
 
-  // Inline plan links [Label](plan://<id>) render as tappable buttons that
-  // jump straight to the plan in the Plans tab.
-  const linkRegex = /\[([^\]]+)\]\(plan:\/\/(\d+)\)/g;
-  let lastIndex = 0;
-  let match;
-  let foundLink = false;
-
-  while ((match = linkRegex.exec(str)) !== null) {
-    foundLink = true;
-    if (match.index > lastIndex) {
-      pushFormatted(str.slice(lastIndex, match.index));
-    }
-    const label = match[1];
-    const planId = Number(match[2]);
+  const pushPlanButton = (label, planId) => {
     parts.push(
       <button
         key={key++}
@@ -70,13 +66,51 @@ function renderInlineMarkdown(str, onPlanLink) {
         {label}
       </button>
     );
+  };
+
+  // Split bare plan://<id> occurrences (not part of a [Label](...) link).
+  const pushTextSegment = (text) => {
+    if (!text) return;
+    const bareRegex = /plan:\/\/(\d+)/g;
+    let li = 0;
+    let bm;
+    let foundBare = false;
+    while ((bm = bareRegex.exec(text)) !== null) {
+      foundBare = true;
+      if (bm.index > li) pushFormatted(text.slice(li, bm.index));
+      pushPlanButton('Open plan', Number(bm[1]));
+      li = bareRegex.lastIndex;
+    }
+    if (!foundBare) {
+      pushFormatted(text);
+    } else if (li < text.length) {
+      pushFormatted(text.slice(li));
+    }
+  };
+
+  // Inline plan links [Label](plan://<id>) render as tappable buttons that
+  // jump straight to the plan in the Plans tab. The input is first normalized
+  // so near-miss variants the model sometimes emits ("[Label] (plan://id)"
+  // with a stray space) still resolve instead of showing raw markdown.
+  const normalized = str.replace(/\]\s*\(plan:\/\//g, '](plan://');
+  const linkRegex = /\[([^\]]+)\]\(plan:\/\/(\d+)\)/g;
+  let lastIndex = 0;
+  let match;
+  let foundLink = false;
+
+  while ((match = linkRegex.exec(normalized)) !== null) {
+    foundLink = true;
+    if (match.index > lastIndex) {
+      pushTextSegment(normalized.slice(lastIndex, match.index));
+    }
+    pushPlanButton(match[1], Number(match[2]));
     lastIndex = linkRegex.lastIndex;
   }
 
   if (!foundLink) {
-    pushFormatted(str);
-  } else if (lastIndex < str.length) {
-    pushFormatted(str.slice(lastIndex));
+    pushTextSegment(normalized);
+  } else if (lastIndex < normalized.length) {
+    pushTextSegment(normalized.slice(lastIndex));
   }
 
   return parts.length > 0 ? parts : str;
@@ -125,7 +159,12 @@ function MessageBubble({ msg, onAction, onQuickOption, onPlanLink, userInitial =
     <div className={`message-row${isUser ? ' user' : ''}`}>
       <div className={`message-avatar ${isUser ? 'user' : 'ai'}`}>{initials}</div>
       <div style={{ maxWidth: '85%' }}>
-        <div className={`message-bubble ${isUser ? 'user' : 'ai'}`}>
+        <div
+          className={`message-bubble ${isUser ? 'user' : 'ai'}`}
+          style={!isUser && msg.tone === 'error'
+            ? { background: '#fef2f2', borderColor: '#fca5a5', color: '#991b1b' }
+            : undefined}
+        >
           <FormattedMessage text={msg.content} onPlanLink={onPlanLink} />
           {msg.actionType && (
             <button className="chat-action-btn" onClick={() => onAction && onAction(msg)} id={`chat-action-${msg.id}`}>
@@ -243,6 +282,9 @@ export default function ChatPage() {
     setChatStatus('Nutrigen is typing...');
 
     const taskId = `t-${Math.random().toString(16).slice(2, 10)}`;
+    // In-flight marker: if the page reloads now, boot reconciliation can
+    // still collect this run's reply from the delivery inbox.
+    saveInflight(profile?.id || 1, { taskId, sentAt: Date.now() });
 
     try {
       const historyPayload = messages.slice(-6).map(m => ({
@@ -250,66 +292,126 @@ export default function ChatPage() {
         content: m.content,
       }));
       const chatRes = await sendChatMessage(profile?.id || 1, text, taskId, historyPayload, pendingWorkflow);
-
-      setChatStatus(null);
-      setIsAgentRunning(false);
-
-      // Keep the pending conflict context so a follow-up answer resolves it
-      // (context-level, survives navigating to the Plans tab and back).
-      setPendingWorkflow(chatRes.pending_workflow || null);
-
-      // Handle deletion response sync
-      if (chatRes.deleted_plan_id) {
-        deletePlan(chatRes.deleted_plan_id);
-        refreshPlans();
-      } else if (chatRes.intent === 'delete_plan') {
-        refreshPlans();
-      } else if (chatRes.intent === 'edit_meal') {
-        // Refresh plans to sync grocery list clearing and draft status after edit
-        refreshPlans();
-      }
-
-      let createdPlan = null;
-      // Only plan creation / updates / approvals touch the Plans badge.
-      // Renames refresh silently (no badge); grocery badges only on approval.
-      if (chatRes.plan_id && (chatRes.intent === 'new_plan' || chatRes.intent === 'edit_meal' || chatRes.intent === 'approve_plan')) {
-        try {
-          const rawPlan = await fetchPlanById(chatRes.plan_id);
-          if (rawPlan) {
-            createdPlan = adaptBackendPlan(rawPlan, profile);
-            addPlan(createdPlan);
-            if (createdPlan.grocery_list && createdPlan.status === 'approved') {
-              const grocery = adaptBackendGrocery(createdPlan.grocery_list, createdPlan.days);
-              if (grocery) setGrocery(grocery);
-            }
-          }
-        } catch (planErr) {
-          console.warn('Could not fetch generated plan:', planErr);
-        }
-      } else if (chatRes.plan_id) {
-        // E.g. renames: sync the new name without lighting any badge.
-        refreshPlans();
-      }
-
-      addMessage({
-        role: 'assistant',
-        content: chatRes.response || 'How can I assist you further?',
-        actionType: createdPlan ? 'view_plan' : null,
-        actionLabel: createdPlan ? 'View Meal Plan →' : null,
-        actionTarget: createdPlan ? 'plans' : null,
-        planId: createdPlan?.id,
-        quickOptions: chatRes.quick_options || null,
-      });
+      await applyChatResponse(chatRes);
     } catch (err) {
       console.warn('Backend chat failed:', err);
       setIsAgentRunning(false);
       setChatStatus(null);
+      saveInflight(profile?.id || 1, null);
       addMessage({
         role: 'assistant',
         content: "I'm having trouble connecting to the server. Please try again in a moment.",
       });
     }
   }
+
+  // Applies a finished ChatResponse envelope through the single shared path —
+  // used by live replies AND inbox deliveries alike, so a delivered reply
+  // behaves indistinguishably (pending sync, plan sync, badges, buttons).
+  // Always terminal: clears the inflight marker and the running flag.
+  async function applyChatResponse(chatRes) {
+    setChatStatus(null);
+    setIsAgentRunning(false);
+    saveInflight(profile?.id || 1, null);
+
+    // Keep the pending conflict context so a follow-up answer resolves it
+    // (context-level, survives navigating to the Plans tab and back).
+    // A null pending from a finished run overwrites any stale saved one —
+    // this is what neutralizes resurrected confirmations after reload.
+    setPendingWorkflow(chatRes.pending_workflow || null);
+
+    // Handle deletion response sync
+    if (chatRes.deleted_plan_id) {
+      deletePlan(chatRes.deleted_plan_id);
+      refreshPlans();
+    } else if (chatRes.intent === 'delete_plan') {
+      refreshPlans();
+    } else if (chatRes.intent === 'edit_meal') {
+      // Refresh plans to sync grocery list clearing and draft status after edit
+      refreshPlans();
+    }
+
+    let createdPlan = null;
+    // Only plan creation / updates / approvals touch the Plans badge.
+    // Renames refresh silently (no badge); grocery badges only on approval.
+    if (chatRes.plan_id && (chatRes.intent === 'new_plan' || chatRes.intent === 'edit_meal' || chatRes.intent === 'approve_plan')) {
+      try {
+        const rawPlan = await fetchPlanById(chatRes.plan_id);
+        if (rawPlan) {
+          createdPlan = adaptBackendPlan(rawPlan, profile);
+          addPlan(createdPlan);
+          if (createdPlan.grocery_list && createdPlan.status === 'approved') {
+            const grocery = adaptBackendGrocery(createdPlan.grocery_list, createdPlan.days);
+            if (grocery) setGrocery(grocery);
+          }
+        }
+      } catch (planErr) {
+        console.warn('Could not fetch generated plan:', planErr);
+      }
+    } else if (chatRes.plan_id) {
+      // E.g. renames: sync the new name without lighting any badge.
+      refreshPlans();
+    }
+
+    addMessage({
+      role: 'assistant',
+      content: chatRes.response || 'How can I assist you further?',
+      actionType: createdPlan ? 'view_plan' : null,
+      actionLabel: createdPlan ? 'View Meal Plan →' : null,
+      actionTarget: createdPlan ? 'plans' : null,
+      planId: createdPlan?.id,
+      quickOptions: chatRes.quick_options || null,
+    });
+  }
+  const applyRef = useRef(null);
+  applyRef.current = applyChatResponse;
+
+  // Boot reconciliation: a leftover inflight marker means the page reloaded
+  // mid-run. Show typing, poll the delivery inbox, and either render the
+  // delivered reply (indistinguishable from live) or time out honestly.
+  // Send stays disabled throughout (isAgentRunning), mirroring generation.
+  // NOTE: deliberately no "run once" ref guard here. React StrictMode
+  // double-invokes mount effects in dev (run → cleanup → run); the cleanup
+  // below already cancels the first poll, so the second run safely takes over.
+  // A ref guard would kill the surviving run too (refs persist across the
+  // double-invoke) and silently disable all boot reconciliation.
+  useEffect(() => {
+    const uid = profile?.id;
+    if (!uid) return;
+    const inf = loadInflight(uid);
+    if (!inf?.taskId) return;
+    let cancelled = false;
+    setIsAgentRunning(true);
+    setChatStatus('Nutrigen is typing...');
+    const deadline = Math.max((inf.sentAt || Date.now()) + INFLIGHT_TIMEOUT_MS, Date.now() + BOOT_GRACE_MS);
+    const poll = async () => {
+      if (cancelled) return;
+      if (Date.now() > deadline) {
+        setIsAgentRunning(false);
+        setChatStatus(null);
+        saveInflight(uid, null);
+        addMessage({
+          role: 'assistant',
+          content: "That run didn't finish before you reloaded, so I don't have its reply. Your request is still above — feel free to send it again.",
+          tone: 'error',
+        });
+        return;
+      }
+      try {
+        const delivered = await fetchChatResult(inf.taskId);
+        if (cancelled) return;
+        if (delivered) {
+          await applyRef.current(delivered);
+          return;
+        }
+      } catch (pollErr) {
+        console.warn('Inbox poll failed, will retry:', pollErr);
+      }
+      if (!cancelled) setTimeout(poll, RECONCILE_POLL_MS);
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [profile?.id]);
 
   function handleKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {

@@ -397,6 +397,21 @@ def make_delete_pending(
     )
 
 
+def _strip_enumeration(text: str) -> str:
+    """Remove enumerated/bulleted lines from an LLM-composed list intro.
+
+    The deterministic tappable plan list is appended separately, so any
+    numbering the model adds itself would render the plans twice (once plain,
+    once clickable). This keeps exactly one list. Structural line-pattern
+    filtering of our own composed message — not input understanding.
+    """
+    if not text:
+        return text
+    kept = [ln for ln in text.split("\n")
+            if not re.match(r"^\s*(\d+[.)]|[-•*])\s+", ln)]
+    return "\n".join(kept).strip()
+
+
 async def _decline_and_represent_pending(supervisor, state, pending, user_message: str,
                                          history, user_name: str) -> None:
     """Out-of-scope question asked mid-workflow: decline WITHOUT answering it,
@@ -801,6 +816,9 @@ async def run_meal_planner(    user_id: int,
             history=history,
             user_name=user_profile.get("name"),
         )
+        # The intro must stay an intro: strip any enumeration the model added
+        # itself so plans render exactly once (as the tappable list below).
+        list_text = _strip_enumeration(list_text)
         if all_plans:
             # Deterministic numbered list with inline tappable plan links that
             # jump straight to the plan in the Plans tab.
@@ -863,6 +881,9 @@ async def run_meal_planner(    user_id: int,
                         history=history,
                         user_name=user_profile.get("name"),
                     )
+                    # Strip any enumeration the model added itself; the
+                    # deterministic tappable list below is the only list.
+                    answer = _strip_enumeration(answer)
                     if all_plans:
                         answer = f"{answer}\n" + "\n".join(
                             f"{i}. [{getattr(p, 'name', None) or f'Plan #{p.id}'}](plan://{p.id})"
@@ -952,6 +973,9 @@ async def run_meal_planner(    user_id: int,
                         history=history,
                         user_name=user_profile.get("name"),
                     )
+                    # Strip any enumeration the model added itself; the
+                    # deterministic tappable list below is the only list.
+                    answer = _strip_enumeration(answer)
                     if all_plans:
                         answer = f"{answer}\n" + "\n".join(
                             f"{i}. [{getattr(p, 'name', None) or f'Plan #{p.id}'}](plan://{p.id})"

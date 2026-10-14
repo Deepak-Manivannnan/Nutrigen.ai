@@ -7,9 +7,49 @@ from backend.app.db.repositories.plans import PlanRepository
 from backend.app.api.deps import get_user_repository, get_plan_repository
 from backend.app.orchestration.runner import run_meal_planner
 from backend.app.observability.logging import get_logger
+import time
 
 logger = get_logger("api.chat")
 router = APIRouter(prefix="/chat", tags=["Chat & Agents"])
+
+# Delivery inbox: finished chat responses keyed by task_id so a client that
+# reloaded mid-run can still collect its reply on boot ("anything finished
+# while I was gone?"). In-memory with TTL; a server restart wipes it, in
+# which case in-flight runs are dead anyway and the client falls back to its
+# timeout message. Only successful responses are stored — failures surface
+# through the normal error path, never the inbox.
+_RESPONSE_INBOX: dict = {}
+_INBOX_TTL_S = 30 * 60
+_INBOX_MAX_ENTRIES = 200
+
+
+def _inbox_store(task_id: str, response: ChatResponse) -> None:
+    now = time.time()
+    for key in [k for k, v in _RESPONSE_INBOX.items()
+                if now - v.get("completed_at", 0) > _INBOX_TTL_S]:
+        _RESPONSE_INBOX.pop(key, None)
+    if len(_RESPONSE_INBOX) >= _INBOX_MAX_ENTRIES:
+        oldest = min(_RESPONSE_INBOX, key=lambda k: _RESPONSE_INBOX[k].get("completed_at", 0))
+        _RESPONSE_INBOX.pop(oldest, None)
+    _RESPONSE_INBOX[task_id] = {"completed_at": now, "response": response.model_dump()}
+
+
+@router.get("/result/{task_id}")
+async def chat_result(task_id: str):
+    """Fetch a finished chat response by task_id (delivery after reload).
+
+    200 with the full ChatResponse envelope when the run completed,
+    404 when unknown, still running, or expired.
+    """
+    entry = _RESPONSE_INBOX.get(task_id)
+    if not entry or (time.time() - entry.get("completed_at", 0) > _INBOX_TTL_S):
+        if entry:
+            _RESPONSE_INBOX.pop(task_id, None)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No completed response for this task yet"
+        )
+    return entry["response"]
 
 @router.post("", response_model=ChatResponse)
 async def chat_interaction(
@@ -71,7 +111,7 @@ async def chat_interaction(
         final_state.intent in ("new_plan", "edit_meal", "grocery_only")
         and final_state.status not in ("conversational", "out_of_scope")
     )
-    return ChatResponse(
+    chat_response = ChatResponse(
         response=resp_text,
         task_id=final_state.task_id,
         status=final_state.status,
@@ -82,4 +122,9 @@ async def chat_interaction(
         quick_options=final_state.quick_options,
         pending_workflow=final_state.pending_workflow.model_dump() if final_state.pending_workflow else None
     )
+    # File the finished response in the delivery inbox under the client's
+    # task_id so a reloaded client can still collect it.
+    if payload.task_id:
+        _inbox_store(payload.task_id, chat_response)
+    return chat_response
 

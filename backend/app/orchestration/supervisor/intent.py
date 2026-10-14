@@ -192,7 +192,8 @@ NutriGen's domain is STRICTLY LIMITED to:
 2. **app_info**: Questions specifically asking what NUTRIGEN's meal-planning features do or how to use them ("What can you do?", "How does this app work?", "What features do you have for meal planning?")
    - NEVER select for questions about AI, AI agents, technology, or how the AI itself works — those are out_of_scope.
 
-3. **profile_info**: User asks about their saved profile data ("Tell me about my profile", "What information does my profile hold?", "Show my profile details")
+3. **profile_info**: User asks about their saved profile data ("Tell me about my profile", "What information does my profile hold?", "Show my profile details", "Look into my profile and tell me what's in it", "What do you know about me/my preferences?", "Show my details")
+   - ANY question asking to see, read out, or summarize the user's saved profile/account details is profile_info — NEVER chat, even when phrased vaguely ("look into my profile and tell me").
 
 4. **out_of_scope**: ANY question/request OUTSIDE food/nutrition/meal-planning domain (iPhones, Apple CEO, pharmaceuticals, politics, coding, math, general trivia, capital cities, nature topics like palm trees)
    - Questions about AI, AI agents, artificial intelligence, machine learning, how the AI works, or technology in general are ALWAYS out_of_scope — NEVER app_info or explain, even when phrased as "explain what is an AI agent".
@@ -451,7 +452,7 @@ CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers die
 | "I want to update my plan" | edit_meal + is_update_request=true | General, no specifics |
 | "Why 1800 kcal?" | explain | Nutrition question |
 | "What is an apple?" / "Protein in chicken?" | explain | Food question — always answer, never out_of_scope |
-| "What's my profile?" | profile_info | Profile inquiry |
+| "What's my profile?" / "Look into my profile and tell me" | profile_info | Profile inquiry, even when vague |
 | "What can you do?" | app_info | Capability question |
 | "What is AI?" / "Explain what is an AI agent?" | out_of_scope | AI/tech — never app_info or explain |
 | "Continue the plan" / "Resume" | resume_request | Resume pending workflow |

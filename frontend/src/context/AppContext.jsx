@@ -67,6 +67,65 @@ function savePendingWorkflow(userId, wf) {
   }
 }
 
+// Chat messages live in browser localStorage (per user, device-local — never
+// the database) so the conversation survives a page refresh. They are wiped
+// only by Clear chat or sign-out, mirroring the pending workflow.
+const MAX_STORED_MESSAGES = 100;
+
+function loadMessages(userId) {
+  if (!userId) return [];
+  try {
+    const raw = localStorage.getItem(`nutrigen_messages_${userId}`);
+    const arr = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(arr)) return [];
+    return arr.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
+  } catch {
+    return [];
+  }
+}
+
+function saveMessages(userId, msgs) {
+  if (!userId) return;
+  try {
+    const tail = (msgs || []).slice(-MAX_STORED_MESSAGES);
+    if (tail.length) {
+      localStorage.setItem(`nutrigen_messages_${userId}`, JSON.stringify(tail));
+    } else {
+      localStorage.removeItem(`nutrigen_messages_${userId}`);
+    }
+  } catch {
+    // ignore storage failures (quota) — chat keeps working in memory
+  }
+}
+
+// In-flight delivery marker: { taskId, sentAt }. Written when a message is
+// sent, cleared when its reply (or a terminal failure) is applied. On boot,
+// a leftover marker means "reload happened mid-run" → reconcile via inbox.
+export function loadInflight(userId) {
+  if (!userId) return null;
+  try {
+    const raw = localStorage.getItem(`nutrigen_inflight_${userId}`);
+    const inf = raw ? JSON.parse(raw) : null;
+    if (inf && typeof inf.taskId === 'string' && inf.taskId) return inf;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveInflight(userId, inflight) {
+  if (!userId) return;
+  try {
+    if (inflight && inflight.taskId) {
+      localStorage.setItem(`nutrigen_inflight_${userId}`, JSON.stringify(inflight));
+    } else {
+      localStorage.removeItem(`nutrigen_inflight_${userId}`);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
 export function AppProvider({ children }) {
   // Auth & profile state
   const stored = getStoredUser();
@@ -85,7 +144,9 @@ export function AppProvider({ children }) {
   const [groceryList, setGroceryList] = useState(null);
 
   // Chat state
-  const [messages, setMessages] = useState([]);
+  // Messages persist per user in localStorage so a page refresh keeps the
+  // conversation (deleted only via Clear chat or sign-out).
+  const [messages, setMessages] = useState(() => loadMessages(stored ? stored.id : null));
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const [workflowState, setWorkflowState] = useState(null);
   const [chatStatus, setChatStatus] = useState(null);
@@ -103,6 +164,13 @@ export function AppProvider({ children }) {
     setPendingWorkflowState(wf);
     if (uid) savePendingWorkflow(uid, wf);
   }, [user?.id, profile?.id]);
+
+  // Persist chat messages on every change (per user). Transient run state
+  // (typing indicator, running flag) is intentionally NOT persisted.
+  useEffect(() => {
+    const uid = user?.id || profile?.id;
+    if (uid) saveMessages(uid, messages);
+  }, [messages, user?.id, profile?.id]);
 
   // Toasts
   const [toasts, setToasts] = useState([]);
@@ -179,6 +247,7 @@ export function AppProvider({ children }) {
       setUser(userData);
       localStorage.setItem('nutrigen_auth_user', JSON.stringify(userData));
       setPendingWorkflowState(loadPendingWorkflow(userData.id));
+      setMessages(loadMessages(userData.id));
       await loadUserData(userData.id, userData.profile);
     } catch (err) {
       console.warn('Sign in sync error:', err);
@@ -187,6 +256,8 @@ export function AppProvider({ children }) {
 
   const signOut = useCallback(() => {
     if (user?.id) savePendingWorkflow(user.id, null);
+    if (user?.id) saveMessages(user.id, null);
+    if (user?.id) saveInflight(user.id, null);
     localStorage.removeItem('nutrigen_auth_user');
     setUser(null);
     setProfile(null);
@@ -352,6 +423,8 @@ export function AppProvider({ children }) {
     setIsAgentRunning(false);
     setPendingWorkflowState(null);
     if (user?.id || profile?.id) savePendingWorkflow(user?.id || profile?.id, null);
+    if (user?.id || profile?.id) saveMessages(user?.id || profile?.id, null);
+    if (user?.id || profile?.id) saveInflight(user?.id || profile?.id, null);
   }, [user?.id, profile?.id]);
 
   const value = {

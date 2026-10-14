@@ -3645,6 +3645,235 @@ ol {
     text-align: right;
   }
 
+  /* ------------------------------------------------------------------
+     Plan picker row - PHONE ONLY
+
+     The dropdown and "New Plan in Chat" live in different DOM parents
+     (.page-header and a sibling), so on a phone they stacked on two rows.
+     `display: contents` dissolves .page-header so its two children become
+     direct grid items and both land on the same row.
+
+     Scoped to the has-a-plan state: the empty state renders a different
+     structure (no button wrapper) and keeps its own layout untouched.
+     ------------------------------------------------------------------ */
+  .page-content-with-plan {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: var(--space-3);
+    row-gap: var(--space-4);
+  }
+
+  /* !important is required: .page-header carries an inline
+     style={{ display: 'flex' }}, and inline styles beat the cascade. */
+  .page-content-with-plan > .page-header {
+    display: contents !important;
+  }
+
+  /* Title spans both columns. It supplies the spacing .page-header's own
+     margin used to give, since display:contents drops that box. */
+  .page-content-with-plan > .page-header > :first-child {
+    grid-column: 1 / -1;
+    margin-bottom: var(--space-1);
+  }
+
+  .page-content-with-plan > .page-header > :last-child {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  /* Stretch to fill its column so the two controls read as equal halves. */
+  .page-content-with-plan > .page-header > :last-child > .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .page-content-with-plan > .plan-select {
+    grid-column: 1;
+    grid-row: 2;
+    margin-bottom: 0;
+    display: block;
+  }
+
+  /* Everything below the picker keeps full width. */
+  .page-content-with-plan > :not(.page-header):not(.plan-select) {
+    grid-column: 1 / -1;
+  }
+
+  /* "Select plan" is a desktop affordance; on a phone the dropdown is
+     self-explanatory and the label was eating a third of the row. */
+  .page-content-with-plan .plan-select-label {
+    display: none;
+  }
+
+  .page-content-with-plan .plan-select-field {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* ------------------------------------------------------------------
+     Plan header card - PHONE ONLY
+
+     The markup is shared with desktop, so these class names are inert
+     above 768px: they exist purely as styling hooks and carry no
+     declarations outside this block. Desktop keeps its original
+     layout exactly.
+
+     Nearly everything here has to beat an inline style, hence the
+     !important - the card is built from style={{...}} rather than CSS
+     classes, and inline styles win over the cascade.
+     ------------------------------------------------------------------ */
+  .plan-hero {
+    padding: var(--space-4) !important;
+    gap: var(--space-3);
+  }
+
+  /* Name sized so the status badge sits immediately beside it rather than
+     wrapping: "7-Day Non-veg Plan" (190px) + gap + badge (80px) = 282px,
+     inside the 320px the card has at 390px. */
+  .plan-hero-name {
+    font-size: var(--text-xl) !important;
+    letter-spacing: -0.02em;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  /* Renaming is not offered on a phone - the user asks in chat instead.
+     Without this, a long name wraps the badge onto its own line. */
+  .plan-hero-rename {
+    display: none !important;
+  }
+
+  /* Badge flush right. The row was left-weighted with ~39px of dead space
+     after it at 390px; space-between closes that and gives the card a
+     proper left/right axis. With only two children (the rename button is
+     hidden here) there is nothing else for it to disturb. */
+  .plan-hero-title-row {
+    flex-wrap: wrap !important;
+    row-gap: var(--space-2) !important;
+    justify-content: space-between !important;
+  }
+
+  /* Facts read as one sentence on a phone, not three stacked rows. */
+  .plan-hero-meta-row {
+    margin-top: var(--space-2) !important;
+    gap: var(--space-3) !important;
+    order: 3;
+    width: 100%;
+    letter-spacing: 0.01em;
+  }
+
+  /* The specs line measured 273px of a 320px content width, leaving ~47px
+     of dead space. 11px -> 12px brings it to ~298px, which still fits on
+     one line; 13px (--text-sm) would be ~323px and wrap. A touch of
+     tracking spaces the middot separators without pushing it over. */
+  .plan-hero-meta {
+    order: 4;
+    width: 100%;
+    margin: 0 !important;
+    font-size: 12px !important;
+    letter-spacing: 0.01em;
+    line-height: 1.5;
+  }
+
+  /* Verification is supporting evidence, so it is deliberately quieter
+     than the name and the primary action. */
+  .plan-verify {
+    order: 5;
+    width: 100%;
+    margin-top: var(--space-3) !important;
+  }
+
+  .plan-verify .badge {
+    font-size: 10px;
+    font-weight: 500;
+    padding: 3px 9px;
+    opacity: 0.9;
+  }
+
+  /* Actions drop to their own full-width row under the facts. */
+  .plan-hero-row {
+    gap: var(--space-3) !important;
+  }
+
+  .plan-hero-main {
+    width: 100%;
+  }
+
+  /* Copy Summary stays desktop-only. On a phone the same text is available
+     through the chat export, and three controls do not fit one row. */
+  .plan-hero-actions {
+    order: 6;
+    width: 100%;
+    justify-content: flex-start;
+    gap: var(--space-2);
+    flex-wrap: nowrap;
+  }
+
+  .plan-hero-actions .btn-outline {
+    display: none !important;
+  }
+
+  /* Grocery (or Approve) and Delete share one row: the primary takes the
+     remaining width, the destructive icon keeps its own and sits right. */
+  .plan-hero-actions .btn-primary {
+    order: 1;
+    flex: 1;
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .plan-hero-danger {
+    order: 2;
+    flex-shrink: 0;
+    color: var(--color-error) !important;
+  }
+
+  .plan-hero-rename {
+    padding: 6px !important;
+    color: var(--gray-400) !important;
+  }
+
+  /* ------------------------------------------------------------------
+     Day overview bar - PHONE ONLY
+     ------------------------------------------------------------------ */
+  .day-overview {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: var(--space-3) !important;
+    padding: var(--space-4) !important;
+  }
+
+  /* Label above the macros instead of competing for one line. */
+  .day-overview-label {
+    display: flex !important;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+
+  .day-overview-title {
+    font-size: var(--text-lg) !important;
+    letter-spacing: -0.01em;
+  }
+
+  .day-overview-sub {
+    margin-left: 0 !important;
+  }
+
+  /* Even 2x2 grid: four pills on one row at 390px would force a 7px
+     type size to fit. */
+  .day-overview-macros {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .day-overview-macros .macro-pill {
+    font-size: var(--text-xs);
+    padding: 6px 10px;
+    white-space: nowrap;
+    text-align: center;
+  }
 }
 
 /* Composer-side Clear chat. Hidden by default so desktop keeps the labelled

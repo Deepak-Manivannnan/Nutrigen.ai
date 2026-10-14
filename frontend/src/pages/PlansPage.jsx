@@ -261,7 +261,7 @@ export default function PlansPage() {
   const dayFat = currentDay?.meals?.reduce((s, m) => s + (m.fat || 0), 0) || 45;
 
   return (
-    <div className="page-content" id="plans-page">
+    <div className="page-content page-content-with-plan" id="plans-page">
       {/* Top Header */}
       <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
         <div>
@@ -285,16 +285,16 @@ export default function PlansPage() {
 
       {/* Plan Header Card */}
       <div
-        className="card"
+        className="card plan-hero"
         style={{
           marginBottom: 'var(--space-6)',
           background: 'linear-gradient(180deg, #ffffff 0%, var(--gray-50) 100%)',
           borderColor: activePlan.status === 'approved' ? 'var(--green-200)' : 'var(--color-border)',
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-2)' }}>
+        <div className="plan-hero-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
+          <div className="plan-hero-main">
+            <div className="plan-hero-title-row" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-2)' }}>
               {isEditingName ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                   <input
@@ -333,11 +333,11 @@ export default function PlansPage() {
                 </div>
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--gray-900)', margin: 0 }}>
+                  <h2 className="plan-hero-name" style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--gray-900)', margin: 0 }}>
                     {activePlan.name}
                   </h2>
                   <button
-                    className="btn btn-ghost btn-sm"
+                    className="btn btn-ghost btn-sm plan-hero-rename"
                     onClick={() => {
                       setEditedName(activePlan.name);
                       setIsEditingName(true);
@@ -367,7 +367,7 @@ export default function PlansPage() {
             {(() => {
               const ts = getPlanTimestamps(activePlan);
               return (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-4)', marginTop: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--gray-500)' }}>
+                <div className="plan-hero-meta-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-4)', marginTop: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--gray-500)' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <Calendar size={10} /> {ts.createdLabel} {ts.createdValue}
                   </span>
@@ -380,12 +380,12 @@ export default function PlansPage() {
               );
             })()}
 
-            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-600)', margin: 'var(--space-2) 0 0 0' }}>
+            <p className="plan-hero-meta" style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-600)', margin: 'var(--space-2) 0 0 0' }}>
               {activePlan.days} days plan · {activePlan.dietType} · Target {activePlan.calorieTarget?.toLocaleString()} kcal/day
             </p>
 
             {/* Agent Verification Badges */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
+            <div className="plan-verify" style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
               <span className="badge badge-green" title="Verified against Mifflin-St Jeor target">
                 <BarChart2 size={12} /> Nutrition Agent: Verified (±50 kcal)
               </span>
@@ -396,7 +396,7 @@ export default function PlansPage() {
           </div>
 
           {/* Action Buttons */}
-          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div className="plan-hero-actions" style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', alignItems: 'center' }}>
             <button
               className="btn btn-outline btn-sm"
               onClick={() => handleExportPlan(activePlan)}
@@ -437,7 +437,7 @@ export default function PlansPage() {
             )}
 
             <button
-              className="btn btn-ghost btn-sm"
+              className="btn btn-ghost btn-sm plan-hero-danger"
               onClick={() => setShowDeleteModal(true)}
               title="Delete this meal plan"
               id="delete-plan-btn"
@@ -478,6 +478,7 @@ export default function PlansPage() {
         <div>
           {/* Day Macro Overview Bar */}
           <div
+            className="day-overview"
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -491,16 +492,16 @@ export default function PlansPage() {
               marginBottom: 'var(--space-5)',
             }}
           >
-            <div>
-              <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--gray-900)' }}>
+            <div className="day-overview-label">
+              <span className="day-overview-title" style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--gray-900)' }}>
                 Day {currentDay.day} Overview
               </span>
-              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginLeft: 'var(--space-2)' }}>
+              <span className="day-overview-sub" style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginLeft: 'var(--space-2)' }}>
                 {currentDay.meals?.length || 3} balanced meals
               </span>
             </div>
 
-            <div className="macro-row">
+            <div className="macro-row day-overview-macros">
               <span className="macro-pill macro-cal">🔥 {dayCalories} Total kcal</span>
               <span className="macro-pill macro-protein">🥩 Protein: {dayProtein}g</span>
               <span className="macro-pill macro-carbs">🌾 Carbs: {dayCarbs}g</span>

@@ -121,7 +121,7 @@ export default function GroceryPage() {
   }
 
   return (
-    <div className="page-content" id="grocery-page">
+    <div className="page-content page-content-with-grocery" id="grocery-page">
       {/* Header */}
       <div
         className="page-header"

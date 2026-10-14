@@ -3454,6 +3454,197 @@ ol {
   .chat-header {
     display: none;
   }
+
+  /* ------------------------------------------------------------------
+     Grocery page - PHONE ONLY
+
+     Same approach as the Plans picker: the dropdown and the CSV button sit
+     in different DOM parents, so `display: contents` dissolves
+     .page-header to bring them onto one row. Scoped to
+     page-content-with-grocery so the empty state, which renders different
+     markup, is unaffected.
+     ------------------------------------------------------------------ */
+  .page-content-with-grocery {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: var(--space-3);
+    row-gap: var(--space-4);
+  }
+
+  .page-content-with-grocery > .page-header {
+    display: contents !important; /* inline style sets display:flex */
+  }
+
+  .page-content-with-grocery > .page-header > :first-child {
+    grid-column: 1 / -1;
+    margin-bottom: var(--space-1);
+  }
+
+  .page-content-with-grocery > .page-header > :last-child {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .page-content-with-grocery > .plan-select {
+    grid-column: 1;
+    grid-row: 2;
+    margin-bottom: 0;
+    display: block;
+  }
+
+  .page-content-with-grocery > :not(.page-header):not(.plan-select) {
+    grid-column: 1 / -1;
+  }
+
+  /* "Copy List" is desktop-only: on a phone the CSV download covers the
+     same need, and three controls cannot share one row. */
+  #copy-grocery-btn {
+    display: none !important;
+  }
+
+  /* With Copy gone the download is the only action - give it the column. */
+  .page-content-with-grocery > .page-header > :last-child > .btn-primary {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .page-content-with-grocery .plan-select-label {
+    display: none;
+  }
+
+  .page-content-with-grocery .plan-select-field {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* Summary cards measured 150px tall for ~73px of content - padding plus a
+     wrapped two-line label left the middle looking empty. Tighten the box and
+     step the value down so all three sit on one line. */
+  .page-content-with-grocery .grocery-summary {
+    gap: var(--space-2) !important;
+    margin-bottom: var(--space-4) !important;
+  }
+
+  .page-content-with-grocery .grocery-stat-card {
+    padding: var(--space-3) var(--space-2) !important;
+    border-radius: var(--radius-md) !important;
+  }
+
+  .page-content-with-grocery .grocery-stat-value {
+    font-size: var(--text-xl) !important;
+    line-height: 1.2;
+  }
+
+  .page-content-with-grocery .grocery-stat-label {
+    font-size: 10px !important;
+    line-height: 1.3;
+    margin-top: 2px !important;
+  }
+
+  /* ------------------------------------------------------------------
+     Ingredient table - PHONE ONLY: horizontal scroll
+
+     The four columns were collapsing into a jumbled stack at 390px, and
+     the header row was hidden entirely, so nothing read as a table. This
+     keeps the real table - header intact, one ingredient per row - and
+     lets it scroll sideways instead of crushing.
+
+     The header is restored by specificity (.page-content-with-grocery ...)
+     rather than !important, so it beats the 480px `display: none` rule.
+     min-width is what forces the overflow; without it the grid would just
+     squeeze and we would be back to the original problem.
+     ------------------------------------------------------------------ */
+  .page-content-with-grocery .grocery-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    /* Critical. .grocery-table-wrapper carries `overflow: hidden` in the
+       base styles, and a grid/flex item with a non-visible overflow resolves
+       its automatic minimum size to 0 - so the row collapsed from 2096px to
+       417px and every ingredient below the fold became unreachable.
+       align-self:start pins it back to its content height. */
+    align-self: start;
+  }
+
+  .page-content-with-grocery .grocery-table-head,
+  .page-content-with-grocery .grocery-item-row {
+    /* minmax(0, 1fr), not 1fr. A bare `1fr` is minmax(auto, 1fr), and the
+       auto floor cannot shrink below the item's min-content width - so a long
+       nowrap ingredient name ("lean ground beef patty", 22 chars) widened the
+       first track from 128px to 159px and dragged Quantity, Est. Cost and
+       Source 30px to the right. Measured across 39 rows: six distinct column
+       widths, qty landing anywhere from x=169 to x=199.
+       minmax(0, …) pins the track to the leftover space so every row lines up. */
+    grid-template-columns: minmax(0, 1fr) 96px 104px 92px;
+    /* Widened from 430px to give Est. Cost and Source room to breathe. The
+       Source badge measured 66px inside a 66px track - flush on both edges -
+       and Est. Cost had 62px of text in an 84px cell. The extra width is
+       taken from the scroll range, not the Item column, which actually gains
+       room (128px -> 192px) and stops more names ellipsizing. */
+    min-width: 520px;
+    column-gap: var(--space-3);
+  }
+
+  /* Restore the header. The 480px rule sets `display: none`; specificity
+     alone cannot bring it back because that rule wins on the property
+     this rule never mentions. */
+  .page-content-with-grocery .grocery-table-head {
+    display: grid;
+  }
+
+  /* Category bands carry their own inline display:flex; give them the same
+     floor width so their subtotal stays aligned with the columns. */
+  .page-content-with-grocery .grocery-category-header {
+    min-width: 520px;
+  }
+
+  .page-content-with-grocery .grocery-item-row {
+    /* Header and rows must share padding to the pixel. They did not: the row
+       was set to --space-4 while the header kept the base --space-5, shifting
+       every column by 4px. Same rule sets both. */
+    padding: 12px var(--space-4);
+  }
+
+  .page-content-with-grocery .grocery-table-head {
+    display: grid;
+    padding: 10px var(--space-4);
+  }
+
+  /* Quantity, Est. Cost and Source are right-aligned in the rows (below), so
+     their headers must be too - otherwise a label sits at the left edge of a
+     right-aligned column. Item stays left because its content starts with a
+     bullet. */
+  .page-content-with-grocery .grocery-table-head > span:nth-child(2),
+  .page-content-with-grocery .grocery-table-head > span:nth-child(3),
+  .page-content-with-grocery .grocery-table-head > span:nth-child(4) {
+    text-align: right;
+  }
+
+  .page-content-with-grocery .grocery-item-row > :nth-child(4) {
+    text-align: right;
+  }
+
+  .page-content-with-grocery .grocery-item-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    /* Grid and flex items default to min-width:auto, which would keep the
+       nowrap name at its full width and defeat the ellipsis. */
+    min-width: 0;
+  }
+
+  /* The bullet + name wrapper is the first grid item; it needs the same
+     release or it re-imposes the content floor the track just lost. */
+  .page-content-with-grocery .grocery-item-row > :first-child {
+    min-width: 0;
+  }
+
+  .page-content-with-grocery .grocery-item-qty,
+  .page-content-with-grocery .grocery-item-price {
+    white-space: nowrap;
+    text-align: right;
+  }
+
 }
 
 /* Composer-side Clear chat. Hidden by default so desktop keeps the labelled

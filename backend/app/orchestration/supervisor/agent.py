@@ -255,7 +255,11 @@ class SupervisorAgent:
         name = (user_name or "").strip() or "there"
         history_ctx = self._format_history_context(history)
         is_first_interaction = not history or len(history) <= 1
-        profile_ctx = f"Saved profile facts (ground truth about THIS user):\n{profile_snapshot}\n\n" if profile_snapshot else ""
+        profile_ctx = (
+            f"Saved profile facts (REFERENCE ONLY about THIS user — use them only when the user's "
+            f"message actually calls for them):\n{profile_snapshot}\n\n"
+            if profile_snapshot else ""
+        )
 
         prompt = (
             f"You are NutriGen, a helpful personal meal planning companion talking with {name}.\n"
@@ -268,6 +272,10 @@ class SupervisorAgent:
             f"- In an ONGOING conversation, do NOT repeat greetings ('Hey {name}'/'Hi {name}'). Reply directly in flow.\n"
             f"- If the user asks about their profile, account details, or preferences, answer ONLY from the saved profile facts above — "
             f"never claim details are missing when they are listed there.\n"
+            f"- NEVER volunteer profile details. Do NOT mention their calorie target, diet type, goal or allergies "
+            f"UNLESS the user is either (a) asking about those things, or (b) creating, changing or updating a meal plan. "
+            f"For a greeting, a 'how are you', a thank-you, or any small talk, reply like a normal person would: be friendly "
+            f"and ask how you can help — with NO numbers, targets, or diet details quoted.\n"
             f"- If the user is asking for help creating a meal plan but has NOT given specifics (no days, calories, or diet), "
             f"acknowledge warmly by name and ask the 1-2 most useful clarifying questions "
             f"(how many days? target calories per day? diet type veg/non-veg/vegan?). End with an open question.\n"
@@ -527,8 +535,15 @@ class SupervisorAgent:
             # rather than a canned reply that pretends understanding.
             raise
         except Exception as e:
-            logger.warning(f"[SupervisorAgent] LLM conversational generation failed: {e}. Falling back to a warm generic reply.")
+            # This fallback backs EVERY composed reply (plan created, diet-conflict
+            # question, approval, rename, delete confirm...). It must never claim
+            # something was done: on a failure nothing happened, and a false
+            # success message leaves the user believing a plan exists.
+            logger.warning(
+                f"[SupervisorAgent] LLM conversational generation failed: {type(e).__name__}: {e}. "
+                "Falling back to an honest retry prompt."
+            )
             return (
-                "Got it — I've taken care of that for you. "
-                "You can review everything in your Plans tab, and just let me know if you'd like any changes!"
+                "Sorry — I hit a snag just now and wasn't able to finish that. "
+                "Could you try again in a moment?"
             )

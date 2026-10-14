@@ -3383,6 +3383,111 @@ ol {
     background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff 85%);
   }
 
+  /* ------------------------------------------------------------------
+     Chat
+     No mobile rules existed for the chat screen at all - it is the app's
+     most-used surface and was laid out entirely at desktop widths.
+     ------------------------------------------------------------------ */
+  .chat-input-area {
+    /* A fixed 72px tall bar cannot clear the iPhone home indicator, so the
+       send button ends up underneath it. Let the bar grow instead and pad
+       for the safe area. env() resolves to 0 on desktop and Android. */
+    height: auto;
+    min-height: 72px;
+    max-height: none;
+    padding: 8px var(--space-4);
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+
+  /* Clear chat moves from the header into the composer on phones, so the
+     header has nothing left to show once its title and rule go. Rather than
+     leave an empty strip, remove it entirely - which also reclaims the 64px
+     it was occupying. Desktop is untouched. */
+  .chat-header {
+    display: none;
+  }
+
+  .chat-title {
+    display: none;
+  }
+
+  .message-bubble {
+    max-width: 86%; /* leave a readable margin instead of full-bleed */
+  }
+
+  .chat-suggestion-btn {
+    min-height: 40px; /* tap target */
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* Step the welcome heading down one size on phones. Still wraps to the
+     same two lines - just less dominant above the suggestions. */
+  .chat-welcome h2 {
+    font-size: var(--text-xl); /* 20px, was --text-2xl = 24px */
+  }
+
+  /* Keep the two suggestions side by side. Measured at 390px: the welcome
+     block's content box is 278px (342px minus 32px padding each side), while
+     the two buttons need 276px + an 8px gap = 284px. Six pixels short, which
+     is all it took to tip flex-wrap onto a second line.
+
+     Tightening the welcome padding and the button padding reclaims that
+     comfortably. Forcing `nowrap` would have overflowed instead. */
+  .chat-welcome {
+    padding: var(--space-5);
+  }
+
+  .chat-suggestions {
+    width: 100%;
+  }
+
+  .chat-suggestion-btn {
+    padding: 8px 12px; /* was 14px */
+  }
+
+  /* Clear chat moves from the header into the composer on phones. With the
+     title, the rule and now the Clear chat control all gone, the header has
+     nothing left to show, so it is removed entirely rather than left as an
+     empty strip. Desktop is untouched: it keeps the labelled header button
+     and never renders this one (see .chat-clear-btn below). */
+  .chat-header {
+    display: none;
+  }
+}
+
+/* Composer-side Clear chat. Hidden by default so desktop keeps the labelled
+   button in the header; only the mobile media query reveals it. */
+.chat-clear-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px; /* comfortable tap target */
+  height: 44px;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--gray-600);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.chat-clear-btn:hover:not(:disabled) {
+  background: var(--gray-50);
+  color: var(--gray-900);
+}
+
+.chat-clear-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .chat-clear-btn {
+    display: inline-flex;
+  }
+}
 
 @media (max-width: 480px) {
   .page-content {

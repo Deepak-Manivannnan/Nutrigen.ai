@@ -23,6 +23,37 @@ export default function AppLayout() {
     if (path === '/app/grocery') setGroceryBadge(false);
   }, [location.pathname, setActivePath, setChatBadge, setPlansBadge, setGroceryBadge]);
 
+  // Navigating anywhere closes the drawer. Done during render rather than in
+  // an effect: React's documented "adjust state when a prop changes" pattern,
+  // which avoids a wasted extra render pass on every navigation.
+  const [lastPath, setLastPath] = useState(location.pathname);
+  if (lastPath !== location.pathname) {
+    setLastPath(location.pathname);
+    if (mobileOpen) setMobileOpen(false);
+  }
+
+  // The drawer is only reachable below 768px (the hamburger is display:none
+  // above it), so this only ever engages on a small screen. Without it the
+  // page keeps scrolling behind the open menu.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [mobileOpen]);
+
+  // Escape closes the drawer — expected of any overlay menu.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setMobileOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileOpen]);
+
   return (
     <div className="app-layout">
       <Sidebar mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />

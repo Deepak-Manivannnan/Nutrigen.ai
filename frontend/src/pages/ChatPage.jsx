@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Send, Trash2, ChevronRight } from 'lucide-react';
+import { Send, Trash2, ChevronRight, MessageSquarePlus } from 'lucide-react';
 import { useApp, loadInflight, saveInflight } from '../context/AppContext';
 import {
   sendChatMessage,
@@ -481,6 +481,22 @@ export default function ChatPage() {
         {/* Input */}
         <div className="chat-input-area">
           <div className="chat-input-wrapper">
+            {/* Mobile-only. On a phone the header's Clear chat text button is
+                a wide, easy-to-mis-tap target sitting in a dead strip, so the
+                action moves down here beside the composer. Hidden on desktop,
+                where the labelled button in the header is clearer. */}
+            {hasContent && (
+              <button
+                className="chat-clear-btn"
+                onClick={() => setShowClear(true)}
+                disabled={isAgentRunning}
+                aria-label="Clear chat"
+                title="Clear chat"
+                id="chat-clear-btn"
+              >
+                <MessageSquarePlus size={18} />
+              </button>
+            )}
             <div className="chat-input-pill">
               <textarea
                 ref={inputRef}

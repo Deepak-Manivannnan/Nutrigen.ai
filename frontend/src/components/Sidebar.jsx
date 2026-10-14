@@ -107,7 +107,7 @@ function NavGroceryIcon({ active }) {
 export default function Sidebar({ mobileOpen, onMobileClose }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { profile, user, signOut, plansBadge, groceryBadge, setPlansBadge, setGroceryBadge } = useApp();
+  const { profile, user, signOut, chatBadge, plansBadge, groceryBadge } = useApp();
   const [showProfileDrop, setShowProfileDrop] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const footerRef = useRef(null);
@@ -131,9 +131,9 @@ export default function Sidebar({ mobileOpen, onMobileClose }) {
 
   const navItems = [
     { path: '/app/home', label: 'Home', icon: NavHomeIcon },
-    { path: '/app/chat', label: 'Chat', icon: NavChatIcon },
-    { path: '/app/plans', label: 'Plans', icon: NavPlansIcon, badge: plansBadge, onClear: () => setPlansBadge(false) },
-    { path: '/app/grocery', label: 'Grocery', icon: NavGroceryIcon, badge: groceryBadge, onClear: () => setGroceryBadge(false) },
+    { path: '/app/chat', label: 'Chat', icon: NavChatIcon, badge: chatBadge },
+    { path: '/app/plans', label: 'Plans', icon: NavPlansIcon, badge: plansBadge },
+    { path: '/app/grocery', label: 'Grocery', icon: NavGroceryIcon, badge: groceryBadge },
   ];
 
   const displayName = profile?.name || user?.name || 'User';
@@ -145,10 +145,9 @@ export default function Sidebar({ mobileOpen, onMobileClose }) {
     .slice(0, 2)
     .toUpperCase() || 'U';
 
-  function handleNav(path, item) {
+  function handleNav(path) {
     setShowProfileDrop(false);
     navigate(path);
-    if (item?.onClear) item.onClear();
     if (onMobileClose) onMobileClose();
   }
 
@@ -196,12 +195,13 @@ export default function Sidebar({ mobileOpen, onMobileClose }) {
               <button
                 key={item.path}
                 className={`sidebar-nav-item${isActive ? ' active' : ''}`}
-                onClick={() => handleNav(item.path, item)}
+                onClick={() => handleNav(item.path)}
                 id={`nav-${item.label.toLowerCase()}`}
               >
                 <Icon active={isActive} />
                 {item.label}
-                {item.badge && (
+                {/* Never dot the tab you are already looking at. */}
+                {item.badge && !isActive && (
                   <span className="nav-badge-dot" title="New content available" />
                 )}
               </button>

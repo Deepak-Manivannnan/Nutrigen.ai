@@ -133,6 +133,7 @@ export default function PlansPage() {
     activePlanId,
     setActivePlanId,
     approvePlan,
+    approvingPlanId,
     deletePlan,
     renamePlan,
     addPlan,
@@ -419,9 +420,19 @@ export default function PlansPage() {
                 className="btn btn-primary btn-sm"
                 onClick={() => handleApprove(activePlan.id)}
                 id="approve-plan-btn"
+                disabled={approvingPlanId !== null}
+                aria-busy={approvingPlanId !== null}
                 style={{ background: 'var(--green-600)' }}
               >
-                <CheckCircle2 size={14} /> Approve
+                {approvingPlanId === activePlan.id ? (
+                  <>
+                    <span className="status-spinner" style={{ borderTopColor: '#fff' }} /> Approving…
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={14} /> Approve
+                  </>
+                )}
               </button>
             )}
 

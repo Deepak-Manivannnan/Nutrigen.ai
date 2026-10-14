@@ -50,11 +50,7 @@ export default function LandingPage() {
             <button className="landing-nav-link" onClick={() => scrollTo('how-it-works')}>How it works</button>
             <button className="landing-nav-link" onClick={() => scrollTo('pricing')}>Pricing</button>
           </div>
-          <div className="landing-nav-actions">
-            <button className="btn btn-outline btn-sm" onClick={() => navigate('/signin')} id="nav-signin">Sign in</button>
-            <button className="btn btn-primary btn-sm" onClick={() => navigate('/signup')} id="nav-get-started">Get started →</button>
           </div>
-        </div>
       </nav>
 
       {/* Hero */}

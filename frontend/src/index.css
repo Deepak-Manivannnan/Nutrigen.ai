@@ -1343,7 +1343,7 @@ ol {
   margin: 2px 0;
 }
 
-/* KPI value marquee ΓÇö animates only when the text is wider than its slot */
+/* KPI value marquee — animates only when the text is wider than its slot */
 .marquee {
   overflow: hidden;
   min-width: 0;
@@ -1810,7 +1810,7 @@ ol {
   white-space: nowrap;
 }
 
-/* Meal Card ΓÇö fixed frame; body scrolls so steps never resize the card */
+/* Meal Card — fixed frame; body scrolls so steps never resize the card */
 .meal-card {
   display: flex;
   flex-direction: column;
@@ -1830,13 +1830,13 @@ ol {
   min-height: 0;
 }
 
-/* Only the step list may absorb the shortfall ΓÇö the title, ingredients and
+/* Only the step list may absorb the shortfall — the title, ingredients and
    macros keep their natural height instead of being squashed. */
 .meal-card-body > * {
   flex-shrink: 0;
 }
 
-/* Instructions render inline with the title/ingredients ΓÇö no nested box.
+/* Instructions render inline with the title/ingredients — no nested box.
    The heading stays put; only the step list scrolls, and only when the recipe
    has more steps than the fixed card can show. The scrollbar stays hidden
    until the pointer is over the steps. */
@@ -2137,9 +2137,13 @@ ol {
   cursor: pointer;
 }
 
+/* Centred in the space beside the brand. With the nav actions removed the row
+   has two children, so `space-between` would otherwise pin these to the right. */
 .landing-nav-links {
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex: 1;
   gap: var(--space-6);
 }
 
@@ -2165,7 +2169,7 @@ ol {
 }
 
 .landing-hero {
-  padding: 28px var(--space-8) 36px;
+  padding: 52px var(--space-8) 36px;
   max-width: 1180px;
   margin: 0 auto;
 }

@@ -3336,6 +3336,53 @@ ol {
     padding: 40px var(--space-5);
   }
 
+  /* ------------------------------------------------------------------
+     Plan day tabs
+     Seven tabs need ~665px. A 390px phone has ~358px of usable width, so
+     the default `overflow: hidden` clipped Days 5-7 off-screen with no
+     way to reach them - a 7-day plan was partially unusable.
+
+     Now the strip scrolls sideways instead. `flex-shrink: 0` is the
+     critical part: without it flex items shrink to fit and the strip
+     never overflows, so it would not scroll at all.
+     ------------------------------------------------------------------ */
+  .plan-tabs-wrap {
+    position: relative;
+  }
+
+  .plan-detail-tabs {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none; /* Firefox */
+  }
+
+  .plan-detail-tabs::-webkit-scrollbar {
+    display: none; /* Chrome / Safari */
+  }
+
+  .plan-tab {
+    flex-shrink: 0;
+    scroll-snap-align: start;
+    padding: 12px var(--space-4);
+    min-height: 44px; /* minimum comfortable tap target */
+  }
+
+  /* Right-edge fade so it reads as "there is more this way" - a scrolling
+     strip is not self-evident on touch. Pointer-events off so the tabs
+     underneath stay tappable. */
+  .plan-tabs-wrap::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 1px; /* sits on the tab strip's own border */
+    width: 36px;
+    pointer-events: none;
+    background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff 85%);
+  }
+
 
 @media (max-width: 480px) {
   .page-content {

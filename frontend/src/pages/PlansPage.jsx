@@ -450,7 +450,8 @@ export default function PlansPage() {
       </div>
 
       {/* Day Selector Navigation Tabs */}
-      <div className="plan-detail-tabs" id="plan-day-tabs">
+      <div className="plan-tabs-wrap">
+        <div className="plan-detail-tabs" id="plan-day-tabs">
         {daysList.map((dayItem, idx) => {
           const isActive = idx === activeDayIndex;
           return (
@@ -469,6 +470,7 @@ export default function PlansPage() {
             </button>
           );
         })}
+        </div>
       </div>
 
       {/* Active Day Content */}

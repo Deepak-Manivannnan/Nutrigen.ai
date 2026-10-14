@@ -9,6 +9,7 @@ import {
   adaptBackendPlan,
   adaptBackendGrocery,
 } from '../utils/api';
+import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 // Delivery machinery: how the client behaves when the page reloads mid-run.
 // INFLIGHT_TIMEOUT_MS — max wait for an orphaned run before an honest
@@ -19,10 +20,8 @@ const BOOT_GRACE_MS = 3 * 60 * 1000;
 const RECONCILE_POLL_MS = 5000;
 
 const SUGGESTIONS = [
-  'Plan 7 days — 1,800 calories',
-  'Plan tomorrow (vegetarian)',
-  'Create a grocery list',
-  'Plan 5 days for weight loss',
+  'Tell me about yourself',
+  'Create a meal plan',
 ];
 
 function renderInlineMarkdown(str, onPlanLink) {
@@ -145,9 +144,8 @@ function FormattedMessage({ text, onPlanLink }) {
   );
 }
 
-function MessageBubble({ msg, onAction, onQuickOption, onPlanLink, userInitial = 'U', showQuickOptions = true }) {
+function MessageBubble({ msg, onAction, onPlanLink, userInitial = 'U' }) {
   const isUser = msg.role === 'user';
-  const initials = isUser ? userInitial : '🌿';
 
   function formatTime(ts) {
     if (!ts) return '';
@@ -157,7 +155,9 @@ function MessageBubble({ msg, onAction, onQuickOption, onPlanLink, userInitial =
 
   return (
     <div className={`message-row${isUser ? ' user' : ''}`}>
-      <div className={`message-avatar ${isUser ? 'user' : 'ai'}`}>{initials}</div>
+      <div className={`message-avatar ${isUser ? 'user' : 'ai'}`}>
+        {isUser ? userInitial : <img src={nutrigenLogo} alt="" className="message-avatar-logo" />}
+      </div>
       <div style={{ maxWidth: '85%' }}>
         <div
           className={`message-bubble ${isUser ? 'user' : 'ai'}`}
@@ -172,31 +172,6 @@ function MessageBubble({ msg, onAction, onQuickOption, onPlanLink, userInitial =
             </button>
           )}
         </div>
-        {showQuickOptions && msg.quickOptions && msg.quickOptions.length > 0 && (
-          <div className="chat-quick-options" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
-            {msg.quickOptions.map((opt, i) => (
-              <button
-                key={i}
-                type="button"
-                className="btn btn-outline btn-xs"
-                style={{
-                  borderRadius: '16px',
-                  fontSize: '11.5px',
-                  padding: '4px 12px',
-                  fontWeight: 500,
-                  background: opt.value.toLowerCase().includes('delete') ? '#fef2f2' : '#ffffff',
-                  borderColor: opt.value.toLowerCase().includes('delete') ? '#fca5a5' : 'var(--green-400)',
-                  color: opt.value.toLowerCase().includes('delete') ? '#dc2626' : 'var(--green-700)',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease',
-                }}
-                onClick={() => onQuickOption && onQuickOption(opt.value)}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        )}
         <div className="message-time">{formatTime(msg.timestamp)}</div>
       </div>
     </div>
@@ -360,8 +335,7 @@ export default function ChatPage() {
       actionLabel: createdPlan ? 'View Meal Plan →' : null,
       actionTarget: createdPlan ? 'plans' : null,
       planId: createdPlan?.id,
-      quickOptions: chatRes.quick_options || null,
-    });
+      });
   }
   const applyRef = useRef(null);
   applyRef.current = applyChatResponse;
@@ -420,9 +394,9 @@ export default function ChatPage() {
     }
   }
 
-  function handleSuggestion(text) {
-    setInput(text);
-    inputRef.current?.focus();
+  function handleSuggestionSubmit(e) {
+    e.preventDefault();
+    handleSend(e.nativeEvent.submitter ? e.nativeEvent.submitter.value : '');
   }
 
   function handleAction(msg) {
@@ -432,14 +406,7 @@ export default function ChatPage() {
 
   // Quick options either send a chat message, or — for plan shortcuts emitted by
   // the "list my plans" response — navigate straight to that plan in the Plans tab.
-  function handleQuickOption(value) {
-    const m = typeof value === 'string' && value.match(/^__open_plan__:(\d+)$/);
-    if (m) {
-      navigate('/app/plans', { state: { focusPlanId: Number(m[1]) } });
-      return;
-    }
-    handleSend(value);
-  }
+  
 
   // Inline plan links inside message text ([Name](plan://id)) jump straight to
   // that plan in the Plans tab.
@@ -447,15 +414,6 @@ export default function ChatPage() {
     if (!planId) return;
     navigate('/app/plans', { state: { focusPlanId: Number(planId) } });
   }
-
-  // Quick options belong to the latest assistant message only: once the user
-  // replies or picks an option, older options disappear.
-  const lastAssistantId = (() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'assistant') return messages[i].id;
-    }
-    return null;
-  })();
 
   const hasContent = messages.length > 0 || chatStatus;
 
@@ -485,17 +443,17 @@ export default function ChatPage() {
           {!hasContent ? (
             <div className="chat-welcome">
               <div className="chat-welcome-icon">
-                <span style={{ fontSize: 26 }}>🌿</span>
+                <img src={nutrigenLogo} alt="" className="chat-welcome-logo" />
               </div>
               <h2>How can I help with<br />your meal plan today?</h2>
               <p>Tell me what you'd like to plan.</p>
-              <div className="chat-suggestions">
+              <form className="chat-suggestions" onSubmit={handleSuggestionSubmit}>
                 {SUGGESTIONS.map((s, i) => (
-                  <button key={i} className="chat-suggestion-btn" onClick={() => handleSuggestion(s)} id={`suggestion-${i}`}>
+                  <button key={i} type="submit" value={s} className="chat-suggestion-btn" id={`suggestion-${i}`}>
                     {s}
                   </button>
                 ))}
-              </div>
+              </form>
             </div>
           ) : (
             <>
@@ -504,9 +462,7 @@ export default function ChatPage() {
                   key={msg.id}
                   msg={msg}
                   onAction={handleAction}
-                  onQuickOption={handleQuickOption}
                   onPlanLink={handlePlanLink}
-                  showQuickOptions={msg.role === 'assistant' && msg.id === lastAssistantId}
                   userInitial={userInitial}
                 />
               ))}

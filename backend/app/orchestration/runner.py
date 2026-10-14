@@ -218,6 +218,8 @@ def _describe_pending_work(pending) -> str:
         return "updating your meal plan"
     if pending.workflow_type == "delete_plan":
         return "deleting one of your meal plans"
+    if pending.workflow_type == "approve_plan":
+        return "approving one of your meal plans"
     return "creating your new meal plan"
 
 
@@ -397,6 +399,32 @@ def make_delete_pending(
     )
 
 
+def make_approve_pending(
+    response_text: str,
+    quick_options: list,
+    user_message: str,
+    user_profile: Dict[str, Any],
+    target_plan_name: Optional[str] = None,
+) -> PendingWorkflow:
+    """Persist a pending approval so a follow-up 'yes' — or a plan name — resolves
+    against the plan we actually asked about, instead of whichever sorts first."""
+    return PendingWorkflow(
+        workflow_type="approve_plan",
+        pending_conflicts=["approve_confirmation"],
+        asked_questions=[response_text],
+        extracted_info={
+            "target_plan_name": target_plan_name,
+            "reprompt_text": response_text,
+            "reprompt_quick_options": list(quick_options or []),
+        },
+        next_expected_decision="approve_confirmation",
+        original_intent="approve_plan",
+        original_message=user_message,
+        user_profile_at_start=dict(user_profile or {}),
+        created_at=datetime.utcnow().isoformat(),
+    )
+
+
 def _strip_enumeration(text: str) -> str:
     """Remove enumerated/bulleted lines from an LLM-composed list intro.
 
@@ -420,7 +448,7 @@ async def _decline_and_represent_pending(supervisor, state, pending, user_messag
     decline = await supervisor.generate_out_of_scope_decline(
         user_message, history=history, user_name=user_name,
     )
-    if pending.workflow_type == "edit_meal":
+    if pending.workflow_type in ("edit_meal", "approve_plan"):
         text = pending.extracted_info.get("reprompt_text") or "Where would you like to continue with your update?"
         quick = pending.extracted_info.get("reprompt_quick_options")
     elif pending.workflow_type == "delete_plan":
@@ -743,6 +771,12 @@ async def run_meal_planner(    user_id: int,
                 "In friendly, polite English, reassure them that their meal plan is kept safely and nothing was deleted, "
                 "and ask if they would like to make any other adjustments instead."
             )
+        elif pending_workflow.original_intent == "approve_plan":
+            context_prompt = (
+                "The user cancelled the approval of their meal plan. "
+                "In friendly, polite English, confirm that nothing was approved, their plan is still sitting in "
+                "draft and unchanged, and ask what they'd like to do instead."
+            )
         elif pending_workflow.original_intent == "edit_meal":
             context_prompt = (
                 "The user cancelled the in-progress update of their meal plan. "
@@ -859,8 +893,40 @@ async def run_meal_planner(    user_id: int,
         # catches it first whenever a pending workflow exists.)
         if pinfo.get("awaiting_specs_choice"):
             if intent_data.intent in ("rename_plan", "delete_plan", "approve_plan", "edit_meal"):
-                # Explicit pivot to another action: drop the specs offer, do it.
-                state.pending_workflow = None
+                # Explicit pivot to another action while a plan is still being
+                # agreed: ASK whether to finish this plan first or switch over.
+                # Dropping the offer silently loses the half-built workflow and
+                # leaves the user unsure which action the next "yes" refers to.
+                state.system_message = await _compose_interruption_message(
+                    supervisor,
+                    user_message=user_message,
+                    user_name=user_profile.get("name"),
+                    pending=pending_workflow,
+                    competing_intent=intent_data.intent,
+                    history=history,
+                )
+                state.status = "conversational"
+                state.quick_options = _interruption_quick_options(pending_workflow, intent_data, user_message)
+                # awaiting_specs_choice is cleared so the awaiting_choice branch
+                # owns this turn; prompt_text is kept so "continue" restores the
+                # exact offer the user already saw.
+                new_info = {
+                    k: v for k, v in pinfo.items()
+                    if k not in ("awaiting_interruption_choice", "interrupted_by", "interrupted_intent")
+                }
+                new_info.update({
+                    "awaiting_specs_choice": False,
+                    "awaiting_interruption_choice": True,
+                    "interrupted_by": user_message,
+                    "interrupted_intent": intent_data.intent,
+                })
+                state.pending_workflow = pending_workflow.model_copy(update={"extracted_info": new_info})
+                await supervisor.log_step(
+                    state=state, from_agent="supervisor", to_agent="user",
+                    msg_type="feedback", content=str(state.system_message)[:120] + "...",
+                    payload={"action": "interruption_prompt", "competing_intent": intent_data.intent}
+                )
+                return state
             elif intent_data.intent == "out_of_scope":
                 await _decline_and_represent_pending(
                     supervisor, state, pending_workflow,
@@ -1039,7 +1105,12 @@ async def run_meal_planner(    user_id: int,
             )
             return state
         elif not was_resume_request:
-            if intent_data.intent in ("rename_plan", "delete_plan", "approve_plan"):
+            if intent_data.intent == "approve_plan":
+                # Approving is only a competing action when the pending work is
+                # something else; when an approval confirmation is already open,
+                # this message is the answer to it.
+                competing = pending_workflow.workflow_type != "approve_plan"
+            elif intent_data.intent in ("rename_plan", "delete_plan"):
                 # The LLM classified an explicit plan action: never an answer to
                 # diet/calorie confirmations, so it interrupts the pending work.
                 competing = True
@@ -1147,11 +1218,17 @@ async def run_meal_planner(    user_id: int,
             ]
             return state
 
+        # Only auto-resolve when the user actually identified a plan (by name,
+        # id, day count, diet or history). Guessing "the most recent one" would
+        # rename the wrong plan without ever asking — a destructive misfire.
+        # history is deliberately not passed: a prior turn that listed every plan
+        # would match here and silently pick one.
         target_plan = find_referenced_plan(
             user_message,
             all_plans,
             target_id=intent_data.target_plan_id,
-            target_name=intent_data.target_plan_name
+            target_name=intent_data.target_plan_name,
+            fallback_to_first=len(all_plans) == 1,
         )
 
         if target_plan and intent_data.new_plan_name:
@@ -1437,13 +1514,13 @@ async def run_meal_planner(    user_id: int,
             state.status = "conversational"
             return state
 
-        # If no draft plans exist, all plans are already approved
+        # If no draft plans exist, nothing can be approved.
         if len(draft_plans) == 0:
             context_prompt = (
-                "The user asked to approve a meal plan, but all their plans are already approved. "
-                "In friendly, natural English, inform them there is no plan pending approval. "
-                "All plans have been created and updated, and grocery lists are ready. "
-                "They can check details in the Plans and Grocery tabs."
+                "The user asked to approve a meal plan, but none of their plans are in draft state — every plan they "
+                "have is already approved, with its grocery list ready in the Grocery tab. "
+                "In friendly, natural English (1-2 sentences), let them know they don't have any plans pending "
+                "approval right now, and offer to create a brand new plan for them if they'd like."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -1453,6 +1530,78 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "conversational"
+            state.quick_options = [
+                {"label": "Plan 7 days (1800 kcal)", "value": "Plan 7 days for 1800 kcal"},
+                {"label": "Plan 3 days (veg)", "value": "Plan 3 days vegetarian meal plan"},
+            ]
+            return state
+
+        # An approval we already asked about: resolve the follow-up ("yes", or a
+        # bare plan name) against the plan we named, not whichever sorts first.
+        approve_pending = None
+        if state.pending_workflow and state.pending_workflow.original_intent == "approve_plan":
+            approve_pending = state.pending_workflow
+        pending_name = (approve_pending.extracted_info or {}).get("target_plan_name") if approve_pending else None
+        if pending_name and not (intent_data.target_plan_name or intent_data.target_plan_id):
+            intent_data.target_plan_name = pending_name
+
+        named_target = bool(intent_data.target_plan_name or intent_data.target_plan_id)
+
+        # A bare "approve my plan" must never approve silently: confirm which
+        # plan first — or ask which one when several are pending.
+        if not named_target:
+            if len(draft_plans) == 1:
+                only_draft = draft_plans[0]
+                context_prompt = (
+                    f"The user asked to approve a meal plan without naming one. They have exactly ONE plan waiting "
+                    f"for approval: '{only_draft.name}' ({only_draft.days} days, "
+                    f"{int(only_draft.calorie_target):,} kcal/day). "
+                    f"In warm, natural conversational English (1-2 sentences), name that plan, say it is sitting in "
+                    f"draft in their Plans tab, and ask whether they want to approve it now. Mention that approving "
+                    f"will build its grocery list with estimated costs. End with the question. "
+                    f"IMPORTANT: do NOT approve anything yet — only ask."
+                )
+                response_text = await supervisor.generate_conversational_response(
+                    user_message=user_message,
+                    context=context_prompt,
+                    history=history,
+                    user_name=user_profile.get("name")
+                )
+                state.system_message = response_text
+                state.status = "conversational"
+                state.quick_options = [
+                    {"label": f"Yes, approve {only_draft.name}", "value": f'Approve "{only_draft.name}"'},
+                    {"label": "Cancel", "value": "Cancel"},
+                ]
+                state.pending_workflow = make_approve_pending(
+                    response_text, state.quick_options, user_message, user_profile,
+                    target_plan_name=only_draft.name,
+                )
+                return state
+
+            names = ", ".join(f"'{p.name}'" for p in draft_plans)
+            context_prompt = (
+                f"The user asked to approve a meal plan without saying which one, and they have {len(draft_plans)} "
+                f"plans in draft state: {names}. "
+                f"In friendly, natural conversational English, tell them how many plans are waiting for approval and "
+                f"ask which one they would like you to approve. Mention that approving builds that plan's grocery "
+                f"list with estimated costs. End with the question. "
+                f"IMPORTANT: do NOT approve any of them yet."
+            )
+            response_text = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=user_profile.get("name")
+            )
+            state.system_message = response_text
+            state.status = "conversational"
+            state.quick_options = [
+                {"label": p.name, "value": f'Approve "{p.name}"'} for p in draft_plans
+            ] + [{"label": "Cancel", "value": "Cancel"}]
+            state.pending_workflow = make_approve_pending(
+                response_text, state.quick_options, user_message, user_profile,
+            )
             return state
 
         target_plan = find_referenced_plan(

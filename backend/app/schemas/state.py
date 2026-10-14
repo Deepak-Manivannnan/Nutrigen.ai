@@ -24,7 +24,7 @@ IntentType = Literal[
 
 class PendingWorkflow(BaseModel):
     """Stores pending meal plan creation workflow state"""
-    workflow_type: Literal["new_plan", "edit_meal", "delete_plan"] = "new_plan"
+    workflow_type: Literal["new_plan", "edit_meal", "delete_plan", "approve_plan"] = "new_plan"
     pending_conflicts: List[str] = Field(default_factory=list)
     asked_questions: List[str] = Field(default_factory=list)
     extracted_info: Dict[str, Any] = Field(default_factory=dict)

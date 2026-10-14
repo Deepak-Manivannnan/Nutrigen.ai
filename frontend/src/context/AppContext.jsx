@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { generateDemoPlan, generateDemoGrocery } from '../utils/workflowSimulator';
 import {
   fetchCurrentProfile,
@@ -14,26 +14,11 @@ import {
 
 const AppContext = createContext(null);
 
-const DEFAULT_USER = {
-  id: 1,
-  name: 'Deepak',
-  email: 'deepak@nutrigen.ai',
-};
-
-const DEFAULT_PROFILE = {
-  id: 1,
-  name: 'Deepak',
-  age: 26,
-  sex: 'male',
-  height_cm: 178,
-  weight_kg: 72,
-  activity_level: 'medium',
-  goal: 'maintain',
-  diet_type: 'veg',
-  allergies: [],
-  dislikes: ['Bitter gourd'],
-  created_at: new Date().toISOString(),
-};
+// Nav badge paths. A dot on a tab means "something new is waiting in a tab you
+// are NOT looking at", so these are compared against the visible route.
+const CHAT_PATH = '/app/chat';
+const PLANS_PATH = '/app/plans';
+const GROCERY_PATH = '/app/grocery';
 
 function getStoredUser() {
   try {
@@ -127,14 +112,42 @@ export function saveInflight(userId, inflight) {
 }
 
 export function AppProvider({ children }) {
-  // Auth & profile state
+  // Auth & profile state.
+  // There is deliberately NO placeholder identity. A missing session means
+  // `user` is null, and null is the signal the route guard reads to send
+  // someone back to sign-in. Inventing a default user here would make the app
+  // look logged in to people who never signed in - and would make the guard
+  // check a forged session, so it would block nothing.
   const stored = getStoredUser();
-  const [user, setUser] = useState(stored ? { id: stored.id, name: stored.name, email: stored.email } : DEFAULT_USER);
-  const [profile, setProfile] = useState(stored?.profile || DEFAULT_PROFILE);
+  const [user, setUser] = useState(stored ? { id: stored.id, name: stored.name, email: stored.email } : null);
+  const [profile, setProfile] = useState(stored?.profile || null);
 
-  // App navigation badges
+  // False until we know whether a session exists (and whether it has a
+  // profile). The guard waits on this rather than redirecting immediately,
+  // otherwise every cold start would flash the sign-in page before bouncing.
+  // Starts true when there is no session: nothing to wait for, and deriving it
+  // here avoids a pointless setState inside the mount effect.
+  const [authReady, setAuthReady] = useState(() => !stored);
+
+  // App navigation badges. Each marks "new content in a tab the user is not
+  // currently viewing"; the visible tab's badge is always suppressed.
+  const [chatBadge, setChatBadge] = useState(false);
   const [plansBadge, setPlansBadge] = useState(false);
   const [groceryBadge, setGroceryBadge] = useState(false);
+
+  // Route currently on screen, published by AppLayout. The badge helpers below
+  // run on asynchronous backend events, so they read the path that was visible
+  // when the event landed rather than guessing from component state.
+  const [activePath, setActivePath] = useState('');
+
+  const markBadge = useCallback((setter, path) => {
+    setter(activePath !== path);
+  }, [activePath]);
+
+  // Plan approval currently in flight. The supervisor hands off to the shopper
+  // agent on approval, which is slow and must not be started twice.
+  const [approvingPlanId, setApprovingPlanId] = useState(null);
+  const approvingRef = useRef(null);
 
   // Plans data
   const [plans, setPlans] = useState([]);
@@ -237,12 +250,15 @@ export function AppProvider({ children }) {
   // Initial load upon startup / refresh
   useEffect(() => {
     const savedUser = getStoredUser();
-    if (savedUser) {
-      loadUserData(savedUser.id, savedUser.profile);
-    }
+    if (!savedUser) return; // nothing to load; authReady already starts true
+    loadUserData(savedUser.id, savedUser.profile).finally(() => setAuthReady(true));
   }, [loadUserData]);
 
   const signIn = useCallback(async (userData) => {
+    // Held until the profile lands: sign-in navigates the instant this resolves,
+    // and the guard would otherwise see a user with no profile yet and bounce
+    // a brand-new account into onboarding.
+    setAuthReady(false);
     try {
       setUser(userData);
       localStorage.setItem('nutrigen_auth_user', JSON.stringify(userData));
@@ -251,6 +267,8 @@ export function AppProvider({ children }) {
       await loadUserData(userData.id, userData.profile);
     } catch (err) {
       console.warn('Sign in sync error:', err);
+    } finally {
+      setAuthReady(true);
     }
   }, [loadUserData]);
 
@@ -264,8 +282,11 @@ export function AppProvider({ children }) {
     setMessages([]);
     setPlans([]);
     setGroceryList(null);
+    setChatBadge(false);
     setPlansBadge(false);
     setGroceryBadge(false);
+    setApprovingPlanId(null);
+    approvingRef.current = null;
     setWorkflowState(null);
     setIsAgentRunning(false);
     setChatStatus(null);
@@ -275,6 +296,10 @@ export function AppProvider({ children }) {
   }, [user?.id]);
 
   const createProfile = useCallback(async (profileData) => {
+    // Same reason as signIn: onboarding navigates to /app/home the moment this
+    // resolves, so the guard must wait for the real profile rather than treat
+    // the in-flight state as "no profile yet".
+    setAuthReady(false);
     try {
       // If user already signed up with an account (has user.id), update that account directly
       if (user?.id) {
@@ -310,6 +335,8 @@ export function AppProvider({ children }) {
       };
       setProfile(newProfile);
       return newProfile;
+    } finally {
+      setAuthReady(true);
     }
   }, [user, loadUserData]);
 
@@ -338,33 +365,44 @@ export function AppProvider({ children }) {
   const addPlan = useCallback((plan) => {
     setPlans(prev => [plan, ...prev.filter(p => p.id !== plan.id)]);
     setActivePlanId(plan.id);
-    setPlansBadge(true);
-  }, []);
+    markBadge(setPlansBadge, PLANS_PATH);
+  }, [markBadge]);
 
   const approvePlan = useCallback(async (planId) => {
+    // One click, one approval. The ref (not the state) is the guard: two clicks
+    // in the same tick both read the still-null state closure, so a second run
+    // would otherwise reach the supervisor before the button could disable.
+    if (approvingRef.current !== null) return;
+    approvingRef.current = planId;
+    setApprovingPlanId(planId);
     try {
-      const approvedBackendPlan = await approvePlanApi(planId);
-      if (approvedBackendPlan) {
-        const adapted = adaptBackendPlan(approvedBackendPlan, profile);
-        setPlans(prev =>
-          prev.map(p => (p.id === planId ? adapted : p))
-        );
-        if (approvedBackendPlan.grocery_list) {
-          const grocery = adaptBackendGrocery(approvedBackendPlan.grocery_list, approvedBackendPlan.days);
-          if (grocery) setGroceryList(grocery);
+      try {
+        const approvedBackendPlan = await approvePlanApi(planId);
+        if (approvedBackendPlan) {
+          const adapted = adaptBackendPlan(approvedBackendPlan, profile);
+          setPlans(prev =>
+            prev.map(p => (p.id === planId ? adapted : p))
+          );
+          if (approvedBackendPlan.grocery_list) {
+            const grocery = adaptBackendGrocery(approvedBackendPlan.grocery_list, approvedBackendPlan.days);
+            if (grocery) setGroceryList(grocery);
+          }
         }
+      } catch (err) {
+        console.warn('Backend plan approval fallback:', err);
+        setPlans(prev =>
+          prev.map(p => (p.id === planId ? { ...p, status: 'approved' } : p))
+        );
+        const newGrocery = generateDemoGrocery();
+        setGroceryList(newGrocery);
       }
-    } catch (err) {
-      console.warn('Backend plan approval fallback:', err);
-      setPlans(prev =>
-        prev.map(p => (p.id === planId ? { ...p, status: 'approved' } : p))
-      );
-      const newGrocery = generateDemoGrocery();
-      setGroceryList(newGrocery);
+      markBadge(setGroceryBadge, GROCERY_PATH);
+      addToast('Meal plan approved! Grocery list prepared.', 'success');
+    } finally {
+      approvingRef.current = null;
+      setApprovingPlanId(null);
     }
-    setGroceryBadge(true);
-    addToast('Meal plan approved! Grocery list prepared.', 'success');
-  }, [profile, addToast]);
+  }, [profile, addToast, markBadge]);
 
   const renamePlan = useCallback(async (planId, newName) => {
     setPlans(prev =>
@@ -380,7 +418,10 @@ export function AppProvider({ children }) {
   }, [addToast]);
 
   const refreshPlans = useCallback(async () => {
-    const activeId = profile?.id || user?.id || 1;
+    // No `|| 1` fallback: defaulting to a fixed id would quietly load another
+    // person's plans. With no identity there is nothing to refresh.
+    const activeId = profile?.id || user?.id;
+    if (!activeId) return;
     await loadUserData(activeId, profile);
   }, [profile, user?.id, loadUserData]);
 
@@ -408,12 +449,16 @@ export function AppProvider({ children }) {
 
   const setGrocery = useCallback((grocery) => {
     setGroceryList(grocery);
-    setGroceryBadge(true);
-  }, []);
+    markBadge(setGroceryBadge, GROCERY_PATH);
+  }, [markBadge]);
 
   const addMessage = useCallback((msg) => {
     setMessages(prev => [...prev, { ...msg, id: Date.now() + Math.random(), timestamp: new Date() }]);
-  }, []);
+    // Only replies count: a reply that lands while the user is elsewhere (a
+    // plan generating in the background, or an inbox delivery) is exactly what
+    // the Chat dot is for. Messages the user typed on the Chat tab are not.
+    if (msg.role === 'assistant') markBadge(setChatBadge, CHAT_PATH);
+  }, [markBadge]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);
@@ -428,9 +473,12 @@ export function AppProvider({ children }) {
   }, [user?.id, profile?.id]);
 
   const value = {
-    user, setUser, profile, setProfile,
+    user, setUser, profile, setProfile, authReady,
+    chatBadge, setChatBadge,
     plansBadge, setPlansBadge,
     groceryBadge, setGroceryBadge,
+    activePath, setActivePath,
+    approvingPlanId,
     plans, addPlan, setPlans, approvePlan, deletePlan, renamePlan, refreshPlans,
     activePlanId, setActivePlanId,
     groceryList, setGrocery,

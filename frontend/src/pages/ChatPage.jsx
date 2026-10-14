@@ -251,6 +251,12 @@ export default function ChatPage() {
     const text = (typeof textOverride === 'string' ? textOverride : input).trim();
     if (!text || isAgentRunning) return;
 
+    // No default identity: with the fake user gone, a missing profile means we
+    // genuinely do not know who this is. Sending as id 1 would file the
+    // conversation against the wrong account.
+    const uid = profile?.id;
+    if (!uid) return;
+
     addMessage({ role: 'user', content: text });
     setInput('');
     setIsAgentRunning(true);
@@ -259,20 +265,20 @@ export default function ChatPage() {
     const taskId = `t-${Math.random().toString(16).slice(2, 10)}`;
     // In-flight marker: if the page reloads now, boot reconciliation can
     // still collect this run's reply from the delivery inbox.
-    saveInflight(profile?.id || 1, { taskId, sentAt: Date.now() });
+    saveInflight(uid, { taskId, sentAt: Date.now() });
 
     try {
       const historyPayload = messages.slice(-6).map(m => ({
         role: m.role,
         content: m.content,
       }));
-      const chatRes = await sendChatMessage(profile?.id || 1, text, taskId, historyPayload, pendingWorkflow);
+      const chatRes = await sendChatMessage(uid, text, taskId, historyPayload, pendingWorkflow);
       await applyChatResponse(chatRes);
     } catch (err) {
       console.warn('Backend chat failed:', err);
       setIsAgentRunning(false);
       setChatStatus(null);
-      saveInflight(profile?.id || 1, null);
+      saveInflight(uid, null);
       addMessage({
         role: 'assistant',
         content: "I'm having trouble connecting to the server. Please try again in a moment.",
@@ -287,7 +293,7 @@ export default function ChatPage() {
   async function applyChatResponse(chatRes) {
     setChatStatus(null);
     setIsAgentRunning(false);
-    saveInflight(profile?.id || 1, null);
+    if (profile?.id) saveInflight(profile.id, null);
 
     // Keep the pending conflict context so a follow-up answer resolves it
     // (context-level, survives navigating to the Plans tab and back).

@@ -2684,6 +2684,21 @@ ol {
   color: var(--green-700);
 }
 
+/* Auth gate: shown while we work out whether a session exists. Deliberately a
+   real screen rather than a blank frame, so a cold start never flashes an
+   empty dashboard before redirecting to sign-in. */
+.app-auth-loading {
+  height: 100vh;
+  background: var(--gray-50);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  color: var(--gray-500);
+  font-size: var(--text-sm);
+}
+
 /* Onboarding */
 .onboarding-page {
   height: 100vh;

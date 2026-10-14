@@ -121,7 +121,9 @@ export default function OnboardingPage() {
     };
     createProfile(profileData);
     addToast('Profile created! Welcome to Nutrigen.ai 🎉', 'success');
-    navigate('/app/home');
+    // replace: sign-up and onboarding are steps toward the app, not places the
+    // user should be able to Back into after landing on Home.
+    navigate('/app/home', { replace: true });
   }
 
   return (

@@ -1,7 +1,8 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { Flame, Utensils, ShieldCheck, Target, MoreHorizontal, ArrowRight, Calendar, ShoppingCart, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Flame, Utensils, ShieldCheck, Target, ArrowRight, Calendar, ShoppingCart, Sparkles, CheckCircle2 } from 'lucide-react';
+import MarqueeText from '../components/MarqueeText';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 import bannerFoodImg from '../assets/banner_food.png';
 import thumb1 from '../assets/plan_thumb_1.png';
@@ -9,16 +10,16 @@ import thumb2 from '../assets/plan_thumb_2.png';
 import thumb3 from '../assets/plan_thumb_3.png';
 
 function calorieRange(profile) {
-  if (!profile) return '2,000–2,200 kcal';
+  if (!profile) return '2,000 – 2,200 kcal';
   // Use persisted calorie data from backend if available
   if (profile.min_safe_calories !== undefined && profile.max_safe_calories !== undefined && profile.suggested_target_calories !== undefined) {
     const low = Math.round(profile.min_safe_calories);
     const high = Math.round(profile.max_safe_calories);
-    return `${low.toLocaleString()}–${high.toLocaleString()} kcal`;
+    return `${low.toLocaleString()} – ${high.toLocaleString()} kcal`;
   }
   // Fallback for backward compatibility
   const { age, sex, height_cm, weight_kg, activity_level, goal } = profile;
-  if (!age || !height_cm || !weight_kg) return '2,000–2,200 kcal';
+  if (!age || !height_cm || !weight_kg) return '2,000 – 2,200 kcal';
   // Mifflin-St Jeor
   let bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age;
   bmr += sex === 'male' ? 5 : -161;
@@ -29,7 +30,7 @@ function calorieRange(profile) {
   const roundedTarget = Math.round(target / 50) * 50;
   const low = roundedTarget - 100;
   const high = roundedTarget + 100;
-  return `${low.toLocaleString()}–${high.toLocaleString()} kcal`;
+  return `${low.toLocaleString()} – ${high.toLocaleString()} kcal`;
 }
 
 function formatDietType(dt) {
@@ -38,6 +39,13 @@ function formatDietType(dt) {
 
 function formatGoal(g) {
   return { lose: 'Lose weight', maintain: 'Maintain weight', gain: 'Gain weight' }[g] || g || 'Maintain weight';
+}
+
+// Display-only: allergen and dislike keywords are stored lowercased so the
+// backend can match them case-insensitively. Capitalise them here purely for
+// presentation — the stored value and every matching path stay untouched.
+function titleCase(value) {
+  return String(value ?? '').replace(/\w\S*/g, word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
 }
 
 function getGreeting() {
@@ -78,7 +86,7 @@ export default function HomePage() {
           </div>
           <div className="dash-kpi-content">
             <div className="dash-kpi-label">Daily calorie target</div>
-            <div className="dash-kpi-value">{calorieRange(profile)}</div>
+            <MarqueeText className="dash-kpi-value" text={calorieRange(profile)} />
             <div className="dash-kpi-sub">Based on your profile</div>
           </div>
         </div>
@@ -89,7 +97,7 @@ export default function HomePage() {
           </div>
           <div className="dash-kpi-content">
             <div className="dash-kpi-label">Diet type</div>
-            <div className="dash-kpi-value">{formatDietType(profile?.diet_type)}</div>
+            <MarqueeText className="dash-kpi-value" text={formatDietType(profile?.diet_type)} />
             <div className="dash-kpi-sub">As per your preferences</div>
           </div>
         </div>
@@ -100,11 +108,12 @@ export default function HomePage() {
           </div>
           <div className="dash-kpi-content">
             <div className="dash-kpi-label">Allergies</div>
-            <div className="dash-kpi-value">
-              {profile?.allergies && profile.allergies.length > 0
-                ? profile.allergies.join(', ')
+            <MarqueeText
+              className="dash-kpi-value"
+              text={profile?.allergies && profile.allergies.length > 0
+                ? profile.allergies.map(titleCase).join(', ')
                 : 'None'}
-            </div>
+            />
             <div className="dash-kpi-sub">
               {profile?.allergies && profile.allergies.length > 0
                 ? 'Checked in every plan'
@@ -119,7 +128,7 @@ export default function HomePage() {
           </div>
           <div className="dash-kpi-content">
             <div className="dash-kpi-label">Your goal</div>
-            <div className="dash-kpi-value">{formatGoal(profile?.goal)}</div>
+            <MarqueeText className="dash-kpi-value" text={formatGoal(profile?.goal)} />
             <div className="dash-kpi-sub">Based on your profile</div>
           </div>
         </div>
@@ -159,7 +168,12 @@ export default function HomePage() {
         {userPlans.length > 0 ? (
           <>
             <div className="dash-plans-header">
-              <h2 className="dash-plans-title">Your recent plans</h2>
+              <div>
+                <h2 className="dash-plans-title">Your recent plans</h2>
+                <p className="dash-plans-subtitle">
+                  Your latest approved plan. Tap any card to review meals and groceries.
+                </p>
+              </div>
               <button
                 className="dash-view-all-btn"
                 onClick={() => navigate('/app/plans')}
@@ -202,17 +216,6 @@ export default function HomePage() {
                       </div>
                     </div>
                     <div className="dash-plan-actions">
-                      <button
-                        type="button"
-                        className="dash-plan-dots-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigate('/app/plans');
-                        }}
-                        aria-label="Plan options"
-                      >
-                        <MoreHorizontal size={16} />
-                      </button>
                       <div className="dash-plan-arrow-circle">
                         <ArrowRight size={14} />
                       </div>

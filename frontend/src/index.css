@@ -1341,9 +1341,56 @@ ol {
   color: #0f172a;
   line-height: 1.25;
   margin: 2px 0;
-  white-space: nowrap;
+}
+
+/* KPI value marquee ΓÇö animates only when the text is wider than its slot */
+.marquee {
   overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.marquee-track {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.marquee-copy {
+  display: inline-flex;
+  margin-right: var(--marquee-gap, 28px);
+}
+
+.marquee-text {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.marquee[data-overflowing='true'] .marquee-track {
+  animation-name: marquee-scroll;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+/* Pause while the pointer is over the text. */
+.marquee:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes marquee-scroll {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee[data-overflowing='true'] .marquee-track {
+    animation: none;
+  }
 }
 
 .dash-kpi-sub {
@@ -1371,8 +1418,8 @@ ol {
   justify-content: space-between;
   overflow: hidden;
   margin-bottom: 28px;
-  height: 156px;
-  min-height: 156px;
+  height: 180px;
+  min-height: 180px;
   position: relative;
   flex-shrink: 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
@@ -1430,8 +1477,8 @@ ol {
   color: #ffffff;
   border: none;
   border-radius: 8px;
-  padding: 7px 16px;
-  font-size: 12.5px;
+  padding: 9px 20px;
+  font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
   display: inline-flex;
@@ -1445,16 +1492,41 @@ ol {
   transform: translateY(-1px);
 }
 
+/* Stretches to the banner's content box so the image reaches the top and
+   bottom edges instead of leaving a gap. */
 .dash-cta-img-wrap {
-  height: 146px;
+  position: relative;
+  align-self: stretch;
   flex-shrink: 0;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: flex-end;
 }
 
+/* Fades the image's left edge into the card background so the photo reads as
+   part of the banner rather than a rectangle sitting on top of a card.
+   Starts fully opaque in the exact card colour so the overlay has no seam,
+   then falls away quickly to keep the image clear. */
+.dash-cta-img-wrap::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 72px;
+  background: linear-gradient(
+    to right,
+    #edf8f1 0%,
+    #edf8f1 10%,
+    rgba(237, 248, 241, 0.3) 42%,
+    rgba(237, 248, 241, 0) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
 .dash-cta-img {
-  height: 146px;
+  height: 100%;
   width: auto;
   max-width: 400px;
   object-fit: cover;
@@ -1487,6 +1559,12 @@ ol {
   margin: 0;
 }
 
+.dash-plans-subtitle {
+  font-size: 13px;
+  color: var(--gray-500);
+  margin: 4px 0 0;
+}
+
 .dash-view-all-btn {
   background: none;
   border: none;
@@ -1517,10 +1595,10 @@ ol {
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 14px;
-  padding: 12px 16px;
+  padding: 20px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   cursor: pointer;
   transition: all var(--transition-fast);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
@@ -1533,8 +1611,8 @@ ol {
 }
 
 .dash-plan-thumb {
-  width: 54px;
-  height: 54px;
+  width: 60px;
+  height: 60px;
   border-radius: 10px;
   object-fit: cover;
   flex-shrink: 0;
@@ -1549,7 +1627,7 @@ ol {
   font-size: 14px;
   font-weight: 700;
   color: #0f172a;
-  margin-bottom: 3px;
+  margin-bottom: 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1558,7 +1636,7 @@ ol {
 .dash-plan-meta {
   font-size: 12.5px;
   color: #64748b;
-  margin-bottom: 3px;
+  margin-bottom: 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1576,31 +1654,13 @@ ol {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  justify-content: space-between;
-  height: 52px;
+  justify-content: center;
   flex-shrink: 0;
 }
 
-.dash-plan-dots-btn {
-  background: none;
-  border: none;
-  color: #94a3b8;
-  cursor: pointer;
-  padding: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  transition: color var(--transition-fast);
-}
-
-.dash-plan-dots-btn:hover {
-  color: #475569;
-}
-
 .dash-plan-arrow-circle {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   background: #f1f5f9;
   display: flex;

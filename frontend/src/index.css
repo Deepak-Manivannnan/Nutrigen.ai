@@ -1459,6 +1459,73 @@ ol {
   object-fit: contain;
 }
 
+/* The hero CTA's arrow is a text glyph, not an icon. Sitting in the same
+   text run as the label, it renders a shade below the cap-height centre of
+   "Get started" and cannot be repositioned by CSS. Wrapping it in a span
+   makes it independently placeable, and `top` lifts it onto that centre.
+
+   The spacing is the fiddly part. .btn is a flex container with gap:8px,
+   but originally the arrow was part of one anonymous text item, so that gap
+   never applied and a literal space did the spacing. Splitting the run into
+   two items activates the gap AND blockifies the label, which collapses its
+   trailing space - together that lost ~3.7px and left the arrow touching
+   "started". So gap is zeroed and the space is reinstated as a margin sized
+   in em, matching this font's measured space width of 0.251em. Button width
+   is therefore unchanged on both phone and desktop. */
+#hero-get-started {
+  gap: 0;
+}
+
+.btn-arrow {
+  position: relative;
+  top: -1px;
+  margin-left: 0.251em;
+}
+
+/* ---- Brand lockup - DESKTOP SIZES
+
+   Every brand pairs a leaf <img> with a two-tone "Nutrigen.ai" wordmark.
+   Two adjustments here, both applying at every viewport:
+
+   1. The leaf rides 1px high. .landing-nav-brand and friends are flex rows
+      with align-items:center, so the leaf's box centres on the wordmark's
+      *line box* - which includes descender space and so sits below the
+      letters' optical centre. Nudging the leaf up lines it up with the
+      capital-height centre. position:relative shifts it without changing
+      layout, so nothing reflows.
+
+   2. The wordmarks grow ~1.5px. The leaf deliberately does NOT grow, so the
+      leaf-to-wordmark ratio tightens from ~1.52 to ~1.41 and the name reads
+      as the dominant half of the lockup.
+
+   These are the desktop values. The 768px block further down restates them
+   at phone sizes; being later in the source with equal specificity and the
+   same !important, it wins on phones. !important is unavoidable - the
+   wordmarks are sized by inline styles and one by a class rule. */
+.landing-nav-brand img,
+.sidebar-brand img,
+.landing-footer img,
+.auth-logo img {
+  position: relative;
+  top: -1px;
+}
+
+.landing-nav-brand img + span {
+  font-size: 22.5px !important;
+}
+
+.sidebar-brand img + span {
+  font-size: 19.5px !important;
+}
+
+.landing-footer img + span {
+  font-size: 17.5px !important;
+}
+
+.auth-logo-text {
+  font-size: 21.5px !important;
+}
+
 .dash-cta-text-area {
   flex: 1;
   min-width: 0;
@@ -1478,6 +1545,13 @@ ol {
   margin: 0 0 10px 0;
   max-width: 620px;
   line-height: 1.42;
+}
+
+/* The compact banner sentence is phone-only; the media query turns it on
+   and turns the long one off. Without this base rule both would render
+   here and desktop would read as one run-on sentence. */
+.dash-cta-desc-short {
+  display: none;
 }
 
 .dash-cta-btn {
@@ -1509,6 +1583,13 @@ ol {
   display: flex;
   align-items: stretch;
   justify-content: flex-end;
+}
+
+/* The <picture> wrapper only exists to hand phones a different crop. With
+   display:contents it generates no box, so the <img> stays a direct flex
+   item of .dash-cta-img-wrap and desktop layout is bit-for-bit unchanged. */
+.dash-cta-img-wrap picture {
+  display: contents;
 }
 
 /* Fades the image's left edge into the card background so the photo reads as
@@ -1816,6 +1897,53 @@ ol {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---- Plan selector - DESKTOP ONLY
+
+   min-width:769px is the exact mirror of the app's max-width:768px phone
+   breakpoint, so these rules and the phone overrides can never both apply.
+   Phones keep width:100% and left-aligned options, untouched.
+
+   Applies to the Plans tab and the Grocery tab alike - both render the same
+   PlanSelect component with these same classes. */
+@media (min-width: 769px) {
+  /* Toggle width. The menu is absolutely positioned with left:0/right:0, so
+     it tracks this box - one change sizes both the closed bar and the open
+     list.
+
+     Measured against real plan names at 13px semibold, their natural widths
+     run 127px ("7-Day Non-veg Plan") to 258px ("14-Day Non-vegetarian High
+     Protein Plan"). Adding the 8px menu padding and 20px option padding,
+     286px is the true floor for the longest; 300px leaves a little headroom.
+
+     Width was briefly set to 220px to tighten the row, but that clipped 3 of
+     7 sample names - diet wording like "Non-vegetarian" is what pushes them
+     long. The original 280px still clipped one. */
+  .plan-select-field {
+    width: 300px;
+  }
+
+  /* Centre the plan names in the open list. .plan-select-option is a flex
+     row holding one child under justify-content:space-between, which parks
+     it hard left; giving that child width:100% and centring it lets the
+     name and its meta line sit in the middle of the row. max-width:100%
+     keeps the existing ellipsis working, since centring a nowrap span
+     would otherwise let it overflow instead. */
+  .plan-select-option {
+    justify-content: center;
+    text-align: center;
+  }
+
+  .plan-select-option-main {
+    width: 100%;
+    align-items: center;
+  }
+
+  .plan-select-option-name,
+  .plan-select-option-meta {
+    max-width: 100%;
+  }
 }
 
 /* Meal Card — fixed frame; body scrolls so steps never resize the card */
@@ -3286,9 +3414,243 @@ ol {
     display: none;
   }
 
+  /* Landing nav - PHONE ONLY
+
+     The three anchor buttons do not fit. Brand 157px + links 183px = 340px
+     inside a 321px bar, so they collided with the logo and "How it works"
+     wrapped onto three lines, stretching the sticky bar to 65px. A logged-out
+     visitor has no drawer to fall back on - that exists only inside the
+     authenticated layout - so on a phone the links go and the brand plus the
+     two hero CTAs carry the page. */
+  .landing-nav-links {
+    display: none;
+  }
+
+  /* Hero - PHONE ONLY
+
+     The title carries hard <br /> tags, so it stays three lines at any size;
+     46px just made it 155px tall. 36px brings that to 121px and reclaims the
+     space without touching the line breaks. Subtitle and CTAs come down
+     with it so the whole block tightens. Buttons keep a ~41px touch height -
+     still well over the 24px accessibility floor. */
+  .hero-title {
+    font-size: 36px;
+    letter-spacing: -0.03em;
+  }
+
+  .hero-subtitle {
+    font-size: 13.5px;
+    line-height: 1.5;
+    margin-bottom: 18px;
+  }
+
+  .hero-actions {
+    gap: var(--space-3);
+  }
+
+  .hero-actions .btn-lg {
+    font-size: 14px;
+    padding: 12px 24px;
+  }
+
+  /* Brand lockup - PHONE ONLY
+
+     Every brand in the app renders the same shape: a leaf <img> beside a
+     two-tone "Nutri gen.ai" <span>. Those two sizes were set with inline
+     styles per instance and had drifted apart - the leaf-to-wordmark ratio
+     was 1.52 in the landing nav, 1.50 in the footer, 1.44 in the drawer and
+     1.80 on the sign-in card, so the same mark read at four different
+     weights depending on the screen.
+
+     Phones now share one ratio of 1.52 and one gentle 12% reduction off each
+     leaf. Every brand shrinks except the auth wordmark, which grows 20->21px
+     precisely because its old 1.80 ratio was the outlier being corrected.
+
+     !important is required throughout - these are inline styles, and inline
+     always beats a class rule. "img + span" is safe here: each brand row is
+     exactly one image followed by one wordmark span. */
+  /* Leaf marks. */
+  .landing-nav-brand img {
+    height: 28px !important;
+  }
+
+  .sidebar-brand img {
+    height: 23px !important;
+  }
+
+  .landing-footer img {
+    height: 21px !important;
+  }
+
+  .auth-logo img {
+    height: 32px !important;
+  }
+
+  .chat-welcome-logo {
+    height: 30px !important;
+  }
+
+  .message-avatar-logo {
+    height: 18px !important;
+  }
+
+  /* Wordmarks, sized off each leaf at the shared 1.52 ratio. */
+  .landing-nav-brand img + span {
+    font-size: 20px !important;
+  }
+
+  .sidebar-brand img + span {
+    font-size: 16.5px !important;
+  }
+
+  .landing-footer img + span {
+    font-size: 15.5px !important;
+  }
+
+  .auth-logo-text {
+    font-size: 22.5px !important;
+  }
+
+  /* ---- Landing sections - PHONE ONLY
+
+     Four headings were 36px (--text-4xl): the three section titles and the
+     closing CTA banner. All four drop to 24px so they read as one system
+     instead of shouting over the hero, and each subtitle comes down from
+     16px to 14px. The 60px under each section header was a desktop value
+     and was the single largest block of dead space on the page. */
+  .section-title {
+    font-size: 24px !important;
+  }
+
+  .section-subtitle {
+    font-size: 14px !important;
+    line-height: 1.5;
+  }
+
+  .section-header {
+    margin-bottom: 28px !important;
+  }
+
+  /* Feature cards go horizontal. Three direct children - icon, title, desc -
+     so a two-column grid with named areas puts the leaf beside both text
+     lines instead of stacked above them. That is most of a card's height
+     reclaimed, and needs no markup change. */
+  .features-grid {
+    gap: var(--space-3) !important;
+  }
+
+  .feature-card {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      'icon title'
+      'icon desc';
+    align-items: start;
+    column-gap: var(--space-3);
+    row-gap: 0;
+    padding: var(--space-4) !important;
+  }
+
+  .feature-icon {
+    grid-area: icon;
+    width: 36px;
+    height: 36px;
+    margin-bottom: 0;
+  }
+
+  .feature-title {
+    grid-area: title;
+    font-size: 15px !important;
+    margin-bottom: 2px;
+  }
+
+  .feature-desc {
+    grid-area: desc;
+    line-height: 1.45;
+  }
+
+  /* Grocery estimates. The card carried 40px of padding and the four
+     blocks ran two-up at 123px wide each, which is too narrow for labels
+     like "Live Market Data". Single column, tightened. The h3 and intro p
+     carry inline styles, hence !important. */
+  .pricing-card {
+    padding: var(--space-5) !important;
+  }
+
+  .pricing-card h3 {
+    font-size: 17px !important;
+    margin-bottom: var(--space-2) !important;
+  }
+
+  .pricing-card > p {
+    line-height: 1.55 !important;
+  }
+
+  .pricing-info-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+
+  .pricing-info-item {
+    padding: var(--space-3);
+  }
+
+  .pricing-info-label {
+    margin-bottom: 2px;
+  }
+
+  /* Closing CTA. Matched to .section-title so the page ends on the same
+     scale it opened with. !important throughout - the h2, p and section
+     padding are all inline styles. */
+  .landing-section:has(#cta-get-started) {
+    padding: var(--space-8) var(--space-5) !important;
+  }
+
+  .landing-section:has(#cta-get-started) h2 {
+    font-size: 24px !important;
+    letter-spacing: -0.03em;
+  }
+
+  .landing-section:has(#cta-get-started) p {
+    font-size: 14px !important;
+    margin-bottom: var(--space-5) !important;
+  }
+
+  #cta-get-started {
+    font-size: 14px !important;
+    padding: 12px 22px !important;
+  }
+
+  /* Footer: on a phone the leaf-and-wordmark lockup and the "Personalized for
+     you" line both go, leaving the copyright alone and centred. */
+  .landing-footer-bg {
+    padding: var(--space-6) var(--space-5);
+  }
+
+  .landing-footer > div:first-child,
+  .landing-footer > span:last-child {
+    display: none !important;
+  }
+
+  .landing-footer {
+    justify-content: center;
+  }
+
+  .landing-footer-copy {
+    font-size: 12px;
+    text-align: center;
+  }
+
   .kpi-grid,
   .dash-kpi-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  /* Match the gap below the CTA banner (28px) so the two gaps either side of
+     it read as equal instead of 20 above and 28 below. Base is 20px. */
+  .dash-kpi-grid {
+    margin-bottom: 28px;
   }
 
   .recent-plans-grid,
@@ -3485,6 +3847,26 @@ ol {
     grid-row: 2;
   }
 
+  /* Empty state: .page-header holds a single child, so that child is both
+     :first-child and :last-child. The rule above then wins on source order
+     and pins the title to row 2 / column 2 - which parks "Grocery List"
+     *below* the empty-state card and in the right half of the page. Reset it
+     to the top, full width, like PlansPage does by simply not applying its
+     modifier class in this state (PlansPage.jsx:227 vs :264). */
+  .page-content-with-grocery > .page-header > :only-child {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  /* With the title back in row 1 a void appeared under it: grid rows
+     default to align-content:stretch, so both auto rows grew to fill the
+     page's fixed height and row 1 ballooned to 183px around 79px of text.
+     Size rows to their content in the empty state only - the populated page
+     still wants to fill the viewport. */
+  .page-content-with-grocery:has(.empty-state) {
+    align-content: start;
+  }
+
   .page-content-with-grocery > .plan-select {
     grid-column: 1;
     grid-row: 2;
@@ -3646,7 +4028,207 @@ ol {
   }
 
   /* ------------------------------------------------------------------
-     Plan picker row - PHONE ONLY
+   Home dashboard - PHONE ONLY
+
+   Two of these are genuine breakage rather than polish.
+
+   1. The KPI marquee amputated its values. The animated scroller built for
+      wide desktop cards left a 76px value slot on a 171px phone card, so
+      "2,550 - 2,750 kcal" showed as "2,550 - 2," (332px of text in 76px),
+      "Vegetarian" as "Vegetariai", "Maintain weight" as "Maintain v". Three
+      of four cards were unreadable. Correct beats animated at this width, so
+      the marquee is disabled and the text is allowed to wrap.
+
+   2. The page could not scroll. .home-page is `flex: 1` inside
+      .main-content, which is `overflow: hidden`; with height:auto the flex
+      container re-constrained it anyway, so the container measured 903px of
+      content inside an 844px box and the last recent-plan card was half
+      hidden with no way to reach it. flex:0 0 auto lets it grow, and
+      :has() hands the scrolling to .main-content.
+   ------------------------------------------------------------------ */
+  .dash-title {
+    font-size: 22px !important;
+  }
+
+  /* Icon smaller and pulled closer to the card edge, which hands the space
+     back to the value column. */
+  .dash-kpi-icon {
+    width: 28px !important;
+    height: 28px !important;
+    margin-left: -4px !important;
+  }
+
+  .dash-kpi-icon svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .dash-kpi-card {
+    gap: 7px !important;
+    padding: var(--space-3) var(--space-2) !important;
+  }
+
+  /* Single-line values. Measured in the 123px slot this card size leaves:
+     calories needs 111px at 12.5px, goal 98px, diet 67px - so 12.5px fits
+     all three with room to spare. 13px would need 116px and wrap. */
+  .kpi-card-cal .dash-kpi-value,
+  .kpi-card-diet .dash-kpi-value,
+  .kpi-card-goal .dash-kpi-value {
+    font-size: 12.5px !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    line-height: 1.3;
+  }
+
+  .kpi-card-cal .dash-kpi-value .marquee-track,
+  .kpi-card-diet .dash-kpi-value .marquee-track,
+  .kpi-card-goal .dash-kpi-value .marquee-track {
+    animation: none !important;
+    transform: none !important;
+    display: block !important;
+  }
+
+  .kpi-card-cal .dash-kpi-value .marquee-copy[aria-hidden='true'],
+  .kpi-card-diet .dash-kpi-value .marquee-copy[aria-hidden='true'],
+  .kpi-card-goal .dash-kpi-value .marquee-copy[aria-hidden='true'] {
+    display: none !important;
+  }
+
+  .kpi-card-cal .dash-kpi-value .marquee-copy,
+  .kpi-card-diet .dash-kpi-value .marquee-copy,
+  .kpi-card-goal .dash-kpi-value .marquee-copy,
+  .kpi-card-cal .dash-kpi-value .marquee-text,
+  .kpi-card-diet .dash-kpi-value .marquee-text,
+  .kpi-card-goal .dash-kpi-value .marquee-text {
+    display: inline !important;
+    white-space: nowrap !important;
+  }
+
+  /* Allergies keeps the marquee on purpose: it is the one card whose value
+     can be an unbounded list ("Nuts, Shellfish, Dairy, Gluten, ..."), so a
+     static single line would just amputate it again. */
+  .kpi-card-allergies .dash-kpi-value {
+    font-size: 12.5px !important;
+    white-space: nowrap !important;
+  }
+
+  /* Restore the desktop single-row banner: text left, image right. */
+  .dash-cta-banner {
+    flex-direction: row !important;
+    height: 118px !important;
+    min-height: 118px !important;
+    align-items: center !important;
+  }
+
+  .dash-cta-left {
+    padding: var(--space-3) !important;
+    gap: 10px !important;
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    justify-content: center !important;
+  }
+
+  /* The phone banner image is its own asset, banner_food_cta.jpg, cut to
+     320x236 (1.356:1) to match this 160x118 slot. It fills the card edge to
+     edge, so there is no pale strip above or below it - the same treatment
+     desktop has always had. The right edge sits flush and
+     .dash-cta-banner's overflow:hidden + 16px radius clips the photo's
+     corners to the card's corners. */
+  .dash-cta-img-wrap {
+    width: 160px !important;
+    height: 100% !important;
+    flex-shrink: 0 !important;
+    overflow: hidden;
+  }
+
+  /* Reuse the desktop left-edge dissolve, narrowed for a 160px column. At
+     the desktop 72px it would cover 45% of this image and wash it out. */
+  .dash-cta-img-wrap::before {
+    width: 46px;
+    background: linear-gradient(
+      to right,
+      #edf8f1 0%,
+      #edf8f1 6%,
+      rgba(237, 248, 241, 0.3) 44%,
+      rgba(237, 248, 241, 0) 100%
+    );
+  }
+
+  .dash-cta-img {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    object-fit: cover !important;
+    object-position: center !important;
+  }
+
+  /* The sprout circle duplicates the icon already on every KPI card above. */
+  .dash-cta-icon-circle {
+    display: none !important;
+  }
+
+  .dash-cta-title {
+    font-size: 15px !important;
+    margin-bottom: 2px !important;
+  }
+
+  .dash-cta-desc {
+    font-size: 12px !important;
+    line-height: 1.4 !important;
+    margin-bottom: 10px !important;
+    max-width: none !important;
+    display: block !important;
+    -webkit-line-clamp: none !important;
+    line-clamp: none !important;
+    overflow: visible !important;
+    white-space: normal !important;
+  }
+
+  .dash-cta-desc-long {
+    display: none;
+  }
+
+  .dash-cta-desc-short {
+    display: inline;
+  }
+
+  .dash-cta-btn {
+    font-size: 12px !important;
+    padding: 6px 12px !important;
+    gap: 5px !important;
+  }
+
+  .dash-cta-btn svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  /* User asked for both removed on phones. Hidden rather than deleted from
+     the markup so desktop keeps them. */
+  .dash-plans-subtitle,
+  .dash-view-all-btn {
+    display: none !important;
+  }
+
+  .dash-plans-header {
+    justify-content: flex-start !important;
+  }
+
+  /* ---- the scroll fix ---- */
+  .home-page {
+    flex: 0 0 auto;
+    height: auto;
+    max-height: none;
+    overflow-y: visible;
+  }
+
+  .main-content:has(.home-page) {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ------------------------------------------------------------------
+   Plan picker row - PHONE ONLY
 
      The dropdown and "New Plan in Chat" live in different DOM parents
      (.page-header and a sibling), so on a phone they stacked on two rows.
@@ -4004,8 +4586,28 @@ ol {
   }
 }
 
-@media (max-width: 640px) {
-  .how-it-works-grid {
-    grid-template-columns: 1fr;
+/* Phones: the How-It-Works grid now inherits the 2-up layout from the 1024px
+   rule above. The old 640px query forced a single 1fr column, which stacked
+   all four steps and pushed the page to 1050px tall; 2x2 brings it to 856px.
+
+   This also lifts the step description (11px -> 12px) and badge (18px ->
+   22px). Both were authored at desktop density and are hard to read and hard
+   to see on a phone. Tablet and desktop are untouched.
+
+   This block sits after the .how-* base rules on purpose. Inside the main
+   768px block these same selectors would lose the source-order tie and be
+   silently ignored. */
+@media (max-width: 768px) {
+  .how-step-desc {
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .how-step-badge {
+    width: 22px;
+    height: 22px;
+    font-size: 11px;
+    top: 9px;
+    right: 9px;
   }
 }

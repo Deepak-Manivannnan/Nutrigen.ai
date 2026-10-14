@@ -67,7 +67,7 @@ export default function LandingPage() {
             </p>
             <div className="hero-actions">
               <button className="btn btn-primary btn-lg" onClick={() => navigate('/signup')} id="hero-get-started">
-                Get started →
+                Get started<span className="btn-arrow">→</span>
               </button>
               <button className="btn btn-outline btn-lg" onClick={() => navigate('/signin')} id="hero-sign-in">
                 Sign in

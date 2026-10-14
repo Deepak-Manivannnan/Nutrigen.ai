@@ -5,6 +5,7 @@ import { Flame, Utensils, ShieldCheck, Target, ArrowRight, Calendar, ShoppingCar
 import MarqueeText from '../components/MarqueeText';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 import bannerFoodImg from '../assets/banner_food.png';
+import bannerFoodCtaImg from '../assets/banner_food_cta.jpg';
 import thumb1 from '../assets/plan_thumb_1.png';
 import thumb2 from '../assets/plan_thumb_2.png';
 import thumb3 from '../assets/plan_thumb_3.png';
@@ -143,7 +144,16 @@ export default function HomePage() {
           <div className="dash-cta-text-area">
             <h2 className="dash-cta-title">Create a new meal plan</h2>
             <p className="dash-cta-desc">
-              Tell us what you'd like to eat, and we'll create a nutritious meal plan with recipes and a complete grocery list – tailored to your goals.
+              {/* Two variants, toggled by viewport. The long copy is what
+                  desktop has always shown; the short one keeps the phone
+                  banner to a single readable line without editing shared
+                  text. Exactly one is ever displayed. */}
+              <span className="dash-cta-desc-long">
+                Tell us what you'd like to eat, and we'll create a nutritious meal plan with recipes and a complete grocery list – tailored to your goals.
+              </span>
+              <span className="dash-cta-desc-short">
+                Tell us what you'd like to eat and we'll build the plan.
+              </span>
             </p>
             <button
               className="dash-cta-btn"
@@ -155,11 +165,18 @@ export default function HomePage() {
           </div>
         </div>
         <div className="dash-cta-img-wrap">
-          <img
-            src={bannerFoodImg}
-            alt="Nutritious fresh meal bowl"
-            className="dash-cta-img"
-          />
+          {/* Phones get a purpose-built 320x236 crop (1.356:1) of the same
+              photo, composed to the CTA slot instead of the wide desktop
+              strip. <picture> means a given device only ever downloads the
+              one it renders, and the desktop <img> src is untouched. */}
+          <picture>
+            <source media="(max-width: 768px)" srcSet={bannerFoodCtaImg} />
+            <img
+              src={bannerFoodImg}
+              alt="Nutritious fresh meal bowl"
+              className="dash-cta-img"
+            />
+          </picture>
         </div>
       </div>
 

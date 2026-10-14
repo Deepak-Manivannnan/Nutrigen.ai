@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Home, MessageSquare, ClipboardList, ShoppingCart, User, ChevronUp, LogOut, Edit3, X, Check } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import TagInput from './TagInput';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 function NavHomeIcon({ active }) {
@@ -264,9 +265,38 @@ function EditProfileModal({ onClose }) {
   const [selectedAllergies, setSelectedAllergies] = useState(
     Array.isArray(profile?.allergies) ? [...profile.allergies] : []
   );
-  const [customAllergyInput, setCustomAllergyInput] = useState('');
 
   const COMMON_ALLERGENS = ['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish'];
+
+  // Mirrors the server-side allergen taxonomy. When a typed food belongs to
+  // one of the seven categories the backend collapses it into that category
+  // on save, so the modal selects the category too rather than flashing a
+  // chip that would disappear on save. Foods outside these groups (mutton,
+  // lamb, beef, ...) are kept as-is by the backend and show as chips.
+  const CATEGORY_ALIASES = {
+    'Nuts': ['nut', 'nuts', 'peanut', 'peanuts', 'groundnut', 'tree nut', 'tree nuts', 'almond', 'almonds', 'walnut', 'walnuts', 'cashew', 'pistachio', 'pecan', 'hazelnut', 'macadamia'],
+    'Shellfish': ['shellfish', 'shrimp', 'prawn', 'prawns', 'crab', 'lobster', 'clam', 'clams', 'mussel', 'mussels', 'oyster', 'oysters', 'scallop', 'scallops', 'squid', 'calamari', 'octopus', 'crawfish'],
+    'Dairy': ['dairy', 'milk', 'cow milk', 'cheese', 'butter', 'cream', 'yogurt', 'yogurt', 'curd', 'paneer', 'ghee', 'casein', 'whey'],
+    'Gluten': ['gluten', 'wheat', 'barley', 'rye', 'spelt', 'seitan', 'semolina', 'couscous', 'maida', 'atta'],
+    'Eggs': ['egg', 'eggs', 'mayo', 'mayonnaise', 'albumen', 'albumin', 'meringue'],
+    'Soy': ['soy', 'soya', 'soybean', 'soybeans', 'edamame', 'tofu', 'tempeh', 'miso', 'tamari'],
+    'Fish': ['fish', 'salmon', 'tuna', 'cod', 'tilapia', 'trout', 'halibut', 'sardine', 'anchovy', 'mackerel', 'bass', 'snapper'],
+  };
+
+  function resolveCategory(value) {
+    const clean = String(value || '').trim().toLowerCase();
+    if (!clean) return null;
+    return COMMON_ALLERGENS.find(cat =>
+      (CATEGORY_ALIASES[cat] || []).some(alias => alias === clean)
+    ) || null;
+  }
+
+  const isPredefinedAllergy = (a) => COMMON_ALLERGENS.some(p => p.toLowerCase() === a.toLowerCase());
+
+  // Anything the user typed that is not one of the seven categories. These
+  // render as removable chips so they can actually be seen and undone —
+  // previously they were saved but invisible, leaving no way to remove them.
+  const customAllergies = selectedAllergies.filter(a => !isPredefinedAllergy(a));
 
   // Validation function
   const validateForm = useCallback(() => {
@@ -296,23 +326,23 @@ function EditProfileModal({ onClose }) {
     });
   }
 
-  function handleAddCustomAllergy(e) {
-    if ((e.key === 'Enter' || e.key === ',') && customAllergyInput.trim()) {
-      e.preventDefault();
-      const val = customAllergyInput.trim().replace(/,$/, '');
-      // Only allow alphabetic characters, spaces, hyphens
-      const filteredVal = val.replace(/[^a-zA-Z\s-]/g, '');
-      if (filteredVal && !selectedAllergies.some(a => a.toLowerCase() === filteredVal.toLowerCase())) {
-        setSelectedAllergies(prev => [...prev, filteredVal]);
-      }
-      setCustomAllergyInput('');
+  function addCustomAllergy(value) {
+    const category = resolveCategory(value);
+    // Belongs to one of the seven categories: select it and skip the chip,
+    // matching what the backend will store.
+    if (category) {
+      setSelectedAllergies(prev =>
+        prev.some(a => a.toLowerCase() === category.toLowerCase()) ? prev : [...prev, category]
+      );
+      return;
     }
+    setSelectedAllergies(prev =>
+      prev.some(a => a.toLowerCase() === value.toLowerCase()) ? prev : [...prev, value]
+    );
   }
 
-  function handleCustomAllergyChange(e) {
-    // Only allow alphabetic characters, spaces, hyphens, commas
-    const filtered = e.target.value.replace(/[^a-zA-Z\s,-]/g, '');
-    setCustomAllergyInput(filtered);
+  function removeCustomAllergy(value) {
+    setSelectedAllergies(prev => prev.filter(a => a !== value));
   }
 
   function handleSave(e) {
@@ -416,18 +446,12 @@ function EditProfileModal({ onClose }) {
                   );
                 })}
               </div>
-              <input
-                className="form-input"
-                type="text"
+              <TagInput
+                tags={customAllergies}
+                onAdd={addCustomAllergy}
+                onRemove={removeCustomAllergy}
                 placeholder="Type other allergy and press Enter..."
-                value={customAllergyInput}
-                onChange={e => {
-                  // Only allow alphabetic characters, spaces, hyphens, commas
-                  const filtered = e.target.value.replace(/[^a-zA-Z\s,-]/g, '');
-                  setCustomAllergyInput(filtered);
-                }}
-                onKeyDown={handleAddCustomAllergy}
-                style={{ fontSize: 13 }}
+                allowAlphaOnly
                 id="custom-allergy-input"
               />
             </div>

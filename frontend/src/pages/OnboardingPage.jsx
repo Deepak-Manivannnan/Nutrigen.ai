@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
+import TagInput from '../components/TagInput';
 import { ChevronRight, ChevronLeft, Check, AlertCircle } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
@@ -25,46 +26,6 @@ function AlphaOnlyInput({ value, onChange, placeholder, id, ...props }) {
       id={id}
       {...props}
     />
-  );
-}
-
-function TagInput({ tags, onAdd, onRemove, placeholder, allowAlphaOnly = false }) {
-  const [input, setInput] = useState('');
-
-  function handleKeyDown(e) {
-    if ((e.key === 'Enter' || e.key === ',') && input.trim()) {
-      e.preventDefault();
-      const val = input.trim().replace(/,$/, '');
-      if (val && !tags.includes(val)) onAdd(val);
-      setInput('');
-    }
-  }
-
-  const handleChange = (e) => {
-    let val = e.target.value;
-    if (allowAlphaOnly) {
-      // Only allow alphabetic characters, spaces, commas, and hyphens
-      val = val.replace(/[^a-zA-Z\s,-]/g, '');
-    }
-    setInput(val);
-  }
-
-  return (
-    <div className="tag-input-container" onClick={e => e.currentTarget.querySelector('input')?.focus()}>
-      {tags.map((t, i) => (
-        <span key={i} className="tag-chip">
-          {t}
-          <button type="button" className="tag-chip-remove" onClick={() => onRemove(t)}>×</button>
-        </span>
-      ))}
-      <input
-        className="tag-raw-input"
-        placeholder={tags.length === 0 ? placeholder : ''}
-        value={input}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-      />
-    </div>
   );
 }
 

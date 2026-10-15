@@ -19,9 +19,14 @@ def _load_prompt() -> str:
 
 class PlannerAgent(BaseAgent[MealPlan]):
     """
-    Planner Agent: Creates a complete multi-day meal plan.
-    Slices calories across meals, locks fixed user meals, utilizes recipe APIs
-    with authentic AI fallbacks, and reformulates plans upon Supervisor feedback.
+    Planner Agent: Creates a complete meal plan of any length.
+    Slices calories across meals, locks fixed user meals, looks up real recipes
+    via TheMealDB with authentic AI fallbacks, and reformulates plans upon
+    Supervisor feedback.
+
+    Every plan - one day or fourteen - goes through the same agent loop. The
+    planner decides for itself whether to call `search_recipes`, how many
+    lookups to make, and whether what came back was worth using.
     """
     def __init__(
         self,
@@ -35,8 +40,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
             output_schema=MealPlan,
             tools=PLANNER_TOOLS,
             client=client,
-            max_steps=max_steps or 2,
-            timeout_seconds=timeout_seconds or 120
+            max_steps=max_steps or 4,
+            timeout_seconds=timeout_seconds or 600
         )
 
     async def generate_plan(
@@ -50,7 +55,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
         task_id: Optional[str] = None,
         current_plan: Optional[MealPlan] = None,
         plan_name: Optional[str] = None,
-        exclusions: Optional[List[str]] = None
+        exclusions: Optional[List[str]] = None,
+        cuisine: Optional[str] = None
     ) -> MealPlan:
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
         plan_name = plan_name or getattr(current_plan, "name", None) or f"{days}-Day {plan_diet.capitalize()} Plan"
@@ -61,6 +67,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
             f"Plan diet type: {plan_diet}.\n"
             f"Provide exactly {days} days, with 3 meals (breakfast, lunch, dinner) per day, ingredients in grams, and accurate calories.\n"
         )
+        if cuisine:
+            task_instruction += f"Requested cuisine: {cuisine}. Favour authentic {cuisine} dishes.\n"
         if feedback:
             task_instruction += (
                 f"\nCRITICAL REVISION FEEDBACK FROM PREVIOUS ROUND (Must be addressed):\n"
@@ -126,39 +134,31 @@ class PlannerAgent(BaseAgent[MealPlan]):
             if all_exclusions:
                 diet_rules_prompt += f"\n  * ADDITIONAL EXCLUSIONS: Zero {', '.join(all_exclusions)}. Do NOT include any recipe or ingredient containing {', '.join(all_exclusions)}."
 
-        meal_plan = None
-        if days > 1:
-            logger.info(f"[PlannerAgent] Generating {days}-day plan directly via structured output.")
-            plan_prompt = (
-                f"You are the Meal Planner Agent. Generate a complete {days}-day clinical meal plan for {user_profile.get('name', 'user')}.\n"
-                f"- Target calories: {calorie_target:.0f} kcal per day (±5%)\n"
-                f"- Diet type: {plan_diet}\n"
-                f"{diet_rules_prompt}"
-                f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
-                f"- Exclude ingredients: {exclusions or []}\n"
-                f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
-                f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
-                f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
-                f"- For EACH meal, provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm). NEVER output generic 1-liners.\n"
+        # Everything the final structured write must see. The agent loop shows
+        # this in both the decide step and the finalize step, so the strict
+        # diet rules travel with the task rather than being bolted onto a
+        # one-off prompt.
+        task_instruction += (
+            f"Strict dietary rules for this plan:\n{diet_rules_prompt}\n"
+            f"Allergies to exclude: {user_profile.get('allergies', [])}.\n"
+            f"Ingredients to exclude: {exclusions or []}.\n"
+            f"Dislikes to avoid: {user_profile.get('dislikes', [])}."
+        )
+        if fixed_meals:
+            task_instruction += "\nFixed meal constraints:\n- " + "\n- ".join(
+                f"{k}: {v}" for k, v in fixed_meals.items()
             )
-            if feedback:
-                plan_prompt += f"\n- Address this clinical review feedback from previous round:\n" + "\n".join(f"  * {fb}" for fb in feedback)
-            if fixed_meals:
-                plan_prompt += f"\n- Fixed meal constraints:\n" + "\n".join(f"  * {k}: {v}" for k, v in fixed_meals.items())
 
-            try:
-                meal_plan = await self.llm.generate_structured(
-                    prompt=plan_prompt,
-                    response_schema=MealPlan
-                )
-            except Exception as e:
-                logger.warning(f"[PlannerAgent] Direct structured generation error: {e}")
-        else:
-            try:
-                meal_plan = await self.run(task_instruction, context)
-            except Exception as e:
-                logger.warning(f"[PlannerAgent] Run encountered error: {e}. Executing direct generation fallback.")
-                meal_plan = MealPlan(days=[], target_calories=calorie_target, version=version)
+        # Single agentic path. The planner decides for itself whether to
+        # consult TheMealDB, how many lookups to make, and whether a result was
+        # worth keeping. Previously multi-day plans bypassed the tool loop and
+        # had recipes pre-fetched for them, while 1-day plans went through the
+        # loop - two different behaviours for the same job.
+        meal_plan = None
+        try:
+            meal_plan = await self.run(task_instruction, context)
+        except Exception as e:
+            logger.warning(f"[PlannerAgent] Agent loop error: {e}")
 
         # Fallback safeguard: If loop returned empty or incomplete days, generate directly
         if not meal_plan or not meal_plan.days or len(meal_plan.days) < days:
@@ -171,12 +171,15 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
                 f"- Exclude ingredients: {exclusions or []}\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
-                f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
+                + (f"- Requested cuisine: {cuisine}. Favour authentic {cuisine} dishes.\n" if cuisine else "")
+                + f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
                 f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
                 f"- For EACH meal, provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm). NEVER output generic 1-liners.\n"
             )
             if feedback:
                 fallback_prompt += f"\n- Address this clinical review feedback:\n" + "\n".join(f"  * {fb}" for fb in feedback)
+            if fixed_meals:
+                fallback_prompt += f"\n- Fixed meal constraints:\n" + "\n".join(f"  * {k}: {v}" for k, v in fixed_meals.items())
             try:
                 direct_plan = await self.llm.generate_structured(
                     prompt=fallback_prompt,
@@ -186,6 +189,13 @@ class PlannerAgent(BaseAgent[MealPlan]):
                     meal_plan = direct_plan
             except Exception as direct_err:
                 logger.error(f"[PlannerAgent] Direct generation error: {direct_err}")
+
+        if meal_plan is None:
+            # The agent loop and the fallback both failed. This used to fall
+            # through to `meal_plan.target_calories` and raise AttributeError
+            # on None, which surfaced as an opaque 500 with no explanation.
+            logger.error("[PlannerAgent] Neither the agent loop nor the fallback produced a plan.")
+            raise RuntimeError("Planner failed to produce a meal plan.")
 
         meal_plan.target_calories = calorie_target
         meal_plan.version = version

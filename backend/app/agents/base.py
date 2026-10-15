@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 from typing import Dict, Any, List, Optional, Type, Callable, TypeVar, Generic
 from pydantic import BaseModel, Field
 from backend.app.config import settings
@@ -7,6 +8,20 @@ from backend.app.llm.client import llm_client, LLMClient, get_llm_client
 from backend.app.observability.logging import get_logger
 
 logger = get_logger("agents.base")
+
+# Upper bound on how much of a tool result is fed back into the agent's history.
+# Sized for a full TheMealDB recipe (20 ingredients plus cooking method), which
+# the previous 1500-char cap cut in half.
+MAX_OBSERVATION_CHARS = 6000
+
+# Upper bound on the agent's per-step reasoning note.
+#
+# Left unbounded this is actively harmful, not just noisy: the note is JSON, so
+# an over-long one can be cut off mid-string and become unparseable, which ends
+# the agent's step early. It is then also copied into every later prompt, so one
+# rambling step inflates the rest of the run. 800 characters is roughly 120
+# words - ample for "why am I calling this tool".
+MAX_THOUGHT_CHARS = 800
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -30,8 +45,22 @@ class AgentStepAction(BaseModel):
             return [ToolArg(key=str(k), value=str(val)) for k, val in v.items()]
         return v
 
+    @field_validator("thought", "finish_summary", mode="after")
+    @classmethod
+    def cap_reasoning_length(cls, v):
+        """Bound the reasoning note so one verbose step cannot poison the run.
+
+        See MAX_THOUGHT_CHARS. This is a safety net for the value we keep; the
+        prompt separately asks the model to stay short, because a thought already
+        truncated by the model's own output budget never reaches a validator.
+        """
+        if v and len(v) > MAX_THOUGHT_CHARS:
+            return v[:MAX_THOUGHT_CHARS].rstrip() + " ..."
+        return v
+
     def get_args_dict(self) -> Dict[str, Any]:
         return {arg.key: arg.value for arg in self.tool_args}
+
 
 class BaseAgent(Generic[T]):
     """
@@ -114,17 +143,34 @@ class BaseAgent(Generic[T]):
                 f"--- TASK ---\n{task_instruction}\n\n"
                 f"--- CONTEXT ---\n{context or {}}\n\n"
                 f"--- HISTORY & OBSERVATIONS ---\n{history_text}\n\n"
-                f"Step {step} of {self.max_steps}: Decide whether to call a tool ('call_tool') or finish ('finish')."
+                f"Step {step} of {self.max_steps}: Decide whether to call a tool ('call_tool') or finish ('finish').\n"
+                f"Keep 'thought' under 100 words. It is a short routing note, not a report - "
+                f"a long one risks being cut off and losing this whole step."
             )
 
-            try:
-                decision: AgentStepAction = await self.llm.generate_structured(
-                    prompt=prompt,
-                    response_schema=AgentStepAction
-                )
-            except Exception as e:
-                logger.error(f"[{self.name}] Error in step decision: {e}")
-                history.append(f"Step {step} observation: Failed to parse action decision: {str(e)}. Proceeding to finish.")
+            # One retry. A single malformed reply is usually transient - an
+            # over-long thought truncated mid-JSON, or a transient decode fault -
+            # and abandoning the step on the first failure throws away work the
+            # agent had already done correctly.
+            decision: Optional[AgentStepAction] = None
+            decision_error: Optional[Exception] = None
+            for attempt in range(2):
+                try:
+                    decision = await self.llm.generate_structured(
+                        prompt=prompt,
+                        response_schema=AgentStepAction
+                    )
+                    break
+                except Exception as e:
+                    decision_error = e
+                    logger.warning(
+                        f"[{self.name}] Step {step} decision attempt "
+                        f"{attempt + 1}/2 failed: {e}"
+                    )
+
+            if decision is None:
+                logger.error(f"[{self.name}] Error in step decision: {decision_error}")
+                history.append(f"Step {step} observation: Failed to parse action decision: {str(decision_error)}. Proceeding to finish.")
                 break
 
             logger.info(f"[{self.name}] Step {step} Think: {decision.thought} | Action: {decision.action}")
@@ -200,10 +246,23 @@ class BaseAgent(Generic[T]):
 
             observation = await self._execute_tool(tool_name, tool_args)
 
-            # Observe
-            obs_str = str(observation)
-            if len(obs_str) > 1500:
-                obs_str = obs_str[:1500] + "... [truncated]"
+            # Observe.
+            # Dictionaries and lists are serialised as JSON rather than Python
+            # repr: it is unambiguous, and models parse JSON far more reliably
+            # than a Python dict literal with bare single-quoted keys.
+            obs_str = (
+                json.dumps(observation, ensure_ascii=False, default=str)
+                if isinstance(observation, (dict, list))
+                else str(observation)
+            )
+            # A recipe from TheMealDB runs to several thousand characters once
+            # its ingredients and method are included, and truncating it mid-way
+            # handed the model half a recipe with no indication anything was
+            # cut off.
+            if len(obs_str) > MAX_OBSERVATION_CHARS:
+                obs_str = obs_str[:MAX_OBSERVATION_CHARS] + (
+                    f"... [truncated at {MAX_OBSERVATION_CHARS} chars]"
+                )
             history.append(
                 f"Step {step}: Called `{tool_name}` with args {tool_args}\nObservation: {obs_str}"
             )

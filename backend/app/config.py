@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     nutrition_model: str = "gemini-3.5-flash-lite"
     allergy_model: str = "gemini-3.5-flash"
     shopper_model: str = "gemini-3.1-flash-lite"
+    # Used ONLY for the Nutrition Agent's two mechanical calls: rewriting a
+    # dish name into a searchable food word, and supplying macros when the
+    # database has nothing. Both are lookups, not reasoning, so the cheaper
+    # non-reasoning model is used and the agent's own model is restored after.
+    ingredient_lookup_model: str = "gemini-2.5-flash"
     
     # Agent Guardrails & Limits
     max_rounds: int = 3

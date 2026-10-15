@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import time
+from contextlib import contextmanager
 from google import genai
 from google.genai import types
 from typing import Optional, Dict, Any, Type
@@ -93,6 +94,24 @@ class LLMClient:
         self.api_key = api_key or settings.gemini_api_key_1
         self.model = model
         self._client: Optional[genai.Client] = None
+
+    @contextmanager
+    def using_model(self, model: str):
+        """Route calls to `model` for the duration of one block, then restore.
+
+        Used for short, mechanical calls - matching an ingredient to a plain
+        food word - where a reasoning-tier model adds latency without adding
+        accuracy. The agent's own configured model is always put back on the
+        way out, including when the block raises, so no later step can inherit
+        the override.
+        """
+        previous = self.model
+        if model and model != previous:
+            self.model = model
+        try:
+            yield self
+        finally:
+            self.model = previous
 
     @property
     def client(self) -> genai.Client:

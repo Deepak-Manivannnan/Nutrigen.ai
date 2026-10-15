@@ -181,17 +181,57 @@ def create_meal_planner_graph(
         )
 
         review_results = await asyncio.gather(nutrition_task, allergy_task, return_exceptions=True)
-        if isinstance(review_results[0], Exception):
-            logger.warning(f"Nutrition review failed with exception: {review_results[0]}; using fallback report.")
-            n_report = NutritionReport(daily_totals=[], passed=True, issues=[], summary="Nutrition verification completed with fallback.")
-        else:
-            n_report = review_results[0]
 
-        if isinstance(review_results[1], Exception):
-            logger.warning(f"Allergy review failed with exception: {review_results[1]}; using fallback report.")
-            a_report = AllergyReport(passed=True, violations=[], investigated_items=[], summary="Allergy verification completed with fallback.")
-        else:
-            a_report = review_results[1]
+        # Fail CLOSED. A verifier that crashed did not clear the plan - it
+        # never got to judge it. Recording a crash as "passed" would put an
+        # unverified plan in front of the user as approved, and for allergy
+        # that means an unscreened ingredient list. An honest error is safer
+        # than a false confirmation, so the turn stops here.
+        nutrition_failed = isinstance(review_results[0], Exception)
+        allergy_failed = isinstance(review_results[1], Exception)
+
+        if nutrition_failed or allergy_failed:
+            failed_checks: list[str] = []
+            if nutrition_failed:
+                logger.error("Nutrition review crashed; plan NOT verified.", exc_info=review_results[0])
+                failed_checks.append("nutrition")
+            if allergy_failed:
+                logger.error("Allergy review crashed; plan NOT verified.", exc_info=review_results[1])
+                failed_checks.append("allergen")
+
+            if nutrition_failed and allergy_failed:
+                user_message = (
+                    "Both our nutrition and allergen checks ran into a backend problem, so we could "
+                    "not verify your plan. Nothing has been approved - please try again in a few minutes."
+                )
+            elif nutrition_failed:
+                user_message = (
+                    "Our nutrition checker ran into a backend problem, so we could not verify the "
+                    "calories and macros in your plan. Nothing has been approved - please try again "
+                    "in a few minutes."
+                )
+            else:
+                user_message = (
+                    "Our allergen checker ran into a backend problem, so we could not screen your "
+                    "plan for allergens. Nothing has been approved - please try again in a few minutes."
+                )
+
+            msg_err = await sup_agent.log_step(
+                state=state,
+                from_agent="supervisor",
+                to_agent="user",
+                msg_type="error",
+                content=f"Verification unavailable - failed: {', '.join(failed_checks)}. {user_message}",
+                payload={"failed_checks": failed_checks}
+            )
+            return {
+                "status": "failed",
+                "system_message": user_message,
+                "trace": [msg_start, msg_err],
+            }
+
+        n_report = review_results[0]
+        a_report = review_results[1]
 
         # Log individual worker reports back to Supervisor
         msg_n = await sup_agent.log_step(
@@ -228,6 +268,12 @@ def create_meal_planner_graph(
 
     async def supervisor_evaluate_node(state: PlanState) -> Dict[str, Any]:
         """Supervisor Step 4: Evaluate review reports with deterministic routing."""
+        # A verification crash already failed the run in parallel_reviews.
+        # Returning early stops decide_next_step from reading two None reports
+        # as "both passed" and overwriting the honest error message.
+        if state.status == "failed":
+            return {}
+
         decision = sup_agent.evaluate_reviews(state)
 
         if decision.action == "retry_planner":
@@ -368,6 +414,10 @@ def create_meal_planner_graph(
 
     def route_after_evaluation(state: PlanState) -> str:
         if state.status == "escalated":
+            return END
+        # Verification crashed - the plan was never judged. Stop here rather
+        # than falling through to the Shopper on the strength of a crash.
+        if state.status == "failed":
             return END
         decision = sup_agent.evaluate_reviews(state)
         if decision.action == "retry_planner":

@@ -38,7 +38,11 @@ class Settings(BaseSettings):
     max_calories_adult: int = 4000
     min_age_allowed: int = 18
     default_plan_days: int = 7
-    max_plan_days: int = 14
+    # Longest plan built in a single run. A 7-day plan is the largest that
+    # reliably fits one structured write from the planner agent; longer plans
+    # came back truncated or internally inconsistent, so anything above this is
+    # declined with an offer of a 7-day plan instead.
+    max_plan_days: int = 7
 
     # Retail markup over wholesale mandi prices (e.g. 25% markup)
     mandi_retail_markup_factor: float = 1.25

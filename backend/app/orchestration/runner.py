@@ -2202,6 +2202,89 @@ async def run_meal_planner(    user_id: int,
         if getattr(intent_data, "new_plan_name", None):
             state.plan_name = intent_data.new_plan_name
 
+        # Plan length guardrail. A plan longer than the supported maximum cannot
+        # be built reliably in one run, so offer the longest supported plan
+        # rather than silently generating something other than what was asked.
+        max_days = settings.max_plan_days
+        if req_days and req_days > max_days:
+            # Pure arithmetic, no model call - reused only for the calorie
+            # figures stored on the pending workflow below.
+            _ok, _msg, _meta = supervisor.check_input_guardrail(
+                user_profile=user_profile,
+                requested_calories=req_cal,
+                requested_days=req_days,
+                fixed_meals=fixed,
+                requested_diet_type=None,
+            )
+            suggested_target = _meta.get("suggested_target", 2350.0)
+            min_safe = _meta.get("min_safe", 2250.0)
+            max_safe = _meta.get("max_safe", 2450.0)
+            diet_display = {"veg": "vegetarian", "non-veg": "non-vegetarian", "vegan": "vegan"}.get(effective_diet, effective_diet)
+            days_context = (
+                f"The user asked for a {req_days}-day {diet_display} meal plan. Plans are limited to "
+                f"{max_days} days, because a longer one is built across several passes and the "
+                f"portions and totals drift apart. In 2-3 warm, natural sentences explain that "
+                f"{req_days} days is longer than we can do well in a single plan, and ask whether "
+                f"they would like a {max_days}-day {diet_display} plan instead. Do not use technical "
+                f"jargon, do not over-apologise, do not use bullet points, no greeting."
+            )
+            msg = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=days_context,
+                history=history,
+                user_name=user_profile.get("name")
+            )
+            state.system_message = msg
+            state.status = "conversational"
+            state.days = max_days
+            state.quick_options = [
+                # "(confirmed)" is what marks this as the echo of our own offer
+                # rather than a fresh specification - see the new_plan branch of
+                # the pending-workflow gate.
+                {"label": f"Yes, {max_days}-day plan please",
+                 "value": f"Create a {max_days}-day {diet_display} meal plan for {int(req_cal) if req_cal else ''} kcal (confirmed)".replace("  ", " ")},
+                {"label": "Never mind", "value": "cancel"},
+            ]
+            await supervisor.log_step(
+                state=state,
+                from_agent="supervisor",
+                to_agent="user",
+                msg_type="feedback",
+                content=msg,
+                payload={"action": "guardrail_block", "requested_days": req_days, "max_days": max_days}
+            )
+            # Stored so the follow-up answer ("yes please") is understood as
+            # agreeing to the shorter plan rather than re-triggering the question.
+            state.pending_workflow = PendingWorkflow(
+                workflow_type="new_plan",
+                pending_conflicts=["days_limit"],
+                asked_questions=[msg],
+                extracted_info={
+                    "effective_diet": effective_diet,
+                    "requested_diet": req_diet,
+                    "diet_resolved": True,
+                    "cal_pending": False,
+                    "cal_resolved": False,
+                    "cal_val": req_cal,
+                    "days_val": max_days,
+                    "requested_days": req_days,
+                    "days_pending": True,
+                    "days_resolved": False,
+                    "suggested": suggested_target,
+                    "min_safe": min_safe,
+                    "max_safe": max_safe,
+                    "req_days": max_days,
+                    "prompt_text": msg,
+                    "prompt_quick_options": list(state.quick_options or []),
+                },
+                next_expected_decision="days_limit_resolution",
+                original_intent="new_plan",
+                original_message=user_message,
+                user_profile_at_start=user_profile.copy(),
+                created_at=datetime.utcnow().isoformat()
+            )
+            return state
+
         # Calorie Guardrail Check: evaluate against the resolved diet (no diet
         # conflict) so a confirmed diet no longer re-triggers the diet question.
         if not cal_resolved:

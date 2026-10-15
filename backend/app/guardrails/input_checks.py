@@ -62,6 +62,25 @@ def validate_input_request(
     # 3. Calorie range check (to get target_cal)
     target_cal = requested_calories if requested_calories is not None else suggested_target
 
+    # Plan length check. Handled before the calorie check because there is no
+    # point negotiating a daily target for a plan that will not be built.
+    if requested_days and requested_days > settings.max_plan_days:
+        return (
+            False,
+            f"Plan length: {requested_days} days exceeds the {settings.max_plan_days}-day maximum.",
+            {
+                "action": "days_too_many",
+                "requested_days": requested_days,
+                "max_days": settings.max_plan_days,
+                "cal_info": cal_info,
+                "days": settings.max_plan_days,
+                "calorie_target": target_cal,
+                "suggested_target": suggested_target,
+                "min_safe": min_safe,
+                "max_safe": max_safe
+            }
+        )
+
     # 2. Diet conflict check: requested diet vs profile diet
     if requested_diet_type:
         req_diet = str(requested_diet_type).lower()

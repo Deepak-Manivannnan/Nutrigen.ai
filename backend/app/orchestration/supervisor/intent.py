@@ -41,7 +41,6 @@ IntentType = Literal[
     "grocery_only", # User wants only grocery list / mandi prices
     "delete_plan",  # Request to delete a meal plan or confirming plan deletion
     "rename_plan",  # Request to rename a meal plan
-    "add_snack",    # Request to add a snack to a meal plan
     "list_plans",   # Request to list/show/view the user's saved meal plans
     "resume_request", # User wants to resume a pending meal planning workflow
     "cancel_request", # User wants to cancel a pending meal planning workflow
@@ -63,6 +62,10 @@ class UserIntentExtraction(BaseModel):
     requested_diet_type: Optional[str] = Field(
         None,
         description="'veg', 'non-veg', or 'vegan' if explicitly requested in this message (e.g. 'vegetarian plan' -> 'veg')."
+    )
+    requested_cuisine: Optional[str] = Field(
+        None,
+        description="Regional cuisine explicitly requested (e.g. 'South Indian' -> 'Indian', 'Italian food' -> 'Italian', 'Mediterranean' -> 'Mediterranean'). TheMealDB area names are: American, British, Canadian, Chinese, Croatian, Dutch, Egyptian, Filipino, French, Greek, Indian, Irish, Italian, Jamaican, Japanese, Kenyan, Malaysian, Mexican, Moroccan, Polish, Portuguese, Russian, Spanish, Thai, Tunisian, Turkish, Ukrainian, Uruguayan, Vietnamese. Map to the closest one. None if not mentioned."
     )
     requested_exclusions: List[str] = Field(
         default_factory=list,
@@ -229,16 +232,14 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 11. **rename_plan**: Requesting to rename a meal plan ("Rename Plan 1 to High Protein", "Rename my meal plan")
 
-12. **add_snack**: Requesting to add a snack to a meal plan ("Add a snack to day 3", "Can I have an evening snack?")
-
-13. **list_plans**: User wants to SEE or LIST their saved meal plans ("Show my meal plans", "List my plans", "What plans do I have?", "View my existing plans")
+12. **list_plans**: User wants to SEE or LIST their saved meal plans ("Show my meal plans", "List my plans", "What plans do I have?", "View my existing plans")
     - NEVER select for create/update/delete/rename requests - only for viewing/listing saved plans
 
-14. **resume_request**: User wants to resume a pending meal planning workflow
+13. **resume_request**: User wants to resume a pending meal planning workflow
     - "Continue creating the plan", "Resume the plan", "Let's continue", "Yes, continue"
     - "I want to continue creating the plan", "Go ahead with the plan"
 
-15. **cancel_request**: User wants to cancel a pending meal planning workflow
+14. **cancel_request**: User wants to cancel a pending meal planning workflow
     - "Cancel the plan", "Stop the plan", "Create a new plan instead", "Start a new plan instead"
     - "Forget the plan", "Start over", "Start fresh", "New plan instead"
 

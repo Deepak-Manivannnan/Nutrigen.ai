@@ -129,6 +129,7 @@ def create_meal_planner_graph(
                 task_id=state.task_id,
                 current_plan=state.current_plan,
                 plan_name=getattr(state, "plan_name", None),
+                cuisine=getattr(state, "cuisine", None),
                 exclusions=state.intent_data.requested_exclusions if state.intent_data else None
             )
 

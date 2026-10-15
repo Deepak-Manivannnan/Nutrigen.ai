@@ -16,7 +16,6 @@ IntentType = Literal[
     "grocery_only",
     "delete_plan",
     "rename_plan",
-    "add_snack",
     "list_plans",
     "resume_request",
     "cancel_request",
@@ -41,6 +40,7 @@ class PlanState(BaseModel):
     intent: IntentType = "chat"
     days: Optional[int] = None
     calorie_target: Optional[float] = None
+    cuisine: Optional[str] = None
     fixed_meals: Dict[str, Any] = Field(default_factory=dict)
     edit_details: Optional[Any] = None
     plan_name: Optional[str] = None

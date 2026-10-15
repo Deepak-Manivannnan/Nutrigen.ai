@@ -90,13 +90,32 @@ class BaseAgent(Generic[T]):
         self.timeout_seconds = timeout_seconds or settings.agent_timeout_seconds
 
     def _format_tools_description(self) -> str:
+        """Describe each tool *with its signature*.
+
+        Showing only the docstring's first line left the model guessing the
+        argument names, and it guessed wrong: the Allergy Agent called
+        `check_allergens(plan=...)` instead of `check_allergens(user_allergies,
+        ingredients)`, the call raised, and the agent abandoned the tool and
+        improvised. Every registered tool is affected, not just that one.
+        """
         if not self.tools:
             return "No external tools available. Rely on instructions and domain reasoning."
         lines = ["Available tools you are authorized to call:"]
         for tool_name, func in self.tools.items():
             doc = inspect.getdoc(func) or "No description provided."
             first_line = doc.splitlines()[0] if doc else ""
-            lines.append(f"- `{tool_name}`: {first_line}")
+            try:
+                params = [
+                    p.name for p in inspect.signature(func).parameters.values()
+                    if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+                    and p.name != "self"
+                ]
+            except (TypeError, ValueError):
+                params = []
+            signature = ", ".join(params)
+            lines.append(f"- `{tool_name}({signature})`: {first_line}")
+            if params:
+                lines.append(f"    Required arguments: {signature}")
         return "\n".join(lines)
 
     async def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:

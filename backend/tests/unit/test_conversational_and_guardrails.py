@@ -3,7 +3,6 @@ from backend.app.orchestration.supervisor.intent import extract_user_intent
 from backend.app.guardrails.input_checks import check_out_of_scope_query
 from backend.app.orchestration.runner import run_meal_planner
 from backend.app.db.session import init_db
-from backend.app.db.seed.seed import seed_allergen_sources
 
 @pytest.mark.asyncio
 async def test_fast_greeting_intent():

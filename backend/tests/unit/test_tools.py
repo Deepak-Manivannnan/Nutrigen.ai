@@ -7,7 +7,6 @@ from backend.app.tools.allergens import check_allergens
 from backend.app.tools.shopping import merge_ingredients
 from backend.app.schemas.domain import Meal, Ingredient
 from backend.app.db.session import init_db, AsyncSessionLocal
-from backend.app.db.seed.seed import seed_allergen_sources
 
 def test_convert_to_grams():
     assert convert_to_grams("100g") == 100.0

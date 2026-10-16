@@ -3,7 +3,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.config import settings
 from backend.app.db.session import init_db
-from backend.app.db.seed.seed import seed_allergen_sources
 from backend.app.api.routes.auth import router as auth_router
 from backend.app.api.routes.profile import router as profile_router
 from backend.app.api.routes.chat import router as chat_router
@@ -14,10 +13,9 @@ from backend.app.observability.logging import setup_logging
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize structured logging, DB tables, and seed data on startup
+    # Initialize structured logging and DB tables on startup
     setup_logging()
     await init_db()
-    await seed_allergen_sources()
     yield
 
 app = FastAPI(

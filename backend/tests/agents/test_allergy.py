@@ -4,7 +4,6 @@ from backend.app.agents.base import AgentStepAction
 from backend.app.schemas.domain import MealPlan, DayPlan, Meal, Ingredient, AllergyReport, AllergyViolation
 from backend.tests.fakes.fake_llm import FakeLLMClient
 from backend.app.db.session import init_db
-from backend.app.db.seed.seed import seed_allergen_sources
 
 @pytest.mark.asyncio
 async def test_allergy_agent_safe():
@@ -29,7 +28,6 @@ async def test_allergy_agent_safe():
 @pytest.mark.asyncio
 async def test_allergy_agent_hard_veto():
     await init_db()
-    await seed_allergen_sources()
 
     fake_llm = FakeLLMClient()
     # Step 1: LLM decides to check allergens

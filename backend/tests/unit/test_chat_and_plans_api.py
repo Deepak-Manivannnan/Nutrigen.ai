@@ -2,7 +2,6 @@ import pytest
 import httpx
 from backend.app.main import app
 from backend.app.db.session import init_db
-from backend.app.db.seed.seed import seed_allergen_sources
 
 @pytest.mark.asyncio
 async def test_health_check_endpoint():

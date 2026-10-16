@@ -9,12 +9,10 @@ from backend.app.orchestration.supervisor.agent import SupervisorAgent
 from backend.app.orchestration.graph import create_meal_planner_graph
 from backend.tests.fakes.fake_llm import FakeLLMClient
 from backend.app.db.session import init_db
-from backend.app.db.seed.seed import seed_allergen_sources
 
 @pytest.mark.asyncio
 async def test_full_graph_happy_path():
     await init_db()
-    await seed_allergen_sources()
 
     fake_p_llm = FakeLLMClient()
     fake_n_llm = FakeLLMClient()
@@ -165,7 +163,6 @@ async def test_graph_input_guardrail_block():
 @pytest.mark.asyncio
 async def test_graph_allergy_veto_replanning_loop():
     await init_db()
-    await seed_allergen_sources()
 
     fake_p_llm = FakeLLMClient()
     fake_n_llm = FakeLLMClient()

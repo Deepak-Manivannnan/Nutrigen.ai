@@ -127,6 +127,10 @@ class UserIntentExtraction(BaseModel):
         None,
         description="Day number targeted for meal edit or snack (e.g. Day 3 -> 3)."
     )
+    include_snack: bool = Field(
+        default=False,
+        description="True if the user explicitly requested to include snacks or snack meals in the meal plan (e.g. 'with snacks', 'including snack meal', 'add snack to meals')."
+    )
 
     @field_validator("requested_exclusions", mode="before")
     @classmethod
@@ -316,6 +320,10 @@ NutriGen's domain is STRICTLY LIMITED to:
 
 **target_day**: Day number for edits/snacks
 - "for day 3", "on day 2" -> 3, 2
+
+**include_snack**: 
+- True if the user explicitly asks for snacks or snack meals when creating a plan (e.g. "with snack", "with snack meal", "include snacks", "plan with snack meals", "create a meal plan with snack meal also").
+- False if snacks are not explicitly requested.
 
 ---
 

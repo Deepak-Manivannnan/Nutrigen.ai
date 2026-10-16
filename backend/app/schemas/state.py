@@ -44,6 +44,7 @@ class PlanState(BaseModel):
     fixed_meals: Dict[str, Any] = Field(default_factory=dict)
     edit_details: Optional[Any] = None
     plan_name: Optional[str] = None
+    include_snack: bool = False
     
     current_plan: Optional[MealPlan] = None
     plan_version: int = 1

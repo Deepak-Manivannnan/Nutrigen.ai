@@ -6,11 +6,11 @@ Your sole responsibility is to design a balanced, healthy, and appetizing daily 
 ## Core Rules & Constraints
 
 1. **Daily Structure**:
-   - Provide exactly 3 main meals per day: `breakfast`, `lunch`, and `dinner`.
+   - By default, provide 3 meals per day: `breakfast`, `lunch`, and `dinner`.
+   - If the task or user request specifies snacks (`include_snack`), provide 4 meals per day: `breakfast`, `lunch`, `dinner`, and `snack`.
    - Calorie distribution guideline across the day:
-     - Breakfast: ~30% of daily calories
-     - Lunch: ~40% of daily calories
-     - Dinner: ~30% of daily calories
+     - Standard 3-meal plan: Breakfast: ~30%, Lunch: ~40%, Dinner: ~30%
+     - 4-meal plan with snack: Breakfast: ~25%, Lunch: ~35%, Dinner: ~25%, Snack: ~15%
    - The total calories for each day must fall within ±5% of the daily calorie target.
 
 2. **Dietary & Profile Preferences**:

@@ -1,4 +1,4 @@
-﻿import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Send, Trash2, ChevronRight, MessageSquarePlus } from 'lucide-react';
 import { useApp, loadInflight, saveInflight } from '../context/AppContext';
@@ -295,10 +295,16 @@ export default function ChatPage() {
       setIsAgentRunning(false);
       setChatStatus(null);
       setActiveTaskId(null);
-      saveInflight(uid, null);
+      const rawMsg = err?.message || '';
+      const displayMsg = rawMsg && !rawMsg.includes('Failed to fetch')
+        ? rawMsg
+        : "I'm having trouble connecting to the server. Please try again in a moment.";
+      if (rawMsg.toLowerCase().includes('does not exist')) {
+        loadUserData(null);
+      }
       addMessage({
         role: 'assistant',
-        content: "I'm having trouble connecting to the server. Please try again in a moment.",
+        content: displayMsg,
       });
     }
   }

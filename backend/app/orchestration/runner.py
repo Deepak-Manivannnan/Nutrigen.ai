@@ -587,7 +587,8 @@ def _same_dish(old_meal, new_meal) -> bool:
     return bool(a) and a == b
 
 _DISH_STOPWORDS = {"dish", "dishes", "meal", "meals", "food", "foods", "recipe", "recipes",
-                   "menu", "item", "items", "that", "this", "it", "the", "a", "an", "some", "all"}
+                   "menu", "item", "items", "that", "this", "it", "the", "a", "an", "some", "all",
+                   "snack", "snacks", "breakfast", "lunch", "dinner"}
 
 def _edit_exclusion_terms(intent_data) -> list:
     """Effective exclusion terms for an edit: the LLM's requested_exclusions
@@ -659,6 +660,10 @@ def _surgically_merge_edit(old_plan, new_plan, intent_data):
                 and mtype == target_meal
             ):
                 keep_new = True  # the explicitly targeted slot
+            elif target_meal and mtype == target_meal and target_day is None:
+                keep_new = True  # plan-wide targeted slot (e.g. snack on all days)
+            elif target_meal and mtype != target_meal:
+                keep_new = False  # preserve non-targeted meals untouched!
             elif target_day is not None and target_meal:
                 keep_new = False
             elif exclusions and _meal_matches_exclusions(old_meal, exclusions):
@@ -825,7 +830,8 @@ async def run_meal_planner(    user_id: int,
         round=1,
         max_rounds=3,
         status="drafting",
-        pending_workflow=pending_workflow
+        pending_workflow=pending_workflow,
+        include_snack=getattr(intent_data, "include_snack", False)
     )
 
     # Supervisor is needed by the resume/cancel branches below, so instantiate it
@@ -2009,7 +2015,7 @@ async def run_meal_planner(    user_id: int,
                 target_day = getattr(intent_data.edit_details, "day", None)
 
                 # Smart snack day resolution: If user is referring to a snack and day is omitted
-                if target_meal_type == "snack" and target_day is None:
+                if target_meal_type == "snack" and target_day is None and not _is_all_days:
                     snack_days = [d.day_number for d in existing_plan.days if any(m.meal_type.lower() == "snack" for m in d.meals)]
                     if len(snack_days) == 1:
                         target_day = snack_days[0]
@@ -2256,6 +2262,7 @@ async def run_meal_planner(    user_id: int,
             or intent_data.fixed_meals
             or intent_data.requested_exclusions
             or intent_data.new_plan_name
+            or getattr(intent_data, "include_snack", False)
         )
         if not has_any_spec and not state.pending_workflow:
             await ask_for_new_plan_specs(supervisor, state, user_profile, user_message, history)

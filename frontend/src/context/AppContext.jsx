@@ -203,9 +203,9 @@ export function AppProvider({ children }) {
       return;
     }
     try {
-      let liveProfile = optProfile;
+      let liveProfile = await fetchCurrentProfile(userId);
       if (!liveProfile) {
-        liveProfile = await fetchCurrentProfile(userId);
+        liveProfile = await fetchCurrentProfile(); // Fallback to /profile/me
       }
 
       if (liveProfile) {

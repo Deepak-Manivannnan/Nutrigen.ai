@@ -57,16 +57,22 @@ class PlannerAgent(BaseAgent[MealPlan]):
         current_plan: Optional[MealPlan] = None,
         plan_name: Optional[str] = None,
         exclusions: Optional[List[str]] = None,
-        cuisine: Optional[str] = None
+        cuisine: Optional[str] = None,
+        include_snack: bool = False
     ) -> MealPlan:
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
         plan_name = plan_name or getattr(current_plan, "name", None) or f"{days}-Day {plan_diet.capitalize()} Plan"
 
+        meals_spec = (
+            "4 meals (breakfast, lunch, dinner, snack) per day (breakfast ~25%, lunch ~35%, dinner ~25%, snack ~15%)"
+            if include_snack
+            else "3 meals (breakfast, lunch, dinner) per day"
+        )
         task_instruction = (
             f"Generate a complete {days}-day meal plan targeting {calorie_target:.0f} calories per day (±5%).\n"
             f"Plan version: {version}.\n"
             f"Plan diet type: {plan_diet}.\n"
-            f"Provide exactly {days} days, with 3 meals (breakfast, lunch, dinner) per day, ingredients in grams, and accurate calories.\n"
+            f"Provide exactly {days} days, with {meals_spec}, ingredients in grams, and accurate calories.\n"
         )
         if cuisine:
             task_instruction += f"Requested cuisine: {cuisine}. Favour authentic {cuisine} dishes.\n"
@@ -80,6 +86,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
             "task_id": task_id,
             "days": days,
             "calorie_target": calorie_target,
+            "include_snack": include_snack,
             "user_profile": {
                 "name": user_profile.get("name"),
                 "diet_type": plan_diet,
@@ -107,7 +114,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 "- STRICT DIETARY RULE: 100% VEGETARIAN.\n"
                 "  * Absolutely NO meat, poultry (NO chicken, turkey), fish (NO salmon, tuna, seafood), beef, pork, or animal gelatin.\n"
                 "  * Absolutely NO eggs unless specifically eggetarian.\n"
-                "  * Every single meal (breakfast, lunch, dinner) MUST contain ONLY vegetarian plant-based foods, lentils/dal, chickpeas/chana, beans/rajma, paneer, tofu, vegetables, grains (quinoa, brown rice, oats, whole wheat roti), nuts, and seeds.\n"
+                "  * Every single meal (breakfast, lunch, dinner, snack) MUST contain ONLY vegetarian plant-based foods, lentils/dal, chickpeas/chana, beans/rajma, paneer, tofu, vegetables, grains (quinoa, brown rice, oats, whole wheat roti), nuts, and seeds.\n"
             )
             if all_exclusions:
                 diet_rules_prompt += f"\n  * ADDITIONAL EXCLUSIONS: Zero {', '.join(all_exclusions)}. Do NOT include any recipe or ingredient containing {', '.join(all_exclusions)}."
@@ -167,6 +174,11 @@ class PlannerAgent(BaseAgent[MealPlan]):
         # Fallback safeguard: If loop returned empty or incomplete days, generate directly
         if not meal_plan or not meal_plan.days or len(meal_plan.days) < days:
             logger.info(f"[PlannerAgent] Plan had {len(meal_plan.days) if meal_plan else 0}/{days} days. Running direct structured generation fallback.")
+            meals_desc_fallback = (
+                f"- Each day must have 4 balanced meals: breakfast (~25% cal), lunch (~35% cal), dinner (~25% cal), and snack (~15% cal) with realistic ingredients (amount_grams).\n"
+                if include_snack
+                else f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
+            )
             fallback_prompt = (
                 f"You are the Meal Planner Agent. Generate a complete {days}-day clinical meal plan for {user_profile.get('name', 'user')}.\n"
                 f"- Target calories: {calorie_target:.0f} kcal per day (±5%)\n"
@@ -245,13 +257,22 @@ class PlannerAgent(BaseAgent[MealPlan]):
         meat_words = ["pork", "beef", "turkey", "meat", "chicken", "fish", "dairy", "allerg",
                       "ham", "bacon", "sausage", "pepperoni", "salami", "prosciutto", "pancetta", "lard"]
 
+        target_meal_type = getattr(edit_details, "meal_type", None)
+        if not target_meal_type:
+            for mt in ["snack", "breakfast", "lunch", "dinner"]:
+                if mt in cl_inst:
+                    target_meal_type = mt
+                    break
+
         # Check if the instruction asks to replace recipes across the plan containing specific excluded ingredients
-        is_exclusion_scrub = (
-            any(w in cl_inst for w in meat_words)
-            and any(w in cl_inst for w in ["replace", "remove", "exclude", "without", "free", "scrub", "different recipes", "swap", "swap out"])
-        ) or (bool(user_profile.get("allergies")) and any(w in cl_inst for w in ["exclude", "remove", "without", "replace recipes", "replace the recipes"])) \
-            or (bool(edit_exclusions) and (edit_scope == "plan" or (
-                getattr(edit_details, "day", None) is None and getattr(edit_details, "meal_type", None) is None)))
+        is_exclusion_scrub = (not target_meal_type) and (
+            (
+                any(w in cl_inst for w in meat_words)
+                and any(w in cl_inst for w in ["replace", "remove", "exclude", "without", "free", "scrub", "different recipes", "swap", "swap out"])
+            ) or (bool(user_profile.get("allergies")) and any(w in cl_inst for w in ["exclude", "remove", "without", "replace recipes", "replace the recipes"])) \
+                or (bool(edit_exclusions) and (edit_scope == "plan" or (
+                    getattr(edit_details, "day", None) is None and getattr(edit_details, "meal_type", None) is None)))
+        )
 
         if is_exclusion_scrub:
             allergies_list = [str(a).lower() for a in user_profile.get("allergies", [])]
@@ -350,7 +371,69 @@ class PlannerAgent(BaseAgent[MealPlan]):
         if not target_day_plan:
             return current_plan
 
-        if is_entire_day:
+        operation = getattr(edit_details, "operation", None) or (
+            "add" if any(k in cl_inst for k in ["add", "include", "put"])
+            else ("remove" if any(k in cl_inst for k in ["remove", "delete", "drop"]) else "replace")
+        )
+
+        is_plan_wide_snack = (
+            target_meal_type == "snack"
+            and (
+                getattr(edit_details, "edit_scope", None) == "plan"
+                or any(k in cl_inst for k in ["all days", "every day", "all meals", "each day", "whole plan", "entire plan", "all the days", "all 4 days", "all 3 days", "all 5 days", "all 7 days"])
+                or (getattr(edit_details, "day", None) is None and operation in ("add", "remove"))
+            )
+        )
+
+        if is_plan_wide_snack:
+            if operation == "remove":
+                for d in updated_plan.days:
+                    d.meals = [m for m in d.meals if m.meal_type.lower() != "snack"]
+                    d.total_calories = round(sum(m.calories for m in d.meals), 1)
+                    d.total_protein_g = round(sum(m.protein_g for m in d.meals), 1)
+                    d.total_carbs_g = round(sum(m.carbs_g for m in d.meals), 1)
+                    d.total_fat_g = round(sum(m.fat_g for m in d.meals), 1)
+            else:
+                if any(k in cl_inst for k in ["lightweight", "light", "low calorie", "low-calorie"]):
+                    snack_cal = target_meal_cal or 120.0
+                else:
+                    snack_cal = target_meal_cal or (0.10 * current_plan.target_calories)
+
+                for d in updated_plan.days:
+                    existing_snack = next((m for m in d.meals if m.meal_type.lower() == "snack"), None)
+                    if existing_snack and operation == "add":
+                        continue
+                    snack_prompt = (
+                        f"You are the Meal Planner Agent. Generate a healthy snack meal for Day {d.day_number} of a {plan_diet} meal plan.\n"
+                        f"- Meal type: snack\n"
+                        f"- Target calories: ~{int(snack_cal)} kcal (±5%)\n"
+                        f"- Diet type: {plan_diet} (FOR VEGETARIAN: ZERO MEAT/CHICKEN/FISH/SEAFOOD, FOR VEGAN: ZERO ANIMAL PRODUCTS)\n"
+                        f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
+                        f"- Also strictly exclude these user-rejected ingredients: {edit_exclusions if edit_exclusions else 'none'}.\n"
+                        f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
+                        f"- Provide realistic single-person ingredients with exact amount_grams.\n"
+                        f"- Provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving).\n"
+                    )
+                    try:
+                        new_snack: Meal = await self.llm.generate_structured(
+                            prompt=snack_prompt,
+                            response_schema=Meal
+                        )
+                        new_snack.meal_type = "snack"
+                        new_snack.diet_type = plan_diet
+                        new_snack.source = "user_specified"
+                        if existing_snack:
+                            idx = d.meals.index(existing_snack)
+                            d.meals[idx] = new_snack
+                        else:
+                            d.meals.append(new_snack)
+                        d.total_calories = round(sum(m.calories for m in d.meals), 1)
+                        d.total_protein_g = round(sum(m.protein_g for m in d.meals), 1)
+                        d.total_carbs_g = round(sum(m.carbs_g for m in d.meals), 1)
+                        d.total_fat_g = round(sum(m.fat_g for m in d.meals), 1)
+                    except Exception as e:
+                        logger.error(f"[PlannerAgent] Error generating snack for Day {d.day_number}: {e}")
+        elif is_entire_day:
             # Regenerate ONLY this day's meals
             day_prompt = (
                 f"You are the Meal Planner Agent. Generate a replacement DayPlan for Day {target_day} of a {plan_diet} meal plan.\n"
@@ -407,10 +490,19 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 target_day_plan.total_carbs_g = round(sum(m.carbs_g for m in target_day_plan.meals), 1)
                 target_day_plan.total_fat_g = round(sum(m.fat_g for m in target_day_plan.meals), 1)
             else:
-                slot_cal = target_meal_cal or (
-                    old_meal.calories if old_meal and old_meal.calories > 100
-                    else (current_plan.target_calories * (0.3 if target_meal_type in ("breakfast", "dinner") else 0.4))
-                )
+                if target_meal_type == "snack":
+                    slot_cal = target_meal_cal or (
+                        120.0 if any(k in cl_inst for k in ["lightweight", "light", "low calorie", "low-calorie"])
+                        else (
+                            old_meal.calories if old_meal and old_meal.calories > 50
+                            else (0.10 * current_plan.target_calories)
+                        )
+                    )
+                else:
+                    slot_cal = target_meal_cal or (
+                        old_meal.calories if old_meal and old_meal.calories > 100
+                        else (current_plan.target_calories * (0.3 if target_meal_type in ("breakfast", "dinner") else 0.4))
+                    )
 
                 meal_prompt = (
                     f"You are the Meal Planner Agent. Generate a single replacement {target_meal_type} meal for Day {target_day}.\n"
@@ -624,6 +716,45 @@ class PlannerAgent(BaseAgent[MealPlan]):
                         "4. Pour the aromatic tempering and vegetables over the hot khichdi, stir gently, and serve."
                     ]
                 }
+            ],
+            "snack": [
+                {
+                    "name": "Spiced Roasted Chickpeas with Lemon & Cucumber" if dairy_free else "Greek Yogurt with Mixed Berries and Walnuts",
+                    "cals": 0.10 * calorie_target,
+                    "protein": 10.0 if dairy_free else 14.0,
+                    "carbs": 24.0,
+                    "fat": 6.0,
+                    "ingredients": [
+                        Ingredient(name="Boiled Chickpeas" if dairy_free else "Plain Greek Yogurt", amount_grams=80.0 if dairy_free else 120.0),
+                        Ingredient(name="Cucumber" if dairy_free else "Mixed Berries", amount_grams=60.0),
+                        Ingredient(name="Olive Oil" if dairy_free else "Walnuts", amount_grams=5.0 if dairy_free else 15.0),
+                        Ingredient(name="Lemon Juice", amount_grams=10.0) if dairy_free else Ingredient(name="Chia Seeds", amount_grams=10.0),
+                    ],
+                    "instructions": [
+                        "1. Sauté chickpeas in olive oil with cumin, chaat masala, and salt until crisp." if dairy_free else "1. Spoon plain Greek yogurt into a bowl.",
+                        "2. Dice fresh cucumber and toss with warm roasted chickpeas." if dairy_free else "2. Wash fresh berries and layer over the yogurt.",
+                        "3. Finish with a squeeze of fresh lemon juice and serve warm." if dairy_free else "3. Sprinkle with crushed walnuts and chia seeds.",
+                        "4. Enjoy as a nutrient-dense, plant-based wholesome snack." if dairy_free else "4. Serve chilled as a refreshing, high-protein snack."
+                    ]
+                },
+                {
+                    "name": "Sliced Apple with Natural Peanut Butter and Cinnamon",
+                    "cals": 0.10 * calorie_target,
+                    "protein": 7.0,
+                    "carbs": 26.0,
+                    "fat": 8.0,
+                    "ingredients": [
+                        Ingredient(name="Fresh Apple", amount_grams=120.0),
+                        Ingredient(name="Natural Peanut Butter", amount_grams=20.0),
+                        Ingredient(name="Ground Cinnamon", amount_grams=2.0)
+                    ],
+                    "instructions": [
+                        "1. Wash and core a crisp fresh apple.",
+                        "2. Slice into even wedges.",
+                        "3. Portion creamy natural peanut butter into a dip bowl.",
+                        "4. Dust apple slices with ground cinnamon and serve with peanut butter."
+                    ]
+                }
             ]
         }
 
@@ -750,6 +881,44 @@ class PlannerAgent(BaseAgent[MealPlan]):
                         "4. Quickly wilt spinach in the remaining pan juices and serve warm alongside chicken."
                     ]
                 }
+            ],
+            "snack": [
+                {
+                    "name": "Hard-Boiled Eggs with Cherry Tomatoes and Sea Salt",
+                    "cals": 0.10 * calorie_target,
+                    "protein": 13.0,
+                    "carbs": 4.0,
+                    "fat": 10.0,
+                    "ingredients": [
+                        Ingredient(name="Whole Eggs", amount_grams=100.0),
+                        Ingredient(name="Cherry Tomatoes", amount_grams=60.0),
+                        Ingredient(name="Black Pepper & Sea Salt", amount_grams=2.0)
+                    ],
+                    "instructions": [
+                        "1. Boil fresh eggs in simmering water for 9 minutes until hard-boiled.",
+                        "2. Cool in an ice bath, peel carefully, and halve lengthwise.",
+                        "3. Wash fresh sweet cherry tomatoes.",
+                        "4. Season eggs with cracked black pepper and sea salt, and serve with tomatoes."
+                    ]
+                },
+                {
+                    "name": "Sliced Roast Chicken Breast with Cucumber and Hummus",
+                    "cals": 0.10 * calorie_target,
+                    "protein": 22.0,
+                    "carbs": 8.0,
+                    "fat": 6.0,
+                    "ingredients": [
+                        Ingredient(name="Skinless Chicken Breast", amount_grams=80.0),
+                        Ingredient(name="Cucumber", amount_grams=60.0),
+                        Ingredient(name="Hummus", amount_grams=25.0)
+                    ],
+                    "instructions": [
+                        "1. Slice cold cooked roast chicken breast into thin bite-sized strips.",
+                        "2. Cut fresh cucumber into crisp dipping batons.",
+                        "3. Plate alongside creamy hummus.",
+                        "4. Season with a pinch of paprika and enjoy fresh."
+                    ]
+                }
             ]
         }
 
@@ -786,7 +955,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                         f"[PlannerAgent] Compliance violation in '{meal.recipe_name}' (diet: {violates_diet}, allergy: {violates_allergy}). "
                         f"Replacing with certified compliant dish."
                     )
-                    slot_key = "breakfast" if "breakfast" in m_type else ("lunch" if "lunch" in m_type else "dinner")
+                    slot_key = "snack" if "snack" in m_type else ("breakfast" if "breakfast" in m_type else ("lunch" if "lunch" in m_type else "dinner"))
 
                     if is_veg:
                         opts = fallback_veg_options.get(slot_key, fallback_veg_options["lunch"])

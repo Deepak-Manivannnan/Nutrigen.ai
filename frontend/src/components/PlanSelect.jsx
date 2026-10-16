@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { sortPlansNewestFirst } from '../utils/planHelpers';
 
 /**
  * Toggle-bar plan selector shared by the Plans and Grocery tabs so both look
@@ -14,12 +15,7 @@ export default function PlanSelect({ plans, activePlanId, onSelect, idPrefix = '
   const [open, setOpen] = useState(false);
   const fieldRef = useRef(null);
 
-  const sorted = (Array.isArray(plans) ? plans : []).slice().sort((a, b) => {
-    const ta = new Date(a.created_at || 0).getTime();
-    const tb = new Date(b.created_at || 0).getTime();
-    if (ta !== tb) return tb - ta;
-    return (b.id || 0) - (a.id || 0);
-  });
+  const sorted = sortPlansNewestFirst(plans);
 
   const active = sorted.find(p => p.id === activePlanId) || sorted[0] || null;
 

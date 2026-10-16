@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  CalendarDays,
   CheckCircle2,
   Clock,
   ShieldCheck,
@@ -11,7 +10,6 @@ import {
   Copy,
   Plus,
   Trash2,
-  ChevronRight,
   Sun,
   Sunrise,
   Sunset,
@@ -25,6 +23,7 @@ import {
 import { useApp } from '../context/AppContext';
 import PlanSelect from '../components/PlanSelect';
 import { generateDemoPlan } from '../utils/workflowSimulator';
+import { sortPlansNewestFirst, isLiquidIngredient } from '../utils/planHelpers';
 
 const MEAL_ICONS = {
   Breakfast: Sunrise,
@@ -245,32 +244,20 @@ export default function PlansPage() {
     setShowPlanMenu(false);
   }
 
-  const LIQUID_KEYWORDS = ['oil', 'milk', 'juice', 'water', 'sauce', 'vinegar', 'broth', 'stock', 'syrup', 'honey', 'dressing', 'buttermilk'];
-  function isLiquid(name) {
-    if (!name) return false;
-    const lower = name.toLowerCase();
-    return LIQUID_KEYWORDS.some(k => lower.includes(k));
-  }
-
   function formatIngredient(ing) {
     if (!ing) return '';
     if (typeof ing === 'string') return ing;
     const name = ing.name || '';
     const amt = Math.round(ing.amount_grams || ing.amount || 0);
     if (!amt) return name;
-    const unit = ing.unit || (isLiquid(name) ? 'ml' : 'g');
+    const unit = ing.unit || (isLiquidIngredient(name) ? 'ml' : 'g');
     return `${name} (${amt}${unit})`;
   }
 
   // Active plan lookup. Sorted newest-first so "recent" tracks created_at
   // rather than last-edited; falls back to the newest plan when nothing is
   // selected, so the most recent plan loads by default.
-  const plansArray = (Array.isArray(plans) ? plans : []).slice().sort((a, b) => {
-    const ta = new Date(a.created_at || 0).getTime();
-    const tb = new Date(b.created_at || 0).getTime();
-    if (ta !== tb) return tb - ta;
-    return (b.id || 0) - (a.id || 0);
-  });
+  const plansArray = sortPlansNewestFirst(plans);
   const activePlan = plansArray.find(p => p.id === activePlanId) || plansArray[0] || null;
 
   function handleApprove(planId) {

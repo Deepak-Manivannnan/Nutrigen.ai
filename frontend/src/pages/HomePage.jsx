@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { Flame, Utensils, ShieldCheck, Target, ArrowRight, Calendar, ShoppingCart, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Flame, Utensils, ShieldCheck, Target, ArrowRight, Calendar, ShoppingCart } from 'lucide-react';
 import MarqueeText from '../components/MarqueeText';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 import bannerFoodImg from '../assets/banner_food.png';

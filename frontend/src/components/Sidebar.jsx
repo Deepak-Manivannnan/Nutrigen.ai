@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Home, MessageSquare, ClipboardList, ShoppingCart, User, ChevronUp, LogOut, Edit3, X, Check } from 'lucide-react';
+import { ChevronUp, LogOut, Edit3, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import TagInput from './TagInput';
 import nutrigenLogo from '../assets/nutrigen_logo.png';

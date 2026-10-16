@@ -2,22 +2,9 @@
  * Nutrigen.ai — Backend API Integration Service
  * Connects frontend with FastAPI multi-agent backend endpoints & SSE streaming.
  */
+import { isLiquidIngredient } from './planHelpers';
 
 const API_BASE = '/api';
-
-/**
- * Health check
- */
-export async function fetchHealth() {
-  try {
-    const res = await fetch(`${API_BASE}/health`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch (err) {
-    console.warn('Backend health check failed:', err);
-    return null;
-  }
-}
 
 /**
  * Fetch current user profile (tries /profile/me, then /profile/1)
@@ -79,20 +66,6 @@ export async function updateProfile(userId, updates) {
   });
   if (!res.ok) throw new Error(`Failed to update profile: ${res.statusText}`);
   return await res.json();
-}
-
-/**
- * Fetch calorie range
- */
-export async function fetchCalorieRange(userId) {
-  try {
-    const res = await fetch(`${API_BASE}/profile/${userId}/calorie-range`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch (err) {
-    console.warn('Could not fetch calorie range:', err);
-    return null;
-  }
 }
 
 /**
@@ -297,14 +270,13 @@ export function adaptBackendGrocery(rawGrocery, planDays = 7) {
 
   const items = rawGrocery.items || [];
   const categories = {};
-  const LIQUID_REGEX = /\b(milk|soya milk|soy milk|almond milk|oat milk|juice|water|oil|olive oil|broth|tea|coffee|vinegar|syrup)\b/i;
 
   items.forEach(item => {
     const rawCat = item.category || 'Produce';
     const catName = rawCat.charAt(0).toUpperCase() + rawCat.slice(1).toLowerCase();
     if (!categories[catName]) categories[catName] = [];
 
-    const isLiquid = LIQUID_REGEX.test(item.name || '');
+    const isLiquid = isLiquidIngredient(item.name || '');
     let qtyStr = '';
     if (isLiquid) {
       if (item.total_grams >= 1000) {

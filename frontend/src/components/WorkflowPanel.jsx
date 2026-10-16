@@ -1,6 +1,6 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
-import { ChevronRight, X, CheckCircle2, Clock, AlertTriangle, BarChart2, ShieldCheck, UtensilsCrossed, ShoppingBasket, Bot } from 'lucide-react';
+import { X, BarChart2, ShieldCheck, UtensilsCrossed, ShoppingBasket, Bot } from 'lucide-react';
 
 const AGENTS = [
   { key: 'supervisor', label: 'Supervisor', desc: { pending: 'Waiting to start', running: 'Analyzing your request', completed: 'Request analyzed', warning: 'Reviewing issues' }, Icon: Bot },

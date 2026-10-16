@@ -13,22 +13,6 @@ const STEPS = [
   { id: 5, label: 'Review' },
 ];
 
-function AlphaOnlyInput({ value, onChange, placeholder, id, ...props }) {
-  const handleChange = (e) => {
-    const filtered = e.target.value.replace(/[^a-zA-Z\s,]/g, '');
-    onChange(filtered);
-  };
-  return (
-    <input
-      type="text"
-      value={value}
-      onChange={handleChange}
-      id={id}
-      {...props}
-    />
-  );
-}
-
 function OptionBtn({ options, value, onChange, multi = false }) {
   function isSelected(opt) { return multi ? (value || []).includes(opt) : value === opt; }
   function handleClick(opt) {

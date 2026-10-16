@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Leaf, ShieldCheck, ShoppingCart, ChevronRight, BarChart2, CalendarDays, UtensilsCrossed, Star } from 'lucide-react';
+import { Leaf, ShieldCheck, ShoppingCart, ChevronRight, BarChart2, UtensilsCrossed, Star } from 'lucide-react';
 import heroFoodImg from '../assets/hero_food.jpg';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 

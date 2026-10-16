@@ -9,6 +9,7 @@ import { useApp } from '../context/AppContext';
 import PlanSelect from '../components/PlanSelect';
 import { adaptBackendGrocery } from '../utils/api';
 import { generateDemoGrocery } from '../utils/workflowSimulator';
+import { sortPlansNewestFirst } from '../utils/planHelpers';
 
 export default function GroceryPage() {
   const navigate = useNavigate();
@@ -19,15 +20,9 @@ export default function GroceryPage() {
   // the selector never offers one. Sorted newest-first; the most recent
   // approved plan is the default when the active id points elsewhere (e.g. the
   // user left a draft selected in the Plans tab).
-  const approvedPlans = (Array.isArray(plans) ? plans : [])
-    .filter(p => p.status === 'approved')
-    .slice()
-    .sort((a, b) => {
-      const ta = new Date(a.created_at || 0).getTime();
-      const tb = new Date(b.created_at || 0).getTime();
-      if (ta !== tb) return tb - ta;
-      return (b.id || 0) - (a.id || 0);
-    });
+  const approvedPlans = sortPlansNewestFirst(
+    (Array.isArray(plans) ? plans : []).filter(p => p.status === 'approved')
+  );
 
   // Resolve active plan and its specific grocery checklist
   const activePlan = approvedPlans.find(p => p.id === activePlanId) || approvedPlans[0] || null;

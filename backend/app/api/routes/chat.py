@@ -89,7 +89,8 @@ async def chat_interaction(
             session=session,
             task_id=payload.task_id,
             history=payload.history,
-            pending_workflow=payload.pending_workflow
+            pending_workflow=payload.pending_workflow,
+            just_created_plan_id=payload.just_created_plan_id,
         )
     except Exception as e:
         logger.error(f"Error during agent execution: {e}")
@@ -119,7 +120,6 @@ async def chat_interaction(
         intent=final_state.intent,
         is_workflow=is_wf,
         deleted_plan_id=final_state.deleted_plan_id,
-        quick_options=final_state.quick_options,
         pending_workflow=final_state.pending_workflow.model_dump() if final_state.pending_workflow else None
     )
     # File the finished response in the delivery inbox under the client's

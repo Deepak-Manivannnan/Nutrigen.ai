@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+﻿import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Send, Trash2, ChevronRight, MessageSquarePlus } from 'lucide-react';
 import { useApp, loadInflight, saveInflight } from '../context/AppContext';
+import AgentTraceBar from '../components/AgentTraceBar';
 import {
   sendChatMessage,
   fetchChatResult,
@@ -12,8 +13,8 @@ import {
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 // Delivery machinery: how the client behaves when the page reloads mid-run.
-// INFLIGHT_TIMEOUT_MS — max wait for an orphaned run before an honest
-// timeout note replaces "typing…". BOOT_GRACE_MS — extra wait granted on
+// INFLIGHT_TIMEOUT_MS â€” max wait for an orphaned run before an honest
+// timeout note replaces "typingâ€¦". BOOT_GRACE_MS â€” extra wait granted on
 // boot so a slow-but-alive run can still deliver after a late reload.
 const INFLIGHT_TIMEOUT_MS = 10 * 60 * 1000;
 const BOOT_GRACE_MS = 3 * 60 * 1000;
@@ -125,11 +126,11 @@ function FormattedMessage({ text, onPlanLink }) {
         if (!line.trim()) {
           return <div key={idx} style={{ height: '0.35rem' }} />;
         }
-        const bulletMatch = line.match(/^(\s*[-•*]\s+)(.*)$/);
+        const bulletMatch = line.match(/^(\s*[-â€¢*]\s+)(.*)$/);
         if (bulletMatch) {
           return (
             <div key={idx} style={{ display: 'flex', gap: '0.4rem', margin: '0.2rem 0' }}>
-              <span style={{ color: 'var(--green-600)', fontWeight: 600 }}>•</span>
+              <span style={{ color: 'var(--green-600)', fontWeight: 600 }}>â€¢</span>
               <span>{renderInlineMarkdown(bulletMatch[2], onPlanLink)}</span>
             </div>
           );
@@ -226,6 +227,15 @@ export default function ChatPage() {
 
   const [input, setInput] = useState('');
   const [showClear, setShowClear] = useState(false);
+  // Task id of the swarm currently running, or null. Drives the progress bar.
+  // bootTaskRef covers the resumed-after-reload case without another setter.
+  const [activeTaskId, setActiveTaskId] = useState(null);
+  const bootTaskRef = useRef(null);
+  // Plan id from the most recent reply, sent back with the next message so the
+  // backend can approve a just-created plan without asking again. A ref, not
+  // state: it is only read at send time and must not trigger a re-render.
+  const lastPlanId = useRef(null);
+  const traceTaskId = activeTaskId || (isAgentRunning ? bootTaskRef.current : null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   // Pending conflict questions (e.g. diet/calorie) and in-progress updates live
@@ -263,6 +273,9 @@ export default function ChatPage() {
     setChatStatus('Nutrigen is typing...');
 
     const taskId = `t-${Math.random().toString(16).slice(2, 10)}`;
+    // Hands the id to the progress bar so it can subscribe to this run's
+    // event stream. Cleared in applyChatResponse once the run is terminal.
+    setActiveTaskId(taskId);
     // In-flight marker: if the page reloads now, boot reconciliation can
     // still collect this run's reply from the delivery inbox.
     saveInflight(uid, { taskId, sentAt: Date.now() });
@@ -272,12 +285,13 @@ export default function ChatPage() {
         role: m.role,
         content: m.content,
       }));
-      const chatRes = await sendChatMessage(uid, text, taskId, historyPayload, pendingWorkflow);
+      const chatRes = await sendChatMessage(uid, text, taskId, historyPayload, pendingWorkflow, lastPlanId);
       await applyChatResponse(chatRes);
     } catch (err) {
       console.warn('Backend chat failed:', err);
       setIsAgentRunning(false);
       setChatStatus(null);
+      setActiveTaskId(null);
       saveInflight(uid, null);
       addMessage({
         role: 'assistant',
@@ -286,18 +300,21 @@ export default function ChatPage() {
     }
   }
 
-  // Applies a finished ChatResponse envelope through the single shared path —
+  // Applies a finished ChatResponse envelope through the single shared path â€”
   // used by live replies AND inbox deliveries alike, so a delivered reply
   // behaves indistinguishably (pending sync, plan sync, badges, buttons).
   // Always terminal: clears the inflight marker and the running flag.
   async function applyChatResponse(chatRes) {
     setChatStatus(null);
     setIsAgentRunning(false);
+    // The bar is progress for an in-flight run only; once the reply lands it
+    // has nothing left to report and must not linger.
+    setActiveTaskId(null);
     if (profile?.id) saveInflight(profile.id, null);
 
     // Keep the pending conflict context so a follow-up answer resolves it
     // (context-level, survives navigating to the Plans tab and back).
-    // A null pending from a finished run overwrites any stale saved one —
+    // A null pending from a finished run overwrites any stale saved one â€”
     // this is what neutralizes resurrected confirmations after reload.
     setPendingWorkflow(chatRes.pending_workflow || null);
 
@@ -315,7 +332,7 @@ export default function ChatPage() {
     let createdPlan = null;
     // Only plan creation / updates / approvals touch the Plans badge.
     // Renames refresh silently (no badge); grocery badges only on approval.
-    if (chatRes.plan_id && (chatRes.intent === 'new_plan' || chatRes.intent === 'edit_meal' || chatRes.intent === 'approve_plan')) {
+    if (chatRes.plan_id && (chatRes.intent === 'new_plan' || chatRes.intent === 'edit_meal' || chatRes.intent === 'approve_plan' || chatRes.intent === 'grocery_only')) {
       try {
         const rawPlan = await fetchPlanById(chatRes.plan_id);
         if (rawPlan) {
@@ -334,14 +351,28 @@ export default function ChatPage() {
       refreshPlans();
     }
 
+    // Successful approval produced a grocery list, so point at the Grocery
+    // tab; successful creation/update points at the plan itself.
+    const action = createdPlan
+      ? (createdPlan.status === 'approved'
+        ? { type: 'view_grocery', label: 'View Grocery List →', target: 'grocery' }
+        : { type: 'view_plan', label: 'View Meal Plan →', target: 'plans' })
+      : null;
+
     addMessage({
       role: 'assistant',
       content: chatRes.response || 'How can I assist you further?',
-      actionType: createdPlan ? 'view_plan' : null,
-      actionLabel: createdPlan ? 'View Meal Plan →' : null,
-      actionTarget: createdPlan ? 'plans' : null,
+      // Only the two destination shortcuts live under a reply. They open an
+      // existing result (the plan that was just made, the grocery list that
+      // approval produced) — they are not quick replies, which stay removed.
+      actionType: action ? action.type : null,
+      actionLabel: action ? action.label : null,
+      actionTarget: action ? action.target : null,
       planId: createdPlan?.id,
       });
+    // Remembered for the next turn so "approve it" right after a creation
+    // resolves to that plan instead of prompting for a target.
+    lastPlanId.current = createdPlan?.id || null;
   }
   const applyRef = useRef(null);
   applyRef.current = applyChatResponse;
@@ -351,7 +382,7 @@ export default function ChatPage() {
   // delivered reply (indistinguishable from live) or time out honestly.
   // Send stays disabled throughout (isAgentRunning), mirroring generation.
   // NOTE: deliberately no "run once" ref guard here. React StrictMode
-  // double-invokes mount effects in dev (run → cleanup → run); the cleanup
+  // double-invokes mount effects in dev (run â†’ cleanup â†’ run); the cleanup
   // below already cancels the first poll, so the second run safely takes over.
   // A ref guard would kill the surviving run too (refs persist across the
   // double-invoke) and silently disable all boot reconciliation.
@@ -363,6 +394,12 @@ export default function ChatPage() {
     let cancelled = false;
     setIsAgentRunning(true);
     setChatStatus('Nutrigen is typing...');
+    // Resumed run: hand its id to the progress bar so a reload mid-swarm still
+    // shows live stages rather than a bare "typingâ€¦" dot. Held in a ref rather
+    // than state because this effect already sets state for the same resume,
+    // and a third setter here would add a warning without adding a render â€”
+    // the isAgentRunning update above already re-renders past this line.
+    bootTaskRef.current = inf.taskId;
     const deadline = Math.max((inf.sentAt || Date.now()) + INFLIGHT_TIMEOUT_MS, Date.now() + BOOT_GRACE_MS);
     const poll = async () => {
       if (cancelled) return;
@@ -372,7 +409,7 @@ export default function ChatPage() {
         saveInflight(uid, null);
         addMessage({
           role: 'assistant',
-          content: "That run didn't finish before you reloaded, so I don't have its reply. Your request is still above — feel free to send it again.",
+          content: "That run didn't finish before you reloaded, so I don't have its reply. Your request is still above â€” feel free to send it again.",
           tone: 'error',
         });
         return;
@@ -405,14 +442,12 @@ export default function ChatPage() {
     handleSend(e.nativeEvent.submitter ? e.nativeEvent.submitter.value : '');
   }
 
+  // Destination shortcuts only: open the plan / grocery tab. Quick replies are
+  // intentionally absent — the user always types their own answer.
   function handleAction(msg) {
     if (msg.actionTarget === 'plans') navigate('/app/plans');
     else if (msg.actionTarget === 'grocery') navigate('/app/grocery');
   }
-
-  // Quick options either send a chat message, or — for plan shortcuts emitted by
-  // the "list my plans" response — navigate straight to that plan in the Plans tab.
-  
 
   // Inline plan links inside message text ([Name](plan://id)) jump straight to
   // that plan in the Plans tab.
@@ -477,6 +512,10 @@ export default function ChatPage() {
             </>
           )}
         </div>
+
+        {/* Live progress for a running swarm. Sits between the last message and
+            the composer, and renders nothing once the run is terminal. */}
+        <AgentTraceBar taskId={traceTaskId} active={isAgentRunning} />
 
         {/* Input */}
         <div className="chat-input-area">

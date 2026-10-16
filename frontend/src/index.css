@@ -670,6 +670,123 @@ ol {
   gap: var(--space-4);
 }
 
+/* ------------------------------------------------------------------
+   Agent progress bar
+   Live stages for a running agent swarm. Collapsed it is one line so it
+   never competes with the message above it; expanded it reads top to
+   bottom like a receipt rather than looping back like a diagram. A retry
+   appends a pass instead of rewinding, so what was tried stays visible.
+   ------------------------------------------------------------------ */
+.agent-trace {
+  flex: none;
+  background: var(--green-50);
+  border-top: 1px solid var(--green-200);
+}
+
+.agent-trace-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px var(--space-6);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--green-700);
+}
+.agent-trace-toggle:hover { background: var(--green-100); }
+.agent-trace-toggle:focus-visible {
+  outline: 2px solid var(--green-400);
+  outline-offset: -2px;
+}
+
+.agent-trace-headline {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-trace-meta {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--green-600);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agent-trace-caret {
+  color: var(--green-600);
+  flex: none;
+  transition: transform 0.18s ease;
+}
+.agent-trace-caret.open { transform: rotate(180deg); }
+
+.agent-trace-spin { animation: agent-trace-spin 1s linear infinite; flex: none; }
+@keyframes agent-trace-spin { to { transform: rotate(360deg); } }
+
+.agent-trace-panel {
+  padding: 2px var(--space-6) 12px;
+  border-top: 1px solid var(--green-200);
+}
+
+.agent-trace-list { list-style: none; padding: 8px 0 0; }
+
+.agent-trace-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 12.5px;
+  color: var(--gray-400);
+}
+.agent-trace-row.done { color: var(--gray-600); }
+.agent-trace-row.running { color: var(--green-700); font-weight: 600; }
+.agent-trace-row.failed { color: var(--color-error); }
+
+.agent-trace-mark {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+}
+.agent-trace-row.done .agent-trace-mark { background: var(--green-500); border-color: var(--green-500); color: #fff; }
+.agent-trace-row.running .agent-trace-mark { border-color: var(--green-400); }
+.agent-trace-row.failed .agent-trace-mark { background: var(--color-error); border-color: var(--color-error); color: #fff; }
+
+.agent-trace-label { flex: none; }
+
+.agent-trace-detail {
+  color: var(--gray-500);
+  font-weight: 400;
+  margin-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-trace-row.running .agent-trace-detail { color: var(--green-600); }
+
+.agent-trace-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--green-200);
+  font-size: 11.5px;
+  color: var(--gray-500);
+}
+
 .chat-input-area {
   height: 72px;
   min-height: 72px;
@@ -843,6 +960,8 @@ ol {
   text-align: right;
 }
 
+/* Destination shortcut under a reply: open the plan just created, or the
+   grocery list approval produced. Not a quick reply - the user always types. */
 .chat-action-btn {
   display: inline-flex;
   align-items: center;
@@ -1836,6 +1955,8 @@ ol {
   transform: rotate(180deg);
 }
 
+/* Menu grows to fit; the tighter rows above mean more plans fit before it
+     starts scrolling. */
 .plan-select-menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -1899,6 +2020,9 @@ ol {
   white-space: nowrap;
 }
 
+/* Plan status lives only in the plan hero card next to the rename (pen) icon,
+   not in the selector dropdown. */
+
 /* ---- Plan selector - DESKTOP ONLY
 
    min-width:769px is the exact mirror of the app's max-width:768px phone
@@ -1912,16 +2036,13 @@ ol {
      it tracks this box - one change sizes both the closed bar and the open
      list.
 
-     Measured against real plan names at 13px semibold, their natural widths
-     run 127px ("7-Day Non-veg Plan") to 258px ("14-Day Non-vegetarian High
-     Protein Plan"). Adding the 8px menu padding and 20px option padding,
-     286px is the true floor for the longest; 300px leaves a little headroom.
-
-     Width was briefly set to 220px to tighten the row, but that clipped 3 of
-     7 sample names - diet wording like "Non-vegetarian" is what pushes them
-     long. The original 280px still clipped one. */
+     Was 300px, which left a lot of empty space on each side of a short name
+     like "7-Day Non-veg Plan" (its natural width is ~127px + 28px padding).
+     Narrowed by a quarter inch per side (0.25in = 24px at 96dpi), so 300px
+     -> 252px. Longer diet wording such as "Non-vegetarian" still fits; the
+     name carries an ellipsis for anything past that. */
   .plan-select-field {
-    width: 300px;
+    width: 252px;
   }
 
   /* Centre the plan names in the open list. .plan-select-option is a flex
@@ -1933,6 +2054,15 @@ ol {
   .plan-select-option {
     justify-content: center;
     text-align: center;
+  }
+
+  /* Tighter rows. Each entry stacks a name over a meta line, so the default
+     9px vertical padding plus the gap made the list feel like a wall. 5px
+     with no inter-row gap keeps the tap targets comfortable while letting
+     roughly twice as many plans show before the menu scrolls. */
+  .plan-select-option {
+    padding-top: 5px;
+    padding-bottom: 5px;
   }
 
   .plan-select-option-main {
@@ -1950,7 +2080,13 @@ ol {
 .meal-card {
   display: flex;
   flex-direction: column;
-  height: 400px;
+  /* Sized to its content, not a flat height. A fixed height left a large
+     empty band at the bottom of every card whose recipe was short, because
+     the step list is not allowed to grow (its parent is flex-grow:0), so
+     nothing absorbed the slack. The min-height is only a floor so that cards
+     in a multi-column row stay the same size. */
+  height: auto;
+  min-height: 320px;
   min-width: 0;
   overflow: hidden;
   padding: var(--space-5);
@@ -2039,6 +2175,47 @@ ol {
 
 .meal-step + .meal-step {
   margin-top: 3px;
+}
+
+/* ---- Meal cards - DESKTOP ONLY
+
+   min-width:769px is the exact mirror of the app's max-width:768px phone
+   breakpoint, so these rules and the phone ones can never both apply. Phones
+   keep the original fixed 400px card and unchanged step behaviour.
+
+   Sits after the base .meal-card rule on purpose: same specificity, so it has
+   to be the later rule to win.
+
+   Two things change on desktop:
+     1. The card is sized to its content instead of a flat 400px, and the row
+        stretches every card to the tallest. Three side-by-side cards of
+        different lengths still line up, with no dead strip under the macros.
+     2. The steps list is capped at three steps (measured in JS, since step
+        text wraps), so anything past that scrolls. The scrollbar stays hidden
+        until the pointer is over the list. */
+@media (min-width: 769px) {
+  .meal-cards-grid {
+    align-items: stretch;
+  }
+
+  /* Cards size themselves now, so all this needs is a slightly lower floor
+     for the narrower desktop columns. */
+  .meal-card {
+    min-height: 300px;
+  }
+
+  /* Macros pinned to the card floor so the bottom edge is identical on every
+     card, however many steps the recipe had. The !important beats the inline
+     marginTop the macro row is rendered with. */
+  .meal-card-body > .macro-row {
+    margin-top: auto !important;
+    padding-top: var(--space-3);
+  }
+
+  /* Fallback for the first paint, before the measurement has run. */
+  .meal-steps-list[data-overflow] {
+    overflow-y: auto;
+  }
 }
 
 /* Plans Tab */
@@ -4425,11 +4602,14 @@ ol {
     padding: var(--space-4) !important;
   }
 
-  /* Label above the macros instead of competing for one line. */
+  /* Label above the macros instead of competing for one line. The meal count
+     goes hard right so the macros below get the full width to themselves. */
   .day-overview-label {
     display: flex !important;
     align-items: baseline;
+    justify-content: space-between;
     gap: var(--space-2);
+    width: 100%;
   }
 
   .day-overview-title {

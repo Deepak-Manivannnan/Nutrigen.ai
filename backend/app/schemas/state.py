@@ -59,7 +59,8 @@ class PlanState(BaseModel):
     trace: Annotated[List[AgentMessage], operator.add] = Field(default_factory=list)
     system_message: Optional[str] = None
     deleted_plan_id: Optional[int] = None
-    quick_options: Optional[List[Dict[str, str]]] = None
+    # No quick_options: the chat is typing-only, so the runner never builds
+    # tappable reply buttons.
     plan_id: Optional[int] = None
     
     # New field for handling off-topic messages during active meal-planning workflow

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   CalendarDays,
@@ -40,10 +40,11 @@ const DEFAULT_STEPS = [
   'Season to taste and serve warm.',
 ];
 
-// Cooking instructions arrive as one blob: sometimes newline-separated, often
-// a run-on paragraph with inline "1." / "2." markers. Split on newlines first,
-// then on any numbered marker still inside a line, so every step renders on
-// its own line instead of trailing the end of the previous one.
+// Cooking instructions arrive in one of three shapes: a real numbered list,
+// newline-separated lines, or - most often - a run-on paragraph of full
+// sentences ("Boil the broth. Cook the noodles. Add the tofu."). The last
+// shape used to collapse into a single numbered step, so a five-step recipe
+// rendered as "1." followed by everything. Split on whichever shape is present.
 function splitSteps(instructions) {
   const raw = (instructions || '').trim();
   if (!raw) return DEFAULT_STEPS;
@@ -57,17 +58,94 @@ function splitSteps(instructions) {
 
   const steps = [];
   for (const part of parts) {
-    // Split before each "1." / "2." style marker that starts a step.
-    const chunks = part.split(/(?=(?:^|\s)\d{1,2}[.)]\s)/).map((c) => c.trim());
-    const meaningful = chunks.filter(Boolean);
-    if (meaningful.length > 1) {
-      steps.push(...meaningful.map((c) => c.replace(/^(?:^|\s)\d{1,2}[.)]\s*/, '')));
-    } else {
-      steps.push(part);
+    // Drop a leading marker first. Left to the sentence splitter below, "1."
+    // reads as a sentence end and the bare number becomes its own step.
+    // \s+ after the dot keeps a leading decimal ("1.5 tbsp") intact.
+    const stripped = part.replace(/^\d{1,2}[.)]\s+/, '');
+
+    // An explicit "1." / "2." sequence is authoritative. Break the line at each
+    // marker first, then drop the marker: splitting on a zero-width lookahead
+    // instead strands the bare "1." as a step of its own.
+    const renumbered = stripped.replace(/(?:^|\s)\d{1,2}[.)]\s+/g, '\n$&');
+    const marked = renumbered
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (marked.length > 1) {
+      steps.push(...marked.map((s) => s.replace(/^\d{1,2}[.)]\s*/, '')));
+      continue;
     }
+    // Otherwise the steps are just sentences. Split after . ! ? when the next
+    // word starts a new sentence. Requiring whitespace after the terminator
+    // keeps decimals intact ("1.5 tbsp"), and requiring an uppercase/quote/
+    // digit next keeps "e.g. chicken" and "Mrs. Smith" together.
+    const sentences = stripped
+      .split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    steps.push(...(sentences.length ? sentences : [part]));
   }
 
-  return steps.length ? steps : DEFAULT_STEPS;
+  const cleaned = steps.filter(Boolean);
+  return cleaned.length ? cleaned : DEFAULT_STEPS;
+}
+
+// How many steps are shown before the list becomes scrollable. The card keeps
+// a fixed rhythm, so a five-step recipe and a two-step recipe read alike.
+const VISIBLE_STEPS = 3;
+
+/**
+ * The numbered cooking steps, capped to VISIBLE_STEPS and scrollable beyond
+ * that. The cap is measured rather than assumed: step text wraps to one or two
+ * lines depending on the dish, so a hard-coded pixel height would either clip a
+ * wrapped step or leave a gap. Measuring the first three and capping the list
+ * to exactly that keeps every card the same height without cutting a line in
+ * half.
+ */
+function MealSteps({ steps }) {
+  const listRef = useRef(null);
+  const [maxHeight, setMaxHeight] = useState(null);
+
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return undefined;
+
+    if (steps.length <= VISIBLE_STEPS) {
+      setMaxHeight(null);
+      return undefined;
+    }
+    const items = el.querySelectorAll('.meal-step');
+    if (items.length <= VISIBLE_STEPS) {
+      setMaxHeight(null);
+      return undefined;
+    }
+    let total = 0;
+    for (let i = 0; i < VISIBLE_STEPS; i += 1) {
+      const item = items[i];
+      total += item.getBoundingClientRect().height;
+      // The gap that follows each step except the last one inside the cap.
+      const gap = parseFloat(window.getComputedStyle(item).marginBottom) || 0;
+      if (i < VISIBLE_STEPS - 1) total += gap;
+    }
+    setMaxHeight(Math.ceil(total));
+    return undefined;
+  }, [steps]);
+
+  return (
+    <ol
+      className="meal-steps-list"
+      ref={listRef}
+      style={maxHeight ? { maxHeight: `${maxHeight}px` } : undefined}
+      data-overflow={steps.length > VISIBLE_STEPS ? 'true' : undefined}
+    >
+      {steps.map((step, sIdx) => (
+        <li key={sIdx} className="meal-step">
+          <span className="meal-step-num">{sIdx + 1}.</span>
+          <span className="meal-step-text">{step}</span>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 function formatTimestamp(ts) {
@@ -494,8 +572,10 @@ export default function PlansPage() {
           >
             <div className="day-overview-label">
               <span className="day-overview-title" style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--gray-900)' }}>
-                Day {currentDay.day} Overview
+                Day {currentDay.day} - Overview
               </span>
+              {/* On a phone the macros take the right half, so the meal count
+                  sits hard right on its own row instead of crowding the title. */}
               <span className="day-overview-sub" style={{ fontSize: 'var(--text-xs)', color: 'var(--gray-500)', marginLeft: 'var(--space-2)' }}>
                 {currentDay.meals?.length || 3} balanced meals
               </span>
@@ -511,11 +591,11 @@ export default function PlansPage() {
 
           {/* Meals Grid */}
           <div
+            className="meal-cards-grid"
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
               gap: 'var(--space-4)',
-              alignItems: 'start',
               marginBottom: 'var(--space-6)',
             }}
           >
@@ -572,14 +652,7 @@ export default function PlansPage() {
                     {/* Cooking instructions, always visible, one numbered step per line */}
                     <div className="meal-instructions">
                       <strong className="meal-instructions-label">Cooking Instructions</strong>
-                      <ol className="meal-steps-list">
-                        {steps.map((step, sIdx) => (
-                          <li key={sIdx} className="meal-step">
-                            <span className="meal-step-num">{sIdx + 1}.</span>
-                            <span className="meal-step-text">{step}</span>
-                          </li>
-                        ))}
-                      </ol>
+                      <MealSteps steps={steps} />
                     </div>
 
                     <div className="macro-row" style={{ marginTop: 'var(--space-3)' }}>

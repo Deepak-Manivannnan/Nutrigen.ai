@@ -106,7 +106,6 @@ def find_referenced_plan(
 # deterministic because the frontend treats them as machine contracts.
 # =========================================================================
 
-
 def _pending_answer_signals(intent_data) -> tuple:
     """Diet/calorie values the LLM extracted, split by confirmation backing."""
     diet_val = intent_data.chosen_diet_type or intent_data.requested_diet_type
@@ -118,7 +117,6 @@ def _pending_answer_signals(intent_data) -> tuple:
     else:
         cal_val, cal_flagged = None, False
     return diet_val, diet_flagged, cal_val, cal_flagged
-
 
 def _llm_answer_signals(intent_data) -> dict:
     """Whether the LLM understood THIS message as answering pending questions.
@@ -134,7 +132,6 @@ def _llm_answer_signals(intent_data) -> dict:
         "fresh_diet": intent_data.requested_diet_type or None,
         "fresh_cal": intent_data.requested_calories,
     }
-
 
 def _contradicts_pending_answers(intent_data, pending_info: dict) -> bool:
     """Whether the LLM-extracted values contradict the pending offered options.
@@ -164,12 +161,10 @@ def _contradicts_pending_answers(intent_data, pending_info: dict) -> bool:
             return True
     return False
 
-
 def _is_complete_fresh_spec(intent_data) -> bool:
     """Whether the LLM extracted a self-contained new spec (diet + calories + days)."""
     diet_val, _, cal_val, _ = _pending_answer_signals(intent_data)
     return bool(diet_val is not None and cal_val is not None and intent_data.requested_days)
-
 
 def _pending_answer_values(intent_data, pending_info: dict) -> tuple:
     """Resolve diet/calorie values for the new-plan branch from LLM signals.
@@ -201,7 +196,6 @@ def _pending_answer_values(intent_data, pending_info: dict) -> tuple:
         )
     return user_diet, user_cal
 
-
 def _describe_competing_action(intent: str) -> str:
     return {
         "new_plan": "create a new meal plan",
@@ -212,7 +206,6 @@ def _describe_competing_action(intent: str) -> str:
         "list_plans": "view your saved meal plans",
     }.get(intent, "do that")
 
-
 def _describe_pending_work(pending) -> str:
     if pending.workflow_type == "edit_meal":
         return "updating your meal plan"
@@ -221,7 +214,6 @@ def _describe_pending_work(pending) -> str:
     if pending.workflow_type == "approve_plan":
         return "approving one of your meal plans"
     return "creating your new meal plan"
-
 
 async def _compose_interruption_message(supervisor, *, user_message: str, user_name: str,
                                         pending, competing_intent: str,
@@ -233,7 +225,9 @@ async def _compose_interruption_message(supervisor, *, user_message: str, user_n
         f"and the pending questions for that have not been answered yet. "
         f"In warm, natural conversational English (2-3 sentences), acknowledge what they just asked for, "
         f"mention you were in the middle of the other task, and ask which they would like to do: "
-        f"continue the in-progress work, or proceed with the new request instead. End with the question."
+        f"continue the in-progress work, or proceed with the new request instead. End with the question. "
+        f"CRITICAL: nothing has been done yet. Do NOT say you have renamed, deleted, approved, updated or "
+        f"created anything, and do NOT report any result. You are only asking which they want."
     )
     return await supervisor.generate_conversational_response(
         user_message=user_message,
@@ -241,7 +235,6 @@ async def _compose_interruption_message(supervisor, *, user_message: str, user_n
         history=history,
         user_name=user_name,
     )
-
 
 async def append_resume_prompt(supervisor, state, response_text: str, pending,
                                user_message: str, history, user_name: str) -> None:
@@ -254,7 +247,8 @@ async def append_resume_prompt(supervisor, state, response_text: str, pending,
         f"You just answered the user's question. But you were also in the middle of {workflow_desc} "
         f"for them, with pending questions still unanswered. "
         f"Write ONE warm, natural bridge sentence (no greeting, no bullet points) that transitions from "
-        f"the answer to asking whether they would like to continue that in-progress work or start a new plan instead."
+        f"the answer to asking whether they would like to continue that in-progress work or start a new plan instead. "
+        f"Mention explicitly that you were in the middle of that task, so it is clear which work you mean."
     )
     bridge = await supervisor.generate_conversational_response(
         user_message=f"(continuing the conversation; the user had asked: '{user_message}')",
@@ -265,11 +259,6 @@ async def append_resume_prompt(supervisor, state, response_text: str, pending,
     state.system_message = f"{response_text}\n\n{bridge}"
     state.status = "conversational"
     resume_label = "Continue the update" if pending.workflow_type == "edit_meal" else "Resume"
-    state.quick_options = [
-        {"label": resume_label, "value": "Continue creating the plan"},
-        {"label": "New Plan", "value": "Create a new plan instead"},
-    ] + list(state.quick_options or [])
-
 
 async def ask_for_new_plan_specs(supervisor, state, user_profile, user_message: str, history) -> None:
     """Offer profile defaults vs. custom specs for a new plan.
@@ -300,10 +289,6 @@ async def ask_for_new_plan_specs(supervisor, state, user_profile, user_message: 
     state.system_message = specs_text
     state.status = "conversational"
     defaults_value = f"Create a {days_default}-day {p_diet} meal plan for {sug} kcal with my profile defaults"
-    state.quick_options = [
-        {"label": f"Use my profile ({diet_display}, {sug:,} kcal)", "value": defaults_value},
-        {"label": "I'll give specs", "value": "I have my own specifications for the new plan"},
-    ]
     # Preserve the offer (and the profile defaults) across navigation so a
     # follow-up "yes, use my profile" still resolves.
     state.pending_workflow = PendingWorkflow(
@@ -316,7 +301,6 @@ async def ask_for_new_plan_specs(supervisor, state, user_profile, user_message: 
             "suggested_calories": sug,
             "days_default": days_default,
             "prompt_text": specs_text,
-            "prompt_quick_options": list(state.quick_options or []),
         },
         next_expected_decision="specs_choice",
         original_intent="new_plan",
@@ -325,29 +309,125 @@ async def ask_for_new_plan_specs(supervisor, state, user_profile, user_message: 
         created_at=datetime.utcnow().isoformat()
     )
 
+async def ask_for_custom_specs(supervisor, state, user_profile, user_message: str,
+                              history, pending) -> None:
+    """The user took the "I'll give specs" branch: now actually ask for them.
 
-def _interruption_quick_options(pending, intent_data, interrupted_message: str) -> list:
-    """Deterministic quick options: machine-contract values the frontend/LLM rely on."""
-    resume_label = "Continue the update" if pending.workflow_type == "edit_meal" else "Continue existing plan"
-    new_label = {
-        "new_plan": "Create the new plan",
-        "rename_plan": "Rename the plan",
-        "delete_plan": "Delete the plan",
-        "approve_plan": "Approve the plan",
-        "edit_meal": "Update the plan",
-    }.get(intent_data.intent, "Do it instead")
-    return [
-        {"label": resume_label, "value": "Resume the plan"},
-        # Echoing the competing request lets the next click re-run it fresh once
-        # the pending workflow is dropped.
-        {"label": new_label, "value": interrupted_message},
-        {"label": "Cancel", "value": "Cancel"},
+    The defaults-vs-custom offer only asks WHICH path they want; once they pick
+    custom specs we have to ask what those specs are. Replaying the stored
+    offer text here is what made the bot answer "I have my own
+    specifications" with the identical sentence it had just used.
+    """
+    p_diet = str(user_profile.get("diet_type", "veg")).lower()
+    diet_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(
+        p_diet, p_diet.capitalize())
+    sug = int(user_profile.get("suggested_target_calories") or 2100)
+    days_default = settings.default_plan_days
+    name = user_profile.get("name", "there")
+
+    context_prompt = (
+        f"The user wants a brand-new meal plan with their OWN specifications rather than the "
+        f"profile defaults (their profile suggests {diet_display}, {sug:,} kcal/day, "
+        f"{days_default} days). "
+        f"In warm, natural conversational English (2-3 sentences), no greeting, acknowledge that you'll "
+        f"build it to their specifications, then ask them to tell you what they want: how many days, "
+        f"what daily calorie target, and which diet (veg, non-veg or vegan). "
+        f"You may mention any food to exclude or any meal they want locked, but only as an optional "
+        f"extra, not as a list of forms to fill in. "
+        f"IMPORTANT: this must be a NEW question that asks for the specifics they just offered to "
+        f"give. Do NOT repeat or reword any earlier question about using their profile defaults."
+    )
+    specs_text = await supervisor.generate_conversational_response(
+        user_message=user_message,
+        context=context_prompt,
+        history=history,
+        user_name=name,
+    )
+    state.system_message = specs_text
+    state.status = "conversational"
+    # Carry the original offer's profile context forward and flip the flag, so
+    # a later bare "7 days" still resolves against this new plan.
+    info = dict(pending.extracted_info or {})
+    info.update({
+        "awaiting_specs_choice": False,
+        "awaiting_custom_specs": True,
+        "profile_diet": p_diet,
+        "suggested_calories": sug,
+        "days_default": days_default,
+        "prompt_text": specs_text,
+    })
+    state.pending_workflow = pending.model_copy(update={"extracted_info": info})
+
+def _tappable_plan_list(all_plans) -> str:
+    """The numbered tappable plan list appended to a composed reply.
+
+    One list only: any enumeration the LLM added itself is stripped first so
+    the plans never render twice.
+    """
+    if not all_plans:
+        return ""
+    lines = [
+        f"{i}. [{getattr(p, 'name', None) or f'Plan #{p.id}'}](plan://{p.id})"
+        for i, p in enumerate(all_plans, start=1)
     ]
+    return "\n".join(lines)
 
+async def _answer_conversational_with_plans(supervisor, state, intent_data, all_plans,
+                                            user_message, history, user_name) -> str:
+    """Answer a conversational/question intent, appending the plan list when asked.
+
+    Shared by every mid-workflow question branch so a "list my plans" asked
+    while a workflow is pending behaves the same wherever it is asked from.
+    """
+    if intent_data.intent == "list_plans":
+        names = ", ".join(getattr(p, "name", None) or f"Plan #{p.id}" for p in all_plans)
+        if not all_plans:
+            context = (
+                "The user asked to see their saved meal plans, but they don't have any yet. "
+                "In one warm sentence, let them know that and invite them to create one."
+            )
+        else:
+            context = (
+                f"The user asked to see their saved meal plans: {names}. "
+                "In one warm sentence, tell them their plans are listed as tappable links below."
+            )
+        answer = await supervisor.generate_conversational_response(
+            user_message=user_message,
+            context=context,
+            history=history,
+            user_name=user_name,
+        )
+        answer = _strip_enumeration(answer)
+        links = _tappable_plan_list(all_plans)
+        return f"{answer}\n{links}" if links else answer
+
+    return await supervisor.handle_conversational_intent(
+        state=state, user_message=user_message,
+        intent=intent_data.intent, history=history,
+    )
+
+async def unique_plan_name(repo, user_id: int, base_name: str) -> str:
+    """Make a plan name unique within the user's account.
+
+    Two plans called "7-Day Non-veg Plan" are indistinguishable in the Plans
+    dropdown, which is how a leftover draft ended up looking like the approved
+    one. Suffix the first duplicate with a counter, and the second with a date.
+    """
+    base = (base_name or "Meal Plan").strip()
+    existing = {
+        (getattr(p, "name", None) or "").strip().lower()
+        for p in (await repo.get_all_by_user(user_id))
+    }
+    if base.lower() not in existing:
+        return base
+    for n in range(2, 100):
+        candidate = f"{base} ({n})"
+        if candidate.lower() not in existing:
+            return candidate
+    return f"{base} ({datetime.utcnow().strftime('%d %b %Y %H:%M')})"
 
 def make_edit_pending(
     response_text: str,
-    quick_options: list,
     stage: str,
     target_plan_name: str,
     user_message: str,
@@ -363,7 +443,6 @@ def make_edit_pending(
             "edit_stage": stage,
             "target_plan_name": target_plan_name,
             "reprompt_text": response_text,
-            "reprompt_quick_options": list(quick_options or []),
         },
         next_expected_decision="edit_clarification",
         original_intent="edit_meal",
@@ -372,10 +451,8 @@ def make_edit_pending(
         created_at=datetime.utcnow().isoformat()
     )
 
-
 def make_delete_pending(
     response_text: str,
-    quick_options: list,
     user_message: str,
     user_profile: Dict[str, Any],
     target_plan_name: Optional[str] = None,
@@ -389,7 +466,6 @@ def make_delete_pending(
         extracted_info={
             "target_plan_name": target_plan_name,
             "reprompt_text": response_text,
-            "reprompt_quick_options": list(quick_options or []),
         },
         next_expected_decision="delete_confirmation",
         original_intent="delete_plan",
@@ -398,10 +474,8 @@ def make_delete_pending(
         created_at=datetime.utcnow().isoformat()
     )
 
-
 def make_approve_pending(
     response_text: str,
-    quick_options: list,
     user_message: str,
     user_profile: Dict[str, Any],
     target_plan_name: Optional[str] = None,
@@ -415,13 +489,61 @@ def make_approve_pending(
         extracted_info={
             "target_plan_name": target_plan_name,
             "reprompt_text": response_text,
-            "reprompt_quick_options": list(quick_options or []),
         },
         next_expected_decision="approve_confirmation",
         original_intent="approve_plan",
         original_message=user_message,
         user_profile_at_start=dict(user_profile or {}),
         created_at=datetime.utcnow().isoformat(),
+    )
+
+# Phrases that report a completed plan action. Used to catch the model
+# narrating an approval/rename/delete that never ran - the failure mode where
+# the user is told "I've approved your plan" and the row stays in draft.
+_DONE_CLAIM_RE = re.compile(
+    r"\b(?:"
+    # "I have gone ahead and officially approved ...", "I've successfully
+    # renamed ..." - the filler words arrive in any order, so allow a run of
+    # known ones rather than a fixed sequence.
+    r"i(?:'ve| have| am| will| can)?\s+"
+    r"(?:(?:just|already|officially|successfully|fully|now|"
+    r"gone\s+ahead\s+and|out\s+there)\s+){0,4}"
+    r"(?:approved|deleted|renamed|created|generated|built|updated|saved|"
+    r"completed|finali[sz]ed|ready)"
+    r"|all\s+done"
+    r"|that'?s\s+done"
+    r"|is\s+now\s+(?:ready|generated|approved|complete)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+async def _ask_without_claiming(supervisor, *, user_message, context, history, user_name):
+    """Compose a question, then reject any reply that claims an action happened.
+
+    The ask-branches (approve, rename, delete, edit) all end in "should I go
+    ahead?". The model sometimes answers its own question and narrates the
+    result, which reads as a completed action that never ran. Detected here and
+    rewritten into the question it was actually asked to ask.
+    """
+    text = await supervisor.generate_conversational_response(
+        user_message=user_message, context=context,
+        history=history, user_name=user_name,
+    )
+    if not _DONE_CLAIM_RE.search(text or ""):
+        return text
+
+    logger.info("Rewriting a reply that claimed an action which had not run.")
+    return await supervisor.generate_conversational_response(
+        user_message=user_message,
+        context=(
+            f"{context}\n"
+            f"IMPORTANT CORRECTION: your previous attempt claimed that the work was already done. "
+            f"It was NOT - nothing has been changed yet. Write only the question, asking whether they "
+            f"want to proceed. Never say you have approved, deleted, renamed, created or updated anything."
+        ),
+        history=history,
+        user_name=user_name,
     )
 
 
@@ -439,7 +561,6 @@ def _strip_enumeration(text: str) -> str:
             if not re.match(r"^\s*(\d+[.)]|[-•*])\s+", ln)]
     return "\n".join(kept).strip()
 
-
 async def _decline_and_represent_pending(supervisor, state, pending, user_message: str,
                                          history, user_name: str) -> None:
     """Out-of-scope question asked mid-workflow: decline WITHOUT answering it,
@@ -450,21 +571,13 @@ async def _decline_and_represent_pending(supervisor, state, pending, user_messag
     )
     if pending.workflow_type in ("edit_meal", "approve_plan"):
         text = pending.extracted_info.get("reprompt_text") or "Where would you like to continue with your update?"
-        quick = pending.extracted_info.get("reprompt_quick_options")
     elif pending.workflow_type == "delete_plan":
         text = pending.extracted_info.get("reprompt_text") or "Which meal plan would you like to delete?"
-        quick = pending.extracted_info.get("reprompt_quick_options")
     else:
         text = pending.extracted_info.get("prompt_text") or "Let's continue creating your meal plan."
-        quick = pending.extracted_info.get("prompt_quick_options")
     state.system_message = f"{decline}\n\n{text}"
     state.status = "conversational"
-    state.quick_options = quick or [
-        {"label": "Resume", "value": "Continue creating the plan"},
-        {"label": "New Plan", "value": "Create a new plan instead"},
-    ]
     # Pending workflow is preserved as-is (still awaiting an answer).
-
 
 def _same_dish(old_meal, new_meal) -> bool:
     """Whether the regenerated meal is the same dish (drift, not a change)."""
@@ -472,10 +585,8 @@ def _same_dish(old_meal, new_meal) -> bool:
     b = (getattr(new_meal, "recipe_name", None) or "").strip().lower()
     return bool(a) and a == b
 
-
 _DISH_STOPWORDS = {"dish", "dishes", "meal", "meals", "food", "foods", "recipe", "recipes",
                    "menu", "item", "items", "that", "this", "it", "the", "a", "an", "some", "all"}
-
 
 def _edit_exclusion_terms(intent_data) -> list:
     """Effective exclusion terms for an edit: the LLM's requested_exclusions
@@ -488,7 +599,6 @@ def _edit_exclusion_terms(intent_data) -> list:
         if len(_tok) >= 3 and _tok not in _DISH_STOPWORDS and _tok not in exclusions:
             exclusions.append(_tok)
     return exclusions
-
 
 def _meal_matches_exclusions(meal, exclusions) -> bool:
     """Whether a meal's recipe/ingredients contain any excluded ingredient."""
@@ -503,7 +613,6 @@ def _meal_matches_exclusions(meal, exclusions) -> bool:
         if ex and ex in hay:
             return True
     return False
-
 
 def _surgically_merge_edit(old_plan, new_plan, intent_data):
     """Merge a regenerated plan over the previous version, keeping every
@@ -601,14 +710,14 @@ def _surgically_merge_edit(old_plan, new_plan, intent_data):
     logger.info(f"Surgical edit merge: kept {kept_count} regenerated meal(s), restored {restored_count} untouched meal(s).")
     return merged
 
-
 async def run_meal_planner(    user_id: int,
     user_message: str,
     user_profile: Dict[str, Any],
     session: Optional[AsyncSession] = None,
     task_id: Optional[str] = None,
     history: Optional[List[Dict[str, Any]]] = None,
-    pending_workflow: Optional[Any] = None
+    pending_workflow: Optional[Any] = None,
+    just_created_plan_id: Optional[int] = None
 ) -> PlanState:
     """
     Main entry point for running the multi-agent meal planning workflow:
@@ -740,10 +849,6 @@ async def run_meal_planner(    user_id: int,
             user_name=user_profile.get("name"),
         )
         state.status = "conversational"
-        state.quick_options = [
-            {"label": "Create new plan", "value": "Create a new meal plan"},
-            {"label": "View existing plans", "value": "Show my meal plans"},
-        ]
         return state
 
     # =========================================================================
@@ -798,10 +903,6 @@ async def run_meal_planner(    user_id: int,
         )
         state.system_message = response_text
         state.status = "conversational"
-        state.quick_options = [
-            {"label": "Create new meal plan", "value": "Create a new meal plan"},
-            {"label": "View existing plans", "value": "Show my meal plans"}
-        ]
         return state
 
     # =========================================================================
@@ -812,10 +913,6 @@ async def run_meal_planner(    user_id: int,
     if intent_data.intent == "list_plans":
         if not all_plans:
             facts = "The user has 0 saved meal plans in their account."
-            state.quick_options = [
-                {"label": "Plan 3 days", "value": "Plan 3 days for 1800 kcal"},
-                {"label": "Plan 7 days", "value": "Plan 7 days vegetarian meal plan"},
-            ]
         else:
             status_lbl = {
                 "approved": "Approved", "draft": "Draft", "reviewing": "Reviewing",
@@ -837,7 +934,6 @@ async def run_meal_planner(    user_id: int,
             facts = "The user's saved meal plans:\n" + "\n".join(plan_facts)
             # No "create" button here: options must stay relevant to the
             # list that was asked for (plans open inline via tappable links).
-            state.quick_options = None
         list_context = (
             f"{facts}\n\n"
             f"In warm, natural conversational English (1-2 sentences), introduce the user's saved plans below. "
@@ -907,7 +1003,6 @@ async def run_meal_planner(    user_id: int,
                     history=history,
                 )
                 state.status = "conversational"
-                state.quick_options = _interruption_quick_options(pending_workflow, intent_data, user_message)
                 # awaiting_specs_choice is cleared so the awaiting_choice branch
                 # owns this turn; prompt_text is kept so "continue" restores the
                 # exact offer the user already saw.
@@ -935,39 +1030,16 @@ async def run_meal_planner(    user_id: int,
                 )
                 return state
             elif intent_data.intent in ("chat", "app_info", "explain", "profile_info", "list_plans"):
-                # Conversational question: answer it, then re-present the
-                # stored specs offer (never silently drop it).
-                if intent_data.intent == "list_plans":
-                    answer = await supervisor.generate_conversational_response(
-                        user_message=user_message,
-                        context=(
-                            "The user asked to see their saved meal plans: "
-                            + ", ".join(getattr(p, "name", None) or f"Plan #{p.id}" for p in all_plans)
-                            + ". In one warm sentence, tell them their plans are listed as tappable links below."
-                        ),
-                        history=history,
-                        user_name=user_profile.get("name"),
-                    )
-                    # Strip any enumeration the model added itself; the
-                    # deterministic tappable list below is the only list.
-                    answer = _strip_enumeration(answer)
-                    if all_plans:
-                        answer = f"{answer}\n" + "\n".join(
-                            f"{i}. [{getattr(p, 'name', None) or f'Plan #{p.id}'}](plan://{p.id})"
-                            for i, p in enumerate(all_plans, start=1)
-                        )
-                else:
-                    answer = await supervisor.handle_conversational_intent(
-                        state=state, user_message=user_message,
-                        intent=intent_data.intent, history=history
-                    )
-                stored_specs = pinfo.get("prompt_text") or "Would you like me to create the plan with your profile preferences, or do you have your own specifications?"
-                stored_quick = pinfo.get("prompt_quick_options")
-                state.system_message = f"{answer}\n\n{stored_specs}"
-                state.status = "conversational"
-                state.quick_options = stored_quick or [
-                    {"label": "Use my profile defaults", "value": "Create it with my profile defaults"},
-                ]
+                # Conversational question: answer it, then bridge back to the
+                # workflow that is still open (never silently drop it).
+                answer = await _answer_conversational_with_plans(
+                    supervisor, state, intent_data, all_plans, user_message,
+                    history, user_profile.get("name"),
+                )
+                await append_resume_prompt(
+                    supervisor, state, answer, pending_workflow,
+                    user_message, history, user_profile.get("name"),
+                )
                 return state
             elif getattr(intent_data, "use_profile_defaults", False):
                 # Agreed to profile defaults: drop the offer; the new-plan
@@ -979,39 +1051,93 @@ async def run_meal_planner(    user_id: int,
                     # Custom specifications given: drop the offer, proceed.
                     state.pending_workflow = None
                 else:
-                    # Bare message: re-present the stored specs offer.
-                    state.system_message = pinfo.get("prompt_text") or "Would you like me to create the plan with your profile preferences, or do you have your own specifications?"
-                    state.status = "conversational"
-                    state.quick_options = pinfo.get("prompt_quick_options")
+                    # The user answered the offer itself ("I have my own
+                    # specifications...") but gave no numbers yet. Ask WHAT they
+                    # want — replaying the stored offer here is what made the
+                    # bot answer the same sentence twice in a row.
+                    await ask_for_custom_specs(
+                        supervisor, state, user_profile, user_message, history,
+                        pending_workflow,
+                    )
+                    await supervisor.log_step(
+                        state=state, from_agent="supervisor", to_agent="user",
+                        msg_type="feedback", content=str(state.system_message)[:120] + "...",
+                        payload={"action": "new_plan_custom_specs_request"}
+                    )
                     return state
             else:
                 # Anything else: re-present the stored specs offer.
                 state.system_message = pinfo.get("prompt_text") or "Would you like me to create the plan with your profile preferences, or do you have your own specifications?"
                 state.status = "conversational"
-                state.quick_options = pinfo.get("prompt_quick_options")
                 return state
+
+        elif pinfo.get("awaiting_custom_specs"):
+            # We already asked "what are your specifications?". Keep steering
+            # toward an actual answer instead of replaying that question, but
+            # let a concrete answer through to the new-plan branch below.
+            if intent_data.intent in ("rename_plan", "delete_plan", "approve_plan", "edit_meal"):
+                state.system_message = await _compose_interruption_message(
+                    supervisor,
+                    user_message=user_message,
+                    user_name=user_profile.get("name"),
+                    pending=pending_workflow,
+                    competing_intent=intent_data.intent,
+                    history=history,
+                )
+                state.status = "conversational"
+                new_info = {k: v for k, v in pinfo.items()
+                            if k not in ("awaiting_interruption_choice", "interrupted_by", "interrupted_intent")}
+                new_info.update({
+                    "awaiting_custom_specs": False,
+                    "awaiting_interruption_choice": True,
+                    "interrupted_by": user_message,
+                    "interrupted_intent": intent_data.intent,
+                })
+                state.pending_workflow = pending_workflow.model_copy(update={"extracted_info": new_info})
+                return state
+            if intent_data.intent == "out_of_scope":
+                await _decline_and_represent_pending(
+                    supervisor, state, pending_workflow,
+                    user_message, history, user_profile.get("name"),
+                )
+                return state
+            if intent_data.intent in ("chat", "app_info", "explain", "profile_info", "list_plans"):
+                answer = await _answer_conversational_with_plans(
+                    supervisor, state, intent_data, all_plans, user_message,
+                    history, user_profile.get("name"),
+                )
+                state.system_message = f"{answer}\n\n{pinfo.get('prompt_text') or ''}".strip()
+                state.status = "conversational"
+                return state
+            if getattr(intent_data, "use_profile_defaults", False):
+                state.pending_workflow = None
+            else:
+                _cs_sig = _llm_answer_signals(intent_data)
+                if _cs_sig["fresh_diet"] or _cs_sig["fresh_cal"] or intent_data.requested_days:
+                    state.pending_workflow = None  # real specs -> new-plan branch
+                else:
+                    # Still no numbers. Re-ask, but freshly composed from THIS
+                    # message so it never reads as a copy of the last turn.
+                    await ask_for_custom_specs(
+                        supervisor, state, user_profile, user_message, history,
+                        pending_workflow,
+                    )
+                    return state
 
         elif awaiting_choice:
             if was_resume_request:
                 # Re-present the pending question(s) exactly as the user saw them.
                 if pending_workflow.workflow_type == "edit_meal":
                     text = pinfo.get("reprompt_text") or "Where would you like to continue with your update?"
-                    quick = pinfo.get("reprompt_quick_options")
                 elif pending_workflow.workflow_type == "delete_plan":
                     text = pinfo.get("reprompt_text") or "Which meal plan would you like to delete?"
-                    quick = pinfo.get("reprompt_quick_options")
                 else:
                     text = pinfo.get("prompt_text") or "Let's continue creating your meal plan."
-                    quick = pinfo.get("prompt_quick_options")
                 new_info = {k: v for k, v in pinfo.items()
                             if k not in ("awaiting_interruption_choice", "interrupted_by", "interrupted_intent")}
                 state.pending_workflow = pending_workflow.model_copy(update={"extracted_info": new_info})
                 state.system_message = text
                 state.status = "conversational"
-                state.quick_options = quick or [
-                    {"label": "Resume", "value": "Continue creating the plan"},
-                    {"label": "New Plan", "value": "Create a new plan instead"},
-                ]
                 await supervisor.log_step(
                     state=state, from_agent="supervisor", to_agent="user",
                     msg_type="feedback", content=str(text)[:120] + "...",
@@ -1029,32 +1155,10 @@ async def run_meal_planner(    user_id: int,
             if intent_data.intent in ("chat", "app_info", "explain", "profile_info", "list_plans"):
                 # The LLM understood this as a question, not the competing action:
                 # answer it, then keep the interruption choice alive.
-                if intent_data.intent == "list_plans":
-                    answer = await supervisor.generate_conversational_response(
-                        user_message=user_message,
-                        context=(
-                            "The user asked to see their saved meal plans: "
-                            + ", ".join(getattr(p, "name", None) or f"Plan #{p.id}" for p in all_plans)
-                            + ". In one warm sentence, tell them their plans are listed as tappable links below."
-                        ),
-                        history=history,
-                        user_name=user_profile.get("name"),
-                    )
-                    # Strip any enumeration the model added itself; the
-                    # deterministic tappable list below is the only list.
-                    answer = _strip_enumeration(answer)
-                    if all_plans:
-                        answer = f"{answer}\n" + "\n".join(
-                            f"{i}. [{getattr(p, 'name', None) or f'Plan #{p.id}'}](plan://{p.id})"
-                            for i, p in enumerate(all_plans, start=1)
-                        )
-                    # No "create" button: options stay relevant to the list.
-                    state.quick_options = None
-                else:
-                    answer = await supervisor.handle_conversational_intent(
-                        state=state, user_message=user_message,
-                        intent=intent_data.intent, history=history
-                    )
+                answer = await _answer_conversational_with_plans(
+                    supervisor, state, intent_data, all_plans, user_message,
+                    history, user_profile.get("name"),
+                )
                 await append_resume_prompt(
                     supervisor, state, answer, pending_workflow,
                     user_message, history, user_profile.get("name"),
@@ -1091,14 +1195,9 @@ async def run_meal_planner(    user_id: int,
         elif was_resume_request and pending_workflow.workflow_type == "edit_meal":
             # Resuming an in-progress update: re-present the stored question.
             text = pinfo.get("reprompt_text") or "Where would you like to continue with your update?"
-            quick = pinfo.get("reprompt_quick_options")
             state.pending_workflow = pending_workflow
             state.system_message = text
             state.status = "conversational"
-            state.quick_options = quick or [
-                {"label": "Swap breakfast", "value": "Swap day 1 breakfast"},
-                {"label": "Add a healthy snack", "value": "Add a snack to my meal plan"},
-            ]
             await supervisor.log_step(
                 state=state, from_agent="supervisor", to_agent="user",
                 msg_type="feedback", content=str(text)[:120] + "...",
@@ -1154,7 +1253,6 @@ async def run_meal_planner(    user_id: int,
                     history=history,
                 )
                 state.status = "conversational"
-                state.quick_options = _interruption_quick_options(pending_workflow, intent_data, user_message)
                 new_info = {
                     **pinfo,
                     "awaiting_interruption_choice": True,
@@ -1178,7 +1276,6 @@ async def run_meal_planner(    user_id: int,
         state.status = "conversational"
         # No quick options here: they must stay relevant to the profile answer,
         # not pitch a new plan under every response.
-        state.quick_options = None
         # A pending workflow is not discarded by a profile inquiry: answer it and
         # ask whether to continue the pending work or start a new plan.
         if state.pending_workflow:
@@ -1213,10 +1310,6 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "conversational"
-            state.quick_options = [
-                {"label": "Plan 3 days (1800 kcal)", "value": "Plan 3 days for 1800 kcal"},
-                {"label": "Plan 7 days (veg)", "value": "Plan 7 days vegetarian meal plan"}
-            ]
             return state
 
         # Only auto-resolve when the user actually identified a plan (by name,
@@ -1276,10 +1369,10 @@ async def run_meal_planner(    user_id: int,
             state.status = "conversational"
             return state
         else:
-            plan_bullets = [f"• **\"{p.name}\"**" for p in all_plans]
             context_prompt = (
                 f"The user wants to rename a meal plan, and they have {len(all_plans)} saved plans: {', '.join(p.name for p in all_plans)}. "
-                f"In polite English, list their plans and ask which one they would like to rename."
+                f"In polite English, list each plan with its length and daily calories so they can tell them apart, "
+                f"then ask which one they would like to rename and what new name they want."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -1289,10 +1382,6 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "conversational"
-            state.quick_options = [
-                {"label": f"Rename {p.name}", "value": f"Rename \"{p.name}\" to "}
-                for p in all_plans
-            ]
             return state
 
     # =========================================================================
@@ -1392,15 +1481,6 @@ async def run_meal_planner(    user_id: int,
                 state.pending_workflow = None
                 # Options stay relevant: with no plans left, offer creation;
                 # otherwise point at the remaining plans.
-                if remaining_count == 0:
-                    state.quick_options = [
-                        {"label": "Plan 3 days (1800 kcal)", "value": "Plan 3 days for 1800 kcal"},
-                        {"label": "Plan 7 days (veg)", "value": "Plan 7 days vegetarian meal plan"}
-                    ]
-                else:
-                    state.quick_options = [
-                        {"label": "View existing plans", "value": "Show my meal plans"}
-                    ]
                 return state
             else:
                 context_prompt = (
@@ -1431,10 +1511,6 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "conversational"
-            state.quick_options = [
-                {"label": "Plan 3 days (1800 kcal)", "value": "Plan 3 days for 1800 kcal"},
-                {"label": "Plan 7 days (veg)", "value": "Plan 7 days vegetarian meal plan"}
-            ]
             return state
 
         # Case 1: 1 plan exists or user specified target plan by name or id
@@ -1457,27 +1533,17 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "conversational"
-            state.quick_options = [
-                {"label": f"Yes, delete {target_plan.name}", "value": f"Yes, delete \"{target_plan.name}\""},
-                {"label": "Cancel", "value": "Cancel"}
-            ]
             state.pending_workflow = make_delete_pending(
-                response_text, state.quick_options, user_message, user_profile,
+                response_text, user_message, user_profile,
                 target_plan_name=target_plan.name,
             )
             return state
 
         # Case 2: Multiple plans exist and user did not name one
-        plan_bullets = []
-        options = []
-        for p in all_plans:
-            plan_bullets.append(f"• **\"{p.name}\"** ({p.days}-day, {int(p.calorie_target)} kcal/day)")
-            options.append({"label": f"Delete {p.name}", "value": f"Delete \"{p.name}\""})
-        options.append({"label": "Cancel", "value": "Cancel"})
-
         context_prompt = (
             f"The user wants to delete a meal plan, and they have multiple plans: {', '.join(p.name for p in all_plans)}. "
-            f"In polite, natural English, ask which meal plan they would like to delete."
+            f"In polite, natural English, list each plan with its length and daily calories so they can tell them apart, "
+            f"then ask which meal plan they would like to delete."
         )
         response_text = await supervisor.generate_conversational_response(
             user_message=user_message,
@@ -1487,7 +1553,6 @@ async def run_meal_planner(    user_id: int,
         )
         state.system_message = response_text
         state.status = "conversational"
-        state.quick_options = options
         state.pending_workflow = make_delete_pending(
             response_text, options, user_message, user_profile,
         )
@@ -1531,10 +1596,6 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "conversational"
-            state.quick_options = [
-                {"label": "Plan 7 days (1800 kcal)", "value": "Plan 7 days for 1800 kcal"},
-                {"label": "Plan 3 days (veg)", "value": "Plan 3 days vegetarian meal plan"},
-            ]
             return state
 
         # An approval we already asked about: resolve the follow-up ("yes", or a
@@ -1545,6 +1606,20 @@ async def run_meal_planner(    user_id: int,
         pending_name = (approve_pending.extracted_info or {}).get("target_plan_name") if approve_pending else None
         if pending_name and not (intent_data.target_plan_name or intent_data.target_plan_id):
             intent_data.target_plan_name = pending_name
+
+        # Approving the plan that was built one turn ago is the obvious next
+        # step and needs no confirmation - the user just watched it appear.
+        # `just_created_plan_id` is the plan id the previous reply returned, so
+        # this can only fire on a fresh referent; a loose "approve it" with no
+        # plan just created still falls through to the questions below.
+        if not intent_data.target_plan_id and not intent_data.target_plan_name:
+            fresh = next((p for p in all_plans if p.id == just_created_plan_id), None)
+            if fresh is not None and fresh.status == "draft":
+                intent_data.target_plan_id = fresh.id
+                logger.info(
+                    f"[{tid}] Approving plan #{fresh.id} directly: it was created "
+                    f"in the previous turn."
+                )
 
         named_target = bool(intent_data.target_plan_name or intent_data.target_plan_id)
 
@@ -1562,20 +1637,17 @@ async def run_meal_planner(    user_id: int,
                     f"will build its grocery list with estimated costs. End with the question. "
                     f"IMPORTANT: do NOT approve anything yet — only ask."
                 )
-                response_text = await supervisor.generate_conversational_response(
+                response_text = await _ask_without_claiming(
+                    supervisor,
                     user_message=user_message,
                     context=context_prompt,
                     history=history,
-                    user_name=user_profile.get("name")
+                    user_name=user_profile.get("name"),
                 )
                 state.system_message = response_text
                 state.status = "conversational"
-                state.quick_options = [
-                    {"label": f"Yes, approve {only_draft.name}", "value": f'Approve "{only_draft.name}"'},
-                    {"label": "Cancel", "value": "Cancel"},
-                ]
                 state.pending_workflow = make_approve_pending(
-                    response_text, state.quick_options, user_message, user_profile,
+                    response_text, user_message, user_profile,
                     target_plan_name=only_draft.name,
                 )
                 return state
@@ -1589,19 +1661,17 @@ async def run_meal_planner(    user_id: int,
                 f"list with estimated costs. End with the question. "
                 f"IMPORTANT: do NOT approve any of them yet."
             )
-            response_text = await supervisor.generate_conversational_response(
+            response_text = await _ask_without_claiming(
+                supervisor,
                 user_message=user_message,
                 context=context_prompt,
                 history=history,
-                user_name=user_profile.get("name")
+                user_name=user_profile.get("name"),
             )
             state.system_message = response_text
             state.status = "conversational"
-            state.quick_options = [
-                {"label": p.name, "value": f'Approve "{p.name}"'} for p in draft_plans
-            ] + [{"label": "Cancel", "value": "Cancel"}]
             state.pending_workflow = make_approve_pending(
-                response_text, state.quick_options, user_message, user_profile,
+                response_text, user_message, user_profile,
             )
             return state
 
@@ -1631,9 +1701,11 @@ async def run_meal_planner(    user_id: int,
             state.system_message = response_text
             state.status = "approved"
             state.plan_id = target_plan.id
-            state.quick_options = [
-                {"label": "View Grocery List →", "value": "Show my grocery list"}
-            ]
+            # The approve question has been answered. Leaving the snapshot on
+            # the state meant the next message re-presented it — including
+            # after an out-of-scope question, which appended a stale
+            # "shall I approve this for you?" to the refusal.
+            state.pending_workflow = None
             return state
 
         # Check if already approving (prevent duplicate)
@@ -1719,9 +1791,11 @@ async def run_meal_planner(    user_id: int,
             state.system_message = response_text
             state.status = "approved"
             state.plan_id = target_plan.id
-            state.quick_options = [
-                {"label": "View Grocery List →", "value": "Show my grocery list"}
-            ]
+            # Same reason as the already-approved branch above: approval
+            # succeeded, so the stored approve offer is spent. Without this it
+            # survived into the next turn and was re-presented as if the plan
+            # were still a draft.
+            state.pending_workflow = None
             return state
         except Exception as e:
             # Revert status on failure
@@ -1755,10 +1829,6 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "draft"
-            state.quick_options = [
-                {"label": "Retry Approval in Plans Tab", "value": "Approve my meal plan"},
-                {"label": "Retry in Chat", "value": "approve this plan"}
-            ]
             return state
 
     # =========================================================================
@@ -1794,10 +1864,6 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "conversational"
-            state.quick_options = [
-                {"label": "Plan 3 days (1800 kcal)", "value": "Plan 3 days for 1800 kcal"},
-                {"label": "Plan 7 days (veg)", "value": "Plan 7 days vegetarian meal plan"}
-            ]
             return state
 
         # Whether the LLM extracted actionable edit specifics (slot, dish,
@@ -1817,19 +1883,25 @@ async def run_meal_planner(    user_id: int,
                 ed.operation = None
             if getattr(ed, "edit_scope", None) not in (None, "slot", "day", "plan"):
                 ed.edit_scope = None
-        has_specific_instructions = bool(
-            has_excl
-            or (
-                ed and (
-                    getattr(ed, "day", None)
-                    or getattr(ed, "meal_type", None)
-                    or getattr(ed, "dish_to_replace", None)
-                    or getattr(ed, "target_meal_calories", None)
-                    or getattr(ed, "operation", None) in ("add", "remove")
-                    or getattr(ed, "edit_scope", None) in ("day", "plan")
-                )
+        # A scope alone is not an instruction. "update the 7-Day plan" yields
+        # edit_scope="plan" but names no change, and trusting that scope sent
+        # the whole plan through a silent regeneration. Scope only counts when
+        # something is named to apply it to — or when the classifier itself
+        # did not flag the message as a vague update request.
+        _named_change = bool(
+            ed and (
+                getattr(ed, "day", None)
+                or getattr(ed, "meal_type", None)
+                or getattr(ed, "dish_to_replace", None)
+                or getattr(ed, "target_meal_calories", None)
+                or getattr(ed, "operation", None) in ("add", "remove")
             )
         )
+        _scoped_change = bool(
+            ed and getattr(ed, "edit_scope", None) in ("day", "plan")
+            and not intent_data.is_update_request
+        )
+        has_specific_instructions = bool(has_excl or _named_change or _scoped_change)
 
         if has_specific_instructions:
             intent_data.is_update_request = False
@@ -1857,13 +1929,8 @@ async def run_meal_planner(    user_id: int,
                 )
                 state.system_message = response_text
                 state.status = "conversational"
-                state.quick_options = [
-                    {"label": "Swap breakfast", "value": f"I want to update \"{target_plan_to_use.name}\": swap day 1 breakfast with oatmeal"},
-                    {"label": "Add a healthy snack", "value": f"Add a snack to \"{target_plan_to_use.name}\""},
-                    {"label": "Change diet to vegetarian", "value": f"Update \"{target_plan_to_use.name}\" to vegetarian"}
-                ]
                 state.pending_workflow = make_edit_pending(
-                    response_text, state.quick_options, "which_meal",
+                    response_text, "which_meal",
                     target_plan_to_use.name, user_message, user_profile
                 )
                 return state
@@ -1880,12 +1947,8 @@ async def run_meal_planner(    user_id: int,
                 )
                 state.system_message = response_text
                 state.status = "conversational"
-                state.quick_options = [
-                    {"label": f"Update {p.name}", "value": f"I want to update \"{p.name}\": "}
-                    for p in all_plans
-                ]
                 state.pending_workflow = make_edit_pending(
-                    response_text, state.quick_options, "which_plan",
+                    response_text, "which_plan",
                     "your meal plan", user_message, user_profile
                 )
                 return state
@@ -1896,7 +1959,14 @@ async def run_meal_planner(    user_id: int,
             # (exclusions, whole-plan scope) runs the swarm; a whole-day scope
             # skips slot clarification; otherwise resolve the missing slot/day.
             ed_scope = getattr(intent_data.edit_details, "edit_scope", None)
-            is_plan_wide = bool(has_excl or ed_scope == "plan")
+            _slot_named = bool(getattr(intent_data.edit_details, "meal_type", None))
+            # A wide scope is only honoured when the message actually covers
+            # everything inside it. "Update day 2 with a different meal" names
+            # one meal, and "update my 7-day plan" names no change at all —
+            # regenerating a whole day or plan there would be a silent,
+            # unrecoverable rewrite of work the user never asked to redo.
+            is_plan_wide = bool(has_excl or (ed_scope == "plan" and not _slot_named))
+            _day_is_whole = bool(ed_scope == "day" and not _slot_named)
 
             if not is_plan_wide:
                 target_meal_type = getattr(intent_data.edit_details, "meal_type", None)
@@ -1910,7 +1980,7 @@ async def run_meal_planner(    user_id: int,
                         target_day = snack_days[0]
                         intent_data.edit_details.day = target_day
 
-                is_entire_day = (ed_scope == "day")
+                is_entire_day = False
 
                 # Check if meal slot is specified, but day is missing/ambiguous across a multi-day plan
                 if target_meal_type and target_day is None and len(existing_plan.days) > 1:
@@ -1927,23 +1997,32 @@ async def run_meal_planner(    user_id: int,
                     )
                     state.system_message = response_text
                     state.status = "conversational"
-                    state.quick_options = [
-                        {"label": f"Day {d.day_number} {target_meal_type.capitalize()}", "value": f"Replace Day {d.day_number} {target_meal_type} in \"{plan_name_disp}\""}
-                        for d in existing_plan.days
-                    ]
                     state.pending_workflow = make_edit_pending(
-                        response_text, state.quick_options, "which_day",
+                        response_text, "which_day",
                         plan_name_disp, user_message, user_profile
                     )
                     return state
 
                 # Check if day is specified, but meal slot is missing/ambiguous
-                if not is_entire_day and target_day and not target_meal_type:
+                if target_day and not target_meal_type:
                     plan_name_disp = getattr(existing_plan, "name", None) or getattr(matched_plan, "name", "your meal plan")
-                    context_prompt = (
-                        f"The user wants to update Day {target_day} in '{plan_name_disp}', but did not specify which meal slot (Breakfast, Lunch, Dinner, or Snack). "
-                        f"In polite, natural, friendly English, ask which meal on Day {target_day} they would like to replace."
-                    )
+                    # "Update day 2 with a different meal" and "redo day 2" are
+                    # indistinguishable from the extracted fields alone, so ask
+                    # instead of guessing — and keep a whole-day option so the
+                    # second meaning is still one click away.
+                    _whole_day_intent = _day_is_whole
+                    if _whole_day_intent:
+                        context_prompt = (
+                            f"The user wants to change Day {target_day} of '{plan_name_disp}', but it is not clear whether they want "
+                            f"one meal of that day replaced or the whole day rebuilt. "
+                            f"In polite, natural, friendly English, ask whether they want to change one specific meal of Day {target_day} "
+                            f"or rebuild the entire day."
+                        )
+                    else:
+                        context_prompt = (
+                            f"The user wants to update Day {target_day} in '{plan_name_disp}', but did not specify which meal slot (Breakfast, Lunch, Dinner, or Snack). "
+                            f"In polite, natural, friendly English, ask which meal on Day {target_day} they would like to replace."
+                        )
                     response_text = await supervisor.generate_conversational_response(
                         user_message=user_message,
                         context=context_prompt,
@@ -1954,12 +2033,8 @@ async def run_meal_planner(    user_id: int,
                     state.status = "conversational"
                     target_day_plan = next((d for d in existing_plan.days if d.day_number == target_day), existing_plan.days[0] if existing_plan.days else None)
                     meals_avail = target_day_plan.meals if target_day_plan else []
-                    state.quick_options = [
-                        {"label": f"Day {target_day} {m.meal_type.capitalize()}", "value": f"Replace Day {target_day} {m.meal_type} in \"{plan_name_disp}\""}
-                        for m in meals_avail
-                    ]
                     state.pending_workflow = make_edit_pending(
-                        response_text, state.quick_options, "which_slot",
+                        response_text, "which_slot",
                         plan_name_disp, user_message, user_profile
                     )
                     return state
@@ -1981,19 +2056,101 @@ async def run_meal_planner(    user_id: int,
             )
             state.system_message = response_text
             state.status = "conversational"
-            state.quick_options = [
-                {"label": f"Update {p.name}", "value": f"I want to update \"{p.name}\": "}
-                for p in all_plans
-            ]
             state.pending_workflow = make_edit_pending(
-                response_text, state.quick_options, "which_plan",
+                response_text, "which_plan",
                 "your meal plan", user_message, user_profile
             )
             return state
 
     # =========================================================================
-    # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
+    # Step 6b: Grocery-list / price requests
+    #
+    # This intent used to have no handler at all, so "show my grocery list"
+    # fell straight through to the planning graph and built a whole new meal
+    # plan - minutes of agent swarm for a lookup. Read-only from here on.
     # =========================================================================
+    if intent_data.intent == "grocery_only":
+        approved_with_grocery = [p for p in all_plans if p.status == "approved" and p.grocery_list]
+        asked_to_approve = False
+
+        if approved_with_grocery:
+            target = approved_with_grocery[0]
+            cost = 0
+            try:
+                gl = target.grocery_list or {}
+                if isinstance(gl, dict):
+                    cost = int(float(gl.get("total_estimated_cost") or 0))
+            except (TypeError, ValueError):
+                cost = 0
+            items = 0
+            try:
+                gl = target.grocery_list or {}
+                items = len(gl.get("items", [])) if isinstance(gl, dict) else 0
+            except (AttributeError, TypeError):
+                items = 0
+            context_prompt = (
+                f"The user asked to see their grocery list. Their plan '{target.name}' is already approved, "
+                f"so a grocery list of {items} items (about Rs {cost:,} estimated) is ready for them. "
+                f"In warm, natural conversational English (1-2 sentences), tell them their grocery list is ready "
+                f"and point them to the Grocery tab to see the full itemised list and current mandi rates. "
+                f"Do NOT create, generate or change any meal plan."
+            )
+            response_text = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=user_profile.get("name"),
+            )
+            state.system_message = response_text
+            state.status = "approved"
+            state.plan_id = target.id
+            state.grocery_list = target.grocery_list
+        else:
+            drafts = [p for p in all_plans if p.status == "draft"]
+            if drafts:
+                context_prompt = (
+                    f"The user asked to see their grocery list, but a grocery list is only built once a plan is "
+                    f"approved. They currently have {len(drafts)} plan(s) sitting in draft: "
+                    f"{', '.join(p.name for p in drafts)}. "
+                    f"In warm, natural English (1-2 sentences), explain that approving a plan builds its grocery "
+                    f"list with prices, and ask whether they would like to approve one of them now."
+                )
+            else:
+                context_prompt = (
+                    "The user asked to see their grocery list, but they have no approved meal plan yet, and a "
+                    "grocery list is only built when a plan is approved. "
+                    "In warm, natural English (1-2 sentences), let them know that and offer to create a meal plan "
+                    "for them, which they can then approve to get its grocery list."
+                )
+            response_text = await _ask_without_claiming(
+                supervisor,
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=user_profile.get("name"),
+            )
+            state.system_message = response_text
+            state.status = "conversational"
+            asked_to_approve = bool(drafts)
+            if drafts:
+                # We just asked whether to approve a named plan, so that
+                # question has to survive into the next turn. Without a stored
+                # target the user's "Yes, approve it" has nothing to resolve
+                # against and the assistant narrates an approval that never ran.
+                state.pending_workflow = make_approve_pending(
+                    response_text, user_message, user_profile,
+                    target_plan_name=drafts[0].name,
+                )
+        # A pending workflow we did not inherit (the user switched topics
+        # mid-flow) still needs the continue-or-start-fresh bridge. The approve
+        # offer we just made is itself the question, so it does not.
+        if state.pending_workflow and not asked_to_approve:
+            await append_resume_prompt(
+                supervisor, state, response_text, state.pending_workflow,
+                user_message, history, user_profile.get("name"),
+            )
+        return state
+
     # =========================================================================
     # Step 7: Handle General Conversational Intents (chat, app_info, out_of_scope, explain)
     # =========================================================================
@@ -2033,8 +2190,6 @@ async def run_meal_planner(    user_id: int,
         # Exclusions are passed to planner separately, not added to user profile allergies
         state.user_profile["allergies"] = list(user_profile.get("allergies", []))
         # Exclusions will be passed to planner via state.intent_data.requested_exclusions
-
-    if intent_data.intent == "new_plan":
 
         profile_diet = str(user_profile.get("diet_type", "veg")).lower()
 
@@ -2144,15 +2299,6 @@ async def run_meal_planner(    user_id: int,
             profile_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(profile_diet, profile_diet.capitalize())
             if is_calorie_unsafe:
                 suggested = int(meta.get("suggested_target", 2250.0))
-                state.quick_options = [
-                    {"label": f"Plan {days_val} days at {cal_val:,} kcal ({req_display})", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {cal_val} kcal (confirmed)"},
-                    {"label": f"Plan {days_val} days at {suggested:,} kcal (Recommended)", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {suggested} kcal (confirmed)"}
-                ]
-            else:
-                state.quick_options = [
-                    {"label": f"Create {req_display} Plan", "value": f"Create {days_val}-day {req_display.lower()} meal plan for {cal_val} kcal (confirmed)"},
-                    {"label": f"Use {profile_display} (Default)", "value": f"Create {days_val}-day {profile_display.lower()} meal plan for {cal_val} kcal (confirmed)"}
-                ]
             
             await supervisor.log_step(
                 state=state,
@@ -2181,7 +2327,6 @@ async def run_meal_planner(    user_id: int,
                     # Snapshot of the exact prompt shown, so resuming after an
                     # interruption re-presents the same question to the user.
                     "prompt_text": conflict_prompt,
-                    "prompt_quick_options": list(state.quick_options or []),
                 },
                 next_expected_decision="diet_conflict_resolution",
                 original_intent="new_plan",
@@ -2238,14 +2383,6 @@ async def run_meal_planner(    user_id: int,
             state.system_message = msg
             state.status = "conversational"
             state.days = max_days
-            state.quick_options = [
-                # "(confirmed)" is what marks this as the echo of our own offer
-                # rather than a fresh specification - see the new_plan branch of
-                # the pending-workflow gate.
-                {"label": f"Yes, {max_days}-day plan please",
-                 "value": f"Create a {max_days}-day {diet_display} meal plan for {int(req_cal) if req_cal else ''} kcal (confirmed)".replace("  ", " ")},
-                {"label": "Never mind", "value": "cancel"},
-            ]
             await supervisor.log_step(
                 state=state,
                 from_agent="supervisor",
@@ -2276,7 +2413,6 @@ async def run_meal_planner(    user_id: int,
                     "max_safe": max_safe,
                     "req_days": max_days,
                     "prompt_text": msg,
-                    "prompt_quick_options": list(state.quick_options or []),
                 },
                 next_expected_decision="days_limit_resolution",
                 original_intent="new_plan",
@@ -2322,11 +2458,6 @@ async def run_meal_planner(    user_id: int,
                 state.system_message = msg
                 state.status = "conversational"
                 diet_lbl = {"veg": "veg", "non-veg": "non-veg", "vegan": "vegan"}.get(effective_diet, "veg")
-                state.quick_options = [
-                    {"label": f"Plan at {int(suggested):,} kcal (Recommended)", "value": f"Plan {req_days} days {diet_lbl} for {int(suggested)} kcal"},
-                    {"label": f"Plan at {int(min_safe):,} kcal (Min Safe)", "value": f"Plan {req_days} days {diet_lbl} for {int(min_safe)} kcal"},
-                    {"label": f"Plan at {int(max_safe):,} kcal (Max Safe)", "value": f"Plan {req_days} days {diet_lbl} for {int(max_safe)} kcal"}
-                ]
                 await supervisor.log_step(
                     state=state,
                     from_agent="supervisor",
@@ -2355,7 +2486,6 @@ async def run_meal_planner(    user_id: int,
                         # Snapshot of the exact prompt shown, so resuming after an
                         # interruption re-presents the same question to the user.
                         "prompt_text": msg,
-                        "prompt_quick_options": list(state.quick_options or []),
                     },
                     next_expected_decision="calorie_guardrail_resolution",
                     original_intent="new_plan",
@@ -2386,6 +2516,41 @@ async def run_meal_planner(    user_id: int,
         except Exception:
             pass
     state.intent_data = intent_data
+
+    # =========================================================================
+    # Step 9a: Swarm gate - the single place that decides to spend minutes of
+    # agent time.
+    #
+    # Every branch above returns on its own, so reaching here means the intent
+    # fell through. That is exactly how "show my grocery list" once started a
+    # full plan build. Only an explicit create/update may cross this line;
+    # anything else is answered conversationally instead of being planned.
+    # =========================================================================
+    SWARM_INTENTS = ("new_plan", "edit_meal")
+    if intent_data.intent not in SWARM_INTENTS:
+        logger.info(
+            f"[{tid}] Intent '{intent_data.intent}' reached the swarm gate; "
+            f"answering conversationally instead of planning."
+        )
+        response_text = await supervisor.generate_conversational_response(
+            user_message=user_message,
+            context=(
+                f"The user sent: '{user_message}'. This was understood as '{intent_data.intent}', which does not "
+                f"need a new meal plan. Reply conversationally to what they actually asked, in warm natural "
+                f"English. Do NOT create, generate or change any meal plan, and do NOT claim to have done so."
+            ),
+            history=history,
+            user_name=user_profile.get("name"),
+        )
+        state.system_message = response_text
+        state.status = "conversational"
+        if state.pending_workflow:
+            await append_resume_prompt(
+                supervisor, state, response_text, state.pending_workflow,
+                user_message, history, user_profile.get("name"),
+            )
+        return state
+
     graph = create_meal_planner_graph()
     result = await graph.ainvoke(state)
 
@@ -2447,10 +2612,6 @@ async def run_meal_planner(    user_id: int,
                         history=history,
                         user_name=user_profile.get("name")
                     )
-                    final_state.quick_options = [
-                        {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
-                        {"label": "Update the plan", "value": f"I want to update \"{plan_title}\": "}
-                    ]
                     # The update completed - drop any lingering in-progress update state.
                     final_state.pending_workflow = None
                     logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
@@ -2460,6 +2621,7 @@ async def run_meal_planner(    user_id: int,
                     final_state.current_plan.diet_type = plan_diet_str
                     display_diet = "Non-Veg" if plan_diet_str == "non-veg" else plan_diet_str.capitalize()
                     p_name = getattr(final_state, "plan_name", None) or getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
+                    p_name = await unique_plan_name(repo, user_id, p_name)
                     final_state.current_plan.name = p_name
                     created_p = await repo.create_plan(
                         user_id=user_id,
@@ -2485,10 +2647,6 @@ async def run_meal_planner(    user_id: int,
                         history=history,
                         user_name=user_profile.get("name")
                     )
-                    final_state.quick_options = [
-                        {"label": f"Approve {p_name}", "value": f"Approve \"{p_name}\""},
-                        {"label": "Update the plan", "value": f"I want to update \"{p_name}\": "}
-                    ]
                     logger.info(f"[{tid}] Persisted new plan to database as Version 1 Draft.")
             else:
                 async with AsyncSessionLocal() as temp_session:
@@ -2522,16 +2680,13 @@ async def run_meal_planner(    user_id: int,
                             history=history,
                             user_name=user_profile.get("name")
                         )
-                        final_state.quick_options = [
-                            {"label": f"Approve {plan_title}", "value": f"Approve \"{plan_title}\""},
-                            {"label": "Update the plan", "value": f"I want to update \"{plan_title}\": "}
-                        ]
                         logger.info(f"[{tid}] Updated existing plan '{plan_title}' to Version {new_version} Draft (incremented={is_edit_previously_approved}).")
                     else:
                         plan_diet_str = getattr(final_state.current_plan, "diet_type", None) or user_profile.get("diet_type", "veg")
                         final_state.current_plan.diet_type = plan_diet_str
                         display_diet = "Non-Veg" if plan_diet_str == "non-veg" else plan_diet_str.capitalize()
                         p_name = getattr(final_state, "plan_name", None) or getattr(final_state.current_plan, "name", None) or f"{len(final_state.current_plan.days)}-Day {display_diet} Plan"
+                        p_name = await unique_plan_name(repo, user_id, p_name)
                         final_state.current_plan.name = p_name
                         persist_status = final_state.status if final_state.status in ("escalated", "failed") else "draft"
                         created_p = await repo.create_plan(
@@ -2558,10 +2713,6 @@ async def run_meal_planner(    user_id: int,
                             history=history,
                             user_name=user_profile.get("name")
                         )
-                        final_state.quick_options = [
-                            {"label": f"Approve {p_name}", "value": f"Approve \"{p_name}\""},
-                            {"label": "Update the plan", "value": f"I want to update \"{p_name}\": "}
-                        ]
         except Exception as e:
             logger.error(f"[{tid}] Failed to persist plan to database: {e}", exc_info=True)
 

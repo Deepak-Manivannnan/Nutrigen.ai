@@ -287,6 +287,10 @@ NutriGen's domain is STRICTLY LIMITED to:
 - dish_to_replace: Specific dish mentioned ("replace paneer tikka"). For ingredient swaps ("replace all beef dishes with chicken", "swap out the pork"), ALWAYS set this to the ingredient/dish being removed ("beef dishes", "pork") — never leave it null when the message names what goes away.
 - operation: "add" (for "add a snack"), "remove" (for "remove the snack"), "replace" (default for "replace/swap/change")
 - edit_scope: "slot" (one specific day+meal), "day" ("redo day 2", "change all of day 3"), "plan" ("replace all recipes", "remove dairy from every day", whole-plan changes), null when unclear or still being clarified
+  - CRITICAL — only widen the scope when the message really covers EVERY meal it names:
+    - Use "plan" ONLY when the message explicitly covers the WHOLE plan ("all days", "every day", "everywhere", "the whole plan", "all my meals", "replace all recipes"). Naming a single meal slot ("swap dinner", "change breakfast", "replace lunch") is NOT plan scope, even though it may repeat across days.
+    - Use "day" ONLY when the message covers every meal of that one day ("redo day 2", "change all of day 3", "rebuild day 2"). "Update day 2 with a different meal" names ONE meal, so that is "slot" scope with day set.
+  - When a scope is widened but the message names no day or no slot, keep day/meal_type null so the app can ask which one. Silently regenerating a whole day or the whole plan is the one outcome you must never produce.
 
 **explain_query**: For explain intent, the specific question or topic the user wants explained.
 
@@ -373,70 +377,6 @@ CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers die
 
 ---
 
-### PARAMETER EXTRACTION RULES
-
-**requested_days**: 
-- "tomorrow" -> 1, "for 3 days" -> 3, "for a week" -> 7, "5-day" -> 5
-- If not mentioned -> default 7 days (configurable, max 14 days)
-
-**requested_calories** (DAILY TOTAL ONLY):
-- "1800 kcal", "1900 calories", "2000 cal" -> 1800.0, 1900.0, 2000.0
-- If message mentions "breakfast/lunch/dinner/snack" with calories -> that's SLOT calories, NOT daily -> set requested_calories = null
-- "per day", "daily" + number -> daily calories
-
-**requested_diet_type**: "vegetarian"/"veg" -> "veg", "vegan" -> "vegan", "non-vegetarian"/"non-veg" -> "non-veg"
-- Check "non-veg" FIRST to avoid matching "veg" in "non veg"
-
-**requested_exclusions**: Extract ingredients to avoid/exclude
-- "no dairy", "without pork", "exclude beef", "dairy-free", "avoid nuts"
-- "replace all beef dishes with chicken", "swap dishes containing pork" -> ["beef"], ["pork"]
-- Normalize: "egg" -> "eggs"
-
-**diet_conflict_confirmed** + **chosen_diet_type**: 
-- True only if user explicitly CONFIRMS/CHOSES diet after a conflict prompt
-- "Yes, go with vegetarian" -> True, "veg"
-- "Use non-veg" -> True, "non-veg"
-- "Create vegan plan" -> True, "vegan"
-
-**calorie_guardrail_confirmed** + **chosen_calorie_target**: 
-- True only if user explicitly CONFIRMS/CHOSES calorie target after a guardrail prompt
-- "Yes, 2100 kcal" -> True, 2100.0
-- "Go with 2100" -> True, 2100.0
-- "Use recommended" -> True, <suggested_value>
-
-**fixed_meals**: Explicitly locked meals
-- "Fix breakfast as eggs and toast" -> [{"meal_type": "breakfast", "dish": "eggs and toast"}]
-
-**edit_details** (only for edit_meal intent):
-- day: "day 2" -> 2, "on day 3" -> 3
-- meal_type: "breakfast"/"lunch"/"dinner"/"snack"
-- target_meal_calories: SLOT calories only (e.g. "400-500 kcal" -> 450.0, "500 kcal" -> 500.0)
-- instructions: Full user message for context
-- dish_to_replace: Specific dish mentioned ("replace paneer tikka"). For ingredient swaps ("replace all beef dishes with chicken", "swap out the pork"), ALWAYS set this to the ingredient/dish being removed ("beef dishes", "pork") — never leave it null when the message names what goes away.
-- operation: "add" (for "add a snack"), "remove" (for "remove the snack"), "replace" (default for "replace/swap/change")
-- edit_scope: "slot" (one specific day+meal), "day" ("redo day 2", "change all of day 3"), "plan" ("replace all recipes", "remove dairy from every day", whole-plan changes), null when unclear or still being clarified
-
-**explain_query**: For explain intent, the specific question or topic the user wants explained.
-
-**target_plan_id**: "Plan #9", "Plan 9", "#9" -> 9
-
-**target_plan_name**: Plan name in quotes or mentioned
-- "delete 'Good Meal'", "update Good Meal" -> "Good Meal"
-- Check quotes first: "Good Meal", 'Good Plan'
-
-**new_plan_name**: For rename_plan, the new name
-- "Rename Plan 1 to High Protein" -> "High Protein"
-
-**is_delete_confirmation**: 
-- True if user confirms: "yes", "yeah", "confirm", "go ahead", "delete it", "ok"
-- Check if previous assistant asked for confirmation (from history)
-
-**is_update_request**: 
-- True ONLY if general "update my meal plan" WITHOUT specific meal slot details
-- False if specific instructions given (replace, swap, exclusions, etc.)
-
-**target_day**: Day number for edits/snacks
-- "for day 3", "on day 2" -> 3, 2
 
 ---
 

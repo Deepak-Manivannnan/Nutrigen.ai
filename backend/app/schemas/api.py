@@ -69,6 +69,10 @@ class ChatRequest(BaseModel):
     task_id: Optional[str] = None
     history: Optional[List[Dict[str, Any]]] = None
     pending_workflow: Optional[Dict[str, Any]] = None
+    # Plan id from the assistant reply immediately before this one. Lets the
+    # backend tell "approve the plan you just made" apart from a loose "approve
+    # it" with no fresh referent, without matching on the message text.
+    just_created_plan_id: Optional[int] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -78,4 +82,5 @@ class ChatResponse(BaseModel):
     intent: Optional[str] = None
     is_workflow: bool = False
     pending_workflow: Optional[Dict[str, Any]] = None
-    quick_options: Optional[List[Dict[str, str]]] = None
+    # No quick_options: the chat is typing-only. Every reply is answered by
+    # typing, so the API deliberately ships no tappable reply buttons.

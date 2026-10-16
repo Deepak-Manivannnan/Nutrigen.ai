@@ -3,6 +3,7 @@ from backend.app.orchestration.runner import run_meal_planner
 from backend.app.db.session import init_db, AsyncSessionLocal
 from backend.app.db.repositories.plans import PlanRepository
 from backend.app.tools.diet_rules import check_diet_compliance
+from backend.tests.conftest import clear_plans, throwaway_user
 
 @pytest.mark.asyncio
 async def test_user_reported_multi_turn_and_approval_flow():
@@ -21,7 +22,10 @@ async def test_user_reported_multi_turn_and_approval_flow():
         "allergies": [],
         "dislikes": []
     }
-    user_id = 1
+    # Throwaway account: never a real user id. The old literal
+    # (1) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
     
     history = []
     
@@ -140,7 +144,10 @@ async def test_user_reported_add_snack_day_3_flow():
         "allergies": [],
         "dislikes": []
     }
-    user_id = 1
+    # Throwaway account: never a real user id. The old literal
+    # (1) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
     async with AsyncSessionLocal() as session:
         p_repo = PlanRepository(session)
         existing_plans = await p_repo.get_all_by_user(user_id)
@@ -228,7 +235,10 @@ async def test_delete_a_meal_intent_routing_and_confirmation():
         "allergies": [],
         "dislikes": []
     }
-    user_id = 2
+    # Throwaway account: never a real user id. The old literal
+    # (2) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
     async with AsyncSessionLocal() as session:
         p_repo = PlanRepository(session)
         existing_plans = await p_repo.get_all_by_user(user_id)
@@ -300,7 +310,10 @@ async def test_plan_versioning_draft_to_approved_lifecycle():
         "allergies": [],
         "dislikes": []
     }
-    user_id = 3
+    # Throwaway account: never a real user id. The old literal
+    # (3) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
     async with AsyncSessionLocal() as session:
         p_repo = PlanRepository(session)
         existing_plans = await p_repo.get_all_by_user(user_id)
@@ -433,7 +446,10 @@ async def test_user_reported_combined_conflict_immediate_generation():
         "allergies": [],
         "dislikes": []
     }
-    user_id = 4
+    # Throwaway account: never a real user id. The old literal
+    # (4) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
     async with AsyncSessionLocal() as session:
         p_repo = PlanRepository(session)
         existing_plans = await p_repo.get_all_by_user(user_id)
@@ -496,7 +512,10 @@ async def test_user_reported_update_plan_selection_flow():
         "allergies": [],
         "dislikes": []
     }
-    user_id = 5
+    # Throwaway account: never a real user id. The old literal
+    # (5) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
     async with AsyncSessionLocal() as session:
         p_repo = PlanRepository(session)
         existing_plans = await p_repo.get_all_by_user(user_id)
@@ -585,7 +604,10 @@ async def test_user_reported_profile_info_conversational_response():
         "allergies": [],
         "dislikes": []
     }
-    user_id = 6
+    # Throwaway account: never a real user id. The old literal
+    # (6) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
 
     state = await run_meal_planner(
         user_id=user_id,
@@ -619,7 +641,10 @@ async def test_user_reported_non_veg_spaced_with_exclusions_and_calorie_confirm(
         "allergies": [],
         "dislikes": []
     }
-    user_id = 7
+    # Throwaway account: never a real user id. The old literal
+    # (7) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
     async with AsyncSessionLocal() as session:
         p_repo = PlanRepository(session)
         existing = await p_repo.get_all_by_user(user_id)
@@ -691,7 +716,10 @@ async def test_user_reported_multi_turn_edit_meal_slot_preserves_selected_good_p
         "allergies": [],
         "dislikes": []
     }
-    user_id = 8
+    # Throwaway account: never a real user id. The old literal
+    # (8) belonged to a real account and this test then
+    # deleted that user's plans as setup.
+    user_id = await throwaway_user(user_profile)
     async with AsyncSessionLocal() as session:
         p_repo = PlanRepository(session)
         existing = await p_repo.get_all_by_user(user_id)

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     # Agent Guardrails & Limits
     max_rounds: int = 3
     max_agent_steps: int = 6
-    agent_timeout_seconds: int = 120
+    agent_timeout_seconds: int = 30
     default_calorie_buffer_pct: float = 0.05  # ±5%
     min_calories_adult: int = 1200
     max_calories_adult: int = 4000

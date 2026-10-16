@@ -95,10 +95,6 @@ class UserIntentExtraction(BaseModel):
         None,
         description="If intent is edit_meal, specifies day, meal slot, and target slot calories."
     )
-    explain_query: Optional[str] = Field(
-        None,
-        description="If intent is explain, the specific question or topic the user wants explained."
-    )
     target_plan_id: Optional[int] = Field(
         None,
         description="Plan ID mentioned by user (e.g., 'Delete Plan 9' -> 9, 'Rename Plan 1' -> 1)."
@@ -122,10 +118,6 @@ class UserIntentExtraction(BaseModel):
     use_profile_defaults: bool = Field(
         default=False,
         description="True if the user agrees to create the plan with their saved profile defaults (e.g. 'yes, use my profile', 'go ahead with my profile preferences', 'create it with my defaults') after the assistant offered that choice. Set intent='new_plan' alongside this flag."
-    )
-    target_day: Optional[int] = Field(
-        None,
-        description="Day number targeted for meal edit or snack (e.g. Day 3 -> 3)."
     )
     include_snack: bool = Field(
         default=False,
@@ -299,8 +291,6 @@ NutriGen's domain is STRICTLY LIMITED to:
     - Use "day" ONLY when the message covers every meal of that one day ("redo day 2", "change all of day 3", "rebuild day 2"). "Update day 2 with a different meal" names ONE meal, so that is "slot" scope with day set.
   - When a scope is widened but the message names no day or no slot, keep day/meal_type null so the app can ask which one. Silently regenerating a whole day or the whole plan is the one outcome you must never produce.
 
-**explain_query**: For explain intent, the specific question or topic the user wants explained.
-
 **target_plan_id**: "Plan #9", "Plan 9", "#9" -> 9
 
 **target_plan_name**: Plan name in quotes or mentioned
@@ -317,9 +307,6 @@ NutriGen's domain is STRICTLY LIMITED to:
 **is_update_request**: 
 - True ONLY if general "update my meal plan" WITHOUT specific meal slot details
 - False if specific instructions given (replace, swap, exclusions, etc.)
-
-**target_day**: Day number for edits/snacks
-- "for day 3", "on day 2" -> 3, 2
 
 **include_snack**: 
 - True if the user explicitly asks for snacks or snack meals when creating a plan (e.g. "with snack", "with snack meal", "include snacks", "plan with snack meals", "create a meal plan with snack meal also").

@@ -345,8 +345,10 @@ class PlannerAgent(BaseAgent[MealPlan]):
                     break
 
         # Check if the instruction asks to update an entire day's meals
+        # (whole-phrase matching, same reason as above: "small meals" must
+        # never read as "all meals").
         is_entire_day = (
-            (not target_meal_type and any(k in cl_inst for k in ["entire day", "all meals", "whole day", "all 3 meals", "all 4 meals", "day meals"]))
+            (not target_meal_type and any(re.search(rf"\b{re.escape(k)}\b", cl_inst) for k in ["entire day", "all meals", "whole day", "all 3 meals", "all 4 meals", "day meals"]))
             or (not target_meal_type and bool(re.search(r'\bday\s*\d+\b', cl_inst)) and not any(m in cl_inst for m in ["breakfast", "lunch", "dinner", "snack"]))
         )
 
@@ -371,16 +373,43 @@ class PlannerAgent(BaseAgent[MealPlan]):
         if not target_day_plan:
             return current_plan
 
-        operation = getattr(edit_details, "operation", None) or (
-            "add" if any(k in cl_inst for k in ["add", "include", "put"])
-            else ("remove" if any(k in cl_inst for k in ["remove", "delete", "drop"]) else "replace")
-        )
+        # AI-first operation: the LLM's structured verdict rules. The keyword
+        # guess below runs ONLY when the model left operation blank. It uses
+        # whole-word matching — bare substrings once read "added" as "add"
+        # (turning a replace into a plan-wide add) and would read "input" as
+        # "put", so never go back to `in` matching here.
+        _op_llm = getattr(edit_details, "operation", None)
+
+        def _has_word(*words):
+            return any(re.search(rf"\b{re.escape(w)}\b", cl_inst) for w in words)
+
+        if _op_llm:
+            operation = _op_llm
+        elif _has_word("add", "include", "put"):
+            operation = "add"
+        elif _has_word("remove", "delete", "drop"):
+            operation = "remove"
+        else:
+            operation = "replace"
+
+        # Negation guard shared by the remove/append overrides below: words
+        # like "don't remove anything, replace lunch" must never trigger a
+        # destructive path. Errs toward replace (regenerate), never destroy.
+        # (Bare "no," is deliberately NOT a negation word: "no, just add it"
+        # agrees to the action instead of refusing it.)
+        _negated_action = bool(re.search(
+            "([^.]{0,30}?\b(don\x27t|dont|do not|does not|did not|can\x27t|cannot|never|without|not)\b[^.]{0,30}?\b(remove|delete|drop|add|include|put)\b)",
+            cl_inst,
+        ))
 
         is_plan_wide_snack = (
             target_meal_type == "snack"
             and (
                 getattr(edit_details, "edit_scope", None) == "plan"
-                or any(k in cl_inst for k in ["all days", "every day", "all meals", "each day", "whole plan", "entire plan", "all the days", "all 4 days", "all 3 days", "all 5 days", "all 7 days"])
+                # Whole-phrase matching: bare substrings once read "small
+                # meals" as "all meals" and fired plan-wide rewrites by
+                # accident. Never go back to `in` matching here.
+                or any(re.search(rf"\b{re.escape(k)}\b", cl_inst) for k in ["all days", "every day", "all meals", "each day", "whole plan", "entire plan", "all the days", "all 4 days", "all 3 days", "all 5 days", "all 7 days"])
                 or (getattr(edit_details, "day", None) is None and operation in ("add", "remove"))
             )
         )
@@ -474,11 +503,18 @@ class PlannerAgent(BaseAgent[MealPlan]):
             old_meal = target_day_plan.meals[meal_idx] if meal_idx is not None else None
             old_dish = old_meal.recipe_name if old_meal else "existing dish"
 
-            # Get operation type from edit_details (default: replace)
-            operation = getattr(edit_details, "operation", None) or "replace"
-            
+            # Get operation type from edit_details (default: replace).
+            # AI-first: an explicit LLM verdict is trusted as-is. The keyword
+            # clause below may only ADD a remove trigger when the model left
+            # operation blank AND the request is not negated — it must never
+            # overrule "replace" (e.g. "don't remove anything, replace lunch"
+            # deletes nothing).
+            _op_llm = getattr(edit_details, "operation", None)
+            operation = _op_llm or "replace"
+            _remove_word = any(re.search(rf"\b{re.escape(k)}\b", cl_inst) for k in ["remove", "delete", "drop"])
+
             # Handle remove operation
-            if operation == "remove" or any(k in cl_inst for k in ["remove", "delete", "drop"]):
+            if operation == "remove" or (_op_llm is None and _remove_word and not _negated_action):
                 if meal_idx is not None:
                     removed_meal = target_day_plan.meals.pop(meal_idx)
                     logger.info(f"[PlannerAgent] Removed meal '{removed_meal.recipe_name}' ({target_meal_type}) from Day {target_day}")
@@ -528,10 +564,20 @@ class PlannerAgent(BaseAgent[MealPlan]):
                     if meal_idx is not None:
                         target_day_plan.meals[meal_idx] = replacement_meal
                     else:
-                        if any(k in cl_inst for k in ["add", "include", "put"]) or operation == "add":
+                        # The targeted slot does not exist on this day. Append
+                        # ONLY for an explicit add (LLM verdict, or the model's
+                        # own blank-operation guess when unnegated). Anything
+                        # else leaves the day untouched: this branch previously
+                        # overwrote the day's LAST meal, so "replace the snack
+                        # on day 5" (no snack there) silently ate dinner.
+                        _add_word = any(re.search(rf"\b{re.escape(k)}\b", cl_inst) for k in ["add", "include", "put"])
+                        if operation == "add" or (_op_llm is None and _add_word and not _negated_action):
                             target_day_plan.meals.append(replacement_meal)
-                        elif target_day_plan.meals:
-                            target_day_plan.meals[-1] = replacement_meal
+                        else:
+                            logger.warning(
+                                f"[PlannerAgent] {target_meal_type} not present on Day {target_day}; "
+                                f"leaving the day unchanged instead of guessing."
+                            )
 
                     target_day_plan.total_calories = round(sum(m.calories for m in target_day_plan.meals), 1)
                     target_day_plan.total_protein_g = round(sum(m.protein_g for m in target_day_plan.meals), 1)

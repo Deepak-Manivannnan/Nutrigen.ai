@@ -2080,6 +2080,69 @@ async def run_meal_planner(    user_id: int,
                     )
                     return state
 
+                # Slot-existence safety net (EVERY meal slot, not just snacks):
+                # a named day/slot must actually exist before the swarm spends
+                # minutes on it. A day number past the plan used to silently
+                # retarget day 1, and a missing slot silently overwrote the
+                # day's last meal. Both now get a polite, LLM-composed
+                # question instead. Whole-day and whole-plan scopes name no
+                # single slot, so they pass through untouched.
+                _sn_ed = intent_data.edit_details
+                if _sn_ed is not None and existing_plan and getattr(existing_plan, "days", None):
+                    _sn_day = getattr(_sn_ed, "day", None)
+                    if _sn_day is not None:
+                        _sn_day_numbers = [d.day_number for d in existing_plan.days]
+                        if _sn_day not in _sn_day_numbers:
+                            plan_name_disp = getattr(existing_plan, "name", None) or getattr(matched_plan, "name", "your meal plan")
+                            _sn_valid = ", ".join(f"Day {n}" for n in sorted(_sn_day_numbers))
+                            context_prompt = (
+                                f"The user wants to change Day {_sn_day} of '{plan_name_disp}', but that plan "
+                                f"only has {len(_sn_day_numbers)} day(s): {_sn_valid}. "
+                                f"In polite, natural, friendly English, say Day {_sn_day} doesn't exist in that plan "
+                                f"and ask which day they meant. Nothing has been changed."
+                            )
+                            response_text = await supervisor.generate_conversational_response(
+                                user_message=user_message,
+                                context=context_prompt,
+                                history=history,
+                                user_name=user_profile.get("name")
+                            )
+                            state.system_message = response_text
+                            state.status = "conversational"
+                            state.pending_workflow = make_edit_pending(
+                                response_text, "which_day",
+                                plan_name_disp, user_message, user_profile
+                            )
+                            return state
+                    _sn_meal = ((getattr(_sn_ed, "meal_type", None) or "").lower()) or None
+                    _sn_op = ((getattr(_sn_ed, "operation", None) or "").lower()) or None
+                    if _sn_day is not None and _sn_meal and _sn_op in ("replace", "remove"):
+                        _sn_day_plan = next((d for d in existing_plan.days if d.day_number == _sn_day), None)
+                        _sn_slots = sorted({(m.meal_type or "").lower() for m in (_sn_day_plan.meals if _sn_day_plan else []) if (m.meal_type or "").strip()})
+                        if _sn_meal not in _sn_slots:
+                            plan_name_disp = getattr(existing_plan, "name", None) or getattr(matched_plan, "name", "your meal plan")
+                            _sn_have = ", ".join(_sn_slots) if _sn_slots else "no meals listed"
+                            context_prompt = (
+                                f"The user wants to {_sn_op} the {_sn_meal} on Day {_sn_day} of '{plan_name_disp}', "
+                                f"but Day {_sn_day} has no {_sn_meal} (it has: {_sn_have}). "
+                                f"In polite, natural, friendly English, say that meal isn't there, then ask: "
+                                f"would they like to add a {_sn_meal} to Day {_sn_day}, or did they mean a different meal or day? "
+                                f"Nothing has been changed or added."
+                            )
+                            response_text = await supervisor.generate_conversational_response(
+                                user_message=user_message,
+                                context=context_prompt,
+                                history=history,
+                                user_name=user_profile.get("name")
+                            )
+                            state.system_message = response_text
+                            state.status = "conversational"
+                            state.pending_workflow = make_edit_pending(
+                                response_text, "missing_slot",
+                                plan_name_disp, user_message, user_profile
+                            )
+                            return state
+
         # The LLM extracted actionable edit specifics, but no existing plan could
         # be matched (no plan named, or several to choose from): ask which plan
         # to update instead of letting the request fall through to the graph.

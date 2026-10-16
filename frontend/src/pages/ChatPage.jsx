@@ -235,6 +235,9 @@ export default function ChatPage() {
   // backend can approve a just-created plan without asking again. A ref, not
   // state: it is only read at send time and must not trigger a re-render.
   const lastPlanId = useRef(null);
+  // Reply ids already shown. The live reply and the delivery-inbox poll can
+  // both deliver the same run (remount mid-wait); the second copy is dropped.
+  const appliedTaskIds = useRef(new Set());
   const traceTaskId = activeTaskId || (isAgentRunning ? bootTaskRef.current : null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -285,7 +288,7 @@ export default function ChatPage() {
         role: m.role,
         content: m.content,
       }));
-      const chatRes = await sendChatMessage(uid, text, taskId, historyPayload, pendingWorkflow, lastPlanId);
+      const chatRes = await sendChatMessage(uid, text, taskId, historyPayload, pendingWorkflow, lastPlanId.current);
       await applyChatResponse(chatRes);
     } catch (err) {
       console.warn('Backend chat failed:', err);
@@ -305,6 +308,12 @@ export default function ChatPage() {
   // behaves indistinguishably (pending sync, plan sync, badges, buttons).
   // Always terminal: clears the inflight marker and the running flag.
   async function applyChatResponse(chatRes) {
+    // Same run delivered twice (live reply + inbox poll race): show it once.
+    // Only tasked replies dedup — a missing id always renders, so two
+    // identical texts from two separate runs are never swallowed.
+    const seenKey = chatRes?.task_id || null;
+    if (seenKey && appliedTaskIds.current.has(seenKey)) return;
+    if (seenKey) appliedTaskIds.current.add(seenKey);
     setChatStatus(null);
     setIsAgentRunning(false);
     // The bar is progress for an in-flight run only; once the reply lands it

@@ -239,9 +239,12 @@ NutriGen's domain is STRICTLY LIMITED to:
     - "Continue creating the plan", "Resume the plan", "Let's continue", "Yes, continue"
     - "I want to continue creating the plan", "Go ahead with the plan"
 
-14. **cancel_request**: User wants to cancel a pending meal planning workflow
-    - "Cancel the plan", "Stop the plan", "Create a new plan instead", "Start a new plan instead"
-    - "Forget the plan", "Start over", "Start fresh", "New plan instead"
+14. **cancel_request**: User wants to ABANDON a pending meal planning workflow
+    - "Cancel the plan", "Stop the plan", "Forget the plan", "Start over", "Start fresh"
+    - "Create a new plan INSTEAD", "Start a new plan INSTEAD", "New plan instead"
+    - CRITICAL: the user must signal abandonment - "instead", "start over", "forget it", "cancel", "stop". A plain request to build a plan ("can you create a meal plan for me", "make me a 5 day plan") is NOT cancel_request, even when the conversation history shows something else in progress. It is new_plan: the application itself asks whether to continue the open work or start fresh, so classifying it as cancel_request would silently throw away work the user never abandoned.
+      | "Can you please create a meal plan for me" (while something else is in progress) | new_plan | A plain create request - the app offers continue-or-restart |
+      | "Create a new plan instead" | cancel_request | "instead" abandons the pending work |
 
 ---
 

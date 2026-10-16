@@ -225,7 +225,8 @@ async def _compose_interruption_message(supervisor, *, user_message: str, user_n
         f"and the pending questions for that have not been answered yet. "
         f"In warm, natural conversational English (2-3 sentences), acknowledge what they just asked for, "
         f"mention you were in the middle of the other task, and ask which they would like to do: "
-        f"continue the in-progress work, or proceed with the new request instead. End with the question. "
+        f"continue the in-progress work, or proceed with the new request instead. Make it clear that picking the new "
+        f"request means setting aside the in-progress work, so the choice is honest. End with the question. "
         f"CRITICAL: nothing has been done yet. Do NOT say you have renamed, deleted, approved, updated or "
         f"created anything, and do NOT report any result. You are only asking which they want."
     )
@@ -692,7 +693,7 @@ def _surgically_merge_edit(old_plan, new_plan, intent_data):
                     continue
                 # Don't resurrect a slot the user asked to remove, or one whose
                 # ingredients were excluded.
-                if operation == "remove" and target_day == old_day.day_number and (not target_meal or otype == target_meal):
+                if operation == "remove" and (target_day is None or target_day == old_day.day_number) and (not target_meal or otype == target_meal):
                     continue
                 if exclusions and _meal_matches_exclusions(old_meal, exclusions):
                     continue
@@ -869,41 +870,78 @@ async def run_meal_planner(    user_id: int,
     
     # Handle cancel_request intent - user wants to cancel the pending workflow
     elif intent_data.intent == "cancel_request" and pending_workflow:
-        # Clear the pending workflow
-        state.pending_workflow = None
-        if pending_workflow.original_intent == "delete_plan":
-            context_prompt = (
-                "The user cancelled the deletion of their meal plan. "
-                "In friendly, polite English, reassure them that their meal plan is kept safely and nothing was deleted, "
-                "and ask if they would like to make any other adjustments instead."
-            )
-        elif pending_workflow.original_intent == "approve_plan":
-            context_prompt = (
-                "The user cancelled the approval of their meal plan. "
-                "In friendly, polite English, confirm that nothing was approved, their plan is still sitting in "
-                "draft and unchanged, and ask what they'd like to do instead."
-            )
-        elif pending_workflow.original_intent == "edit_meal":
-            context_prompt = (
-                "The user cancelled the in-progress update of their meal plan. "
-                "In friendly, polite English, confirm that the update was dropped and their saved plan is unchanged, "
-                "and ask what they'd like to do instead (create a new plan, modify existing, etc.)."
-            )
-        else:
-            context_prompt = (
-                "The user wants to cancel the pending meal plan creation and start fresh. "
-                "In friendly, polite English, confirm that the previous meal plan creation has been cancelled "
-                "and ask what they'd like to do instead (create a new plan, modify existing, etc.)."
-            )
-        response_text = await supervisor.generate_conversational_response(
-            user_message=user_message,
-            context=context_prompt,
-            history=history,
-            user_name=user_profile.get("name")
+        # Defence in depth against the classifier reading a plain "create me a
+        # plan" as "start a new plan INSTEAD". Losing half-finished work to a
+        # misread intent is unrecoverable, while asking continue-or-restart
+        # costs one turn, so only take the cancel path when the message
+        # actually carries an abandonment signal.
+        _msg_l = user_message.lower()
+        _abandon_signals = (
+            "instead", "start over", "start fresh", "forget", "never mind",
+            "nevermind", "cancel", "abort", "stop", "discard", "drop it",
+            "quit", "leave it", "not now",
         )
-        state.system_message = response_text
-        state.status = "conversational"
-        return state
+        _looks_like_abandon = any(sig in _msg_l for sig in _abandon_signals)
+        _looks_like_new_request = bool(
+            intent_data.requested_days
+            or intent_data.requested_calories
+            or intent_data.requested_diet_type
+            or intent_data.chosen_diet_type
+            or intent_data.target_plan_name
+        )
+
+        if not _looks_like_abandon and _looks_like_new_request:
+            # Treat it as a fresh request and let the interruption gate offer
+            # continue-or-switch, which is what the user actually needs.
+            logger.info(
+                f"[{tid}] '{user_message[:60]}' classified cancel_request but "
+                f"carries no abandonment signal and does carry a new request; "
+                f"offering continue-or-restart instead of discarding the work."
+            )
+            intent_data.intent = "new_plan"
+            # Fall through to the interruption gate below; do NOT run the
+            # cancel confirmation copy.
+            state.pending_workflow = pending_workflow
+            _build_cancel_reply = False
+        else:
+            # Clear the pending workflow
+            state.pending_workflow = None
+            _build_cancel_reply = True
+
+        if _build_cancel_reply:
+            if pending_workflow.original_intent == "delete_plan":
+                context_prompt = (
+                    "The user cancelled the deletion of their meal plan. "
+                    "In friendly, polite English, reassure them that their meal plan is kept safely and nothing was deleted, "
+                    "and ask if they would like to make any other adjustments instead."
+                )
+            elif pending_workflow.original_intent == "approve_plan":
+                context_prompt = (
+                    "The user cancelled the approval of their meal plan. "
+                    "In friendly, polite English, confirm that nothing was approved, their plan is still sitting in "
+                    "draft and unchanged, and ask what they'd like to do instead."
+                )
+            elif pending_workflow.original_intent == "edit_meal":
+                context_prompt = (
+                    "The user cancelled the in-progress update of their meal plan. "
+                    "In friendly, polite English, confirm that the update was dropped and their saved plan is unchanged, "
+                    "and ask what they'd like to do instead (create a new plan, modify existing, etc.)."
+                )
+            else:
+                context_prompt = (
+                    "The user wants to cancel the pending meal plan creation and start fresh. "
+                    "In friendly, polite English, confirm that the previous meal plan creation has been cancelled "
+                    "and ask what they'd like to do instead (create a new plan, modify existing, etc.)."
+                )
+            response_text = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=user_profile.get("name")
+            )
+            state.system_message = response_text
+            state.status = "conversational"
+            return state
 
     # =========================================================================
     # Plan Listing: the LLM classified this message as a request to view saved
@@ -1222,24 +1260,16 @@ async def run_meal_planner(    user_id: int,
                 if pending_workflow.workflow_type == "edit_meal":
                     # Any new-plan request interrupts an in-progress update.
                     competing = True
-                elif "(confirmed)" in user_message:
-                    # Our own confirmation quick-option echo: always an answer.
-                    competing = False
                 else:
                     sig = _llm_answer_signals(intent_data)
-                    complete = _is_complete_fresh_spec(intent_data)
-                    contradicts = _contradicts_pending_answers(intent_data, pinfo)
-                    if sig["answered_any"] and not (complete and contradicts):
-                        # The LLM understood this as confirming pending question(s).
-                        competing = False
-                    elif intent_data.requested_days and not sig["fresh_diet"] and not sig["fresh_cal"] and not sig["answered_any"]:
-                        # Days-only continuation (e.g. "plan it for 5 days"):
-                        # let the new-plan branch re-ask the open questions.
-                        competing = False
-                    else:
-                        # Fresh specs (flagged-but-contradicting, unflagged new
-                        # request, or bare message): interrupt and ask.
-                        competing = True
+                    # An explicit confirmation is an answer to the open
+                    # conflict, full stop. It must never be read as a request
+                    # to switch tasks - that produced "would you like me to
+                    # switch?" right after the user had confirmed the diet and
+                    # the calories, and deadlocked the flow. The guardrails
+                    # downstream still re-check whatever they were asked to
+                    # check, so nothing unsafe slips through by trusting it.
+                    competing = not sig["answered_any"]
             else:
                 competing = False
 
@@ -1960,12 +1990,17 @@ async def run_meal_planner(    user_id: int,
             # skips slot clarification; otherwise resolve the missing slot/day.
             ed_scope = getattr(intent_data.edit_details, "edit_scope", None)
             _slot_named = bool(getattr(intent_data.edit_details, "meal_type", None))
+            _op = getattr(intent_data.edit_details, "operation", None) or "replace"
+            _is_all_days = bool(
+                ed_scope == "plan"
+                or any(k in user_message.lower() for k in ["all days", "every day", "all meals", "each day", "whole plan", "entire plan", "all the days"])
+            )
             # A wide scope is only honoured when the message actually covers
             # everything inside it. "Update day 2 with a different meal" names
             # one meal, and "update my 7-day plan" names no change at all —
             # regenerating a whole day or plan there would be a silent,
             # unrecoverable rewrite of work the user never asked to redo.
-            is_plan_wide = bool(has_excl or (ed_scope == "plan" and not _slot_named))
+            is_plan_wide = bool(has_excl or (ed_scope == "plan" and not _slot_named) or (_is_all_days and _op in ("add", "remove")))
             _day_is_whole = bool(ed_scope == "day" and not _slot_named)
 
             if not is_plan_wide:
@@ -1983,7 +2018,7 @@ async def run_meal_planner(    user_id: int,
                 is_entire_day = False
 
                 # Check if meal slot is specified, but day is missing/ambiguous across a multi-day plan
-                if target_meal_type and target_day is None and len(existing_plan.days) > 1:
+                if target_meal_type and target_day is None and len(existing_plan.days) > 1 and not _is_all_days:
                     plan_name_disp = getattr(existing_plan, "name", None) or getattr(matched_plan, "name", "your meal plan")
                     context_prompt = (
                         f"The user wants to replace or update their {target_meal_type} in '{plan_name_disp}', but did not specify which day. "
@@ -2113,7 +2148,9 @@ async def run_meal_planner(    user_id: int,
                     f"approved. They currently have {len(drafts)} plan(s) sitting in draft: "
                     f"{', '.join(p.name for p in drafts)}. "
                     f"In warm, natural English (1-2 sentences), explain that approving a plan builds its grocery "
-                    f"list with prices, and ask whether they would like to approve one of them now."
+                    f"list with prices, and ask whether they would like to approve one of them now. "
+                    f"Their saved profile has NOT been changed and nothing has been approved yet - never say or imply "
+                    f"that you updated their profile, preferences or settings."
                 )
             else:
                 context_prompt = (
@@ -2191,6 +2228,7 @@ async def run_meal_planner(    user_id: int,
         state.user_profile["allergies"] = list(user_profile.get("allergies", []))
         # Exclusions will be passed to planner via state.intent_data.requested_exclusions
 
+    if intent_data.intent == "new_plan":
         profile_diet = str(user_profile.get("diet_type", "veg")).lower()
 
         # The user agreed to build the plan with their saved profile defaults:
@@ -2256,6 +2294,15 @@ async def run_meal_planner(    user_id: int,
         diet_resolved = bool(pending_info.get("diet_resolved")) or (diet_pending and user_diet is not None)
         cal_resolved = bool(pending_info.get("cal_resolved")) or (cal_pending and user_cal is not None)
 
+        # A confirmation the user gave in this very message settles the
+        # conflict even when no pending workflow survives to say so. The gate
+        # drops the pending when it resumes a flow, and without this the diet
+        # question was asked a second time for an answer already given.
+        if intent_data.diet_conflict_confirmed or intent_data.chosen_diet_type:
+            diet_resolved = True
+        if intent_data.calorie_guardrail_confirmed or intent_data.chosen_calorie_target is not None:
+            cal_resolved = True
+
         diet_conflict = bool(req_diet and req_diet != profile_diet)
 
         # ------------------------------------------------------------------
@@ -2319,6 +2366,13 @@ async def run_meal_planner(    user_id: int,
                     "requested_diet": requested_diet,
                     "cal_val": cal_val,
                     "days_val": days_val,
+                    # The safe range is what the user was actually offered in
+                    # this prompt. Without it stored, answering with the
+                    # recommended value looked like a contradiction and the
+                    # flow deadlocked on "would you like me to switch?".
+                    "suggested": meta.get("suggested_target"),
+                    "min_safe": meta.get("min_safe"),
+                    "max_safe": meta.get("max_safe"),
                     "is_calorie_unsafe": is_calorie_unsafe,
                     "diet_pending": True,
                     "cal_pending": bool(is_calorie_unsafe),
@@ -2442,12 +2496,14 @@ async def run_meal_planner(    user_id: int,
                 # asking the calorie question — never silently drop it.
                 guardrail_context = (
                     f"The user just confirmed they want {diet_display} for this {req_days}-day meal plan. "
-                    f"First acknowledge that choice warmly (e.g. confirm vegetarian is locked in for this plan). "
+                    f"First acknowledge that choice warmly (e.g. confirm that {diet_display} is what this plan will use). "
                     f"Then explain their requested target of {cal_display:,} kcal/day is below their safe maintenance "
                     f"range of {int(min_safe):,}–{int(max_safe):,} kcal for their maintain-weight goal "
                     f"(recommended {int(suggested):,} kcal), and ask them to confirm the recommended "
                     f"{int(suggested):,} kcal or pick another safe value below. "
-                    f"Keep it natural and conversational, 2-4 sentences, no greeting, no bullet points."
+                    f"Keep it natural and conversational, 2-4 sentences, no greeting, no bullet points. "
+                    f"CRITICAL: their saved profile has NOT been changed. The diet they just chose applies to THIS "
+                    f"plan only. Never say or imply you updated their profile, their preferences or their settings."
                 )
                 msg = await supervisor.generate_conversational_response(
                     user_message=user_message,
@@ -2604,7 +2660,8 @@ async def run_meal_planner(    user_id: int,
                     context_prompt = (
                         f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
                         f"The plan is now Version {new_version} Draft in the Plans tab. "
-                        f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready. Do NOT claim their saved profile was changed (it was not)."
+                        f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready. "
+                        f"Word it as an UPDATE: the plan already existed and their changes were applied to it. Do NOT say the plan was created, and do NOT claim their saved profile was changed (it was not)."
                     )
                     final_state.system_message = await supervisor.generate_conversational_response(
                         user_message=user_message,
@@ -2639,7 +2696,9 @@ async def run_meal_planner(    user_id: int,
                     final_state.status = persist_status
                     context_prompt = (
                         f"Successfully generated new meal plan '{p_name}' (Version 1 {persist_status.capitalize()}) with a target of {int(final_state.current_plan.target_calories):,} kcal/day across {len(final_state.current_plan.days)} days. "
-                        f"In natural, polite, friendly conversational English, let the user know their meal plan has been created and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready. Do NOT claim their saved profile was changed (it was not)."
+                        f"In natural, polite, friendly conversational English, let the user know their meal plan has been CREATED and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready. "
+                        f"CRITICAL: this is a brand-new plan, so it was CREATED, never updated. Do not use the word 'updated' and do not say an existing plan was changed. "
+                        f"Do NOT claim their saved profile was changed (it was not) - a diet choice here applies to this plan only."
                     )
                     final_state.system_message = await supervisor.generate_conversational_response(
                         user_message=user_message,
@@ -2672,7 +2731,8 @@ async def run_meal_planner(    user_id: int,
                         context_prompt = (
                             f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
                             f"The plan is now Version {new_version} Draft in the Plans tab. "
-                            f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready. Do NOT claim their saved profile was changed (it was not)."
+                            f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready. "
+                            f"Word it as an UPDATE: the plan already existed and their changes were applied to it. Do NOT say the plan was created, and do NOT claim their saved profile was changed (it was not)."
                         )
                         final_state.system_message = await supervisor.generate_conversational_response(
                             user_message=user_message,
@@ -2705,7 +2765,9 @@ async def run_meal_planner(    user_id: int,
                         final_state.status = persist_status
                         context_prompt = (
                             f"Successfully generated new meal plan '{p_name}' (Version 1 {persist_status.capitalize()}) with a target of {int(final_state.current_plan.target_calories):,} kcal/day across {len(final_state.current_plan.days)} days. "
-                            f"In natural, polite, friendly conversational English, let the user know their meal plan has been created and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready. Do NOT claim their saved profile was changed (it was not)."
+                            f"In natural, polite, friendly conversational English, let the user know their meal plan has been CREATED and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready. "
+                            f"CRITICAL: this is a brand-new plan, so it was CREATED, never updated. Do not use the word 'updated' and do not say an existing plan was changed. "
+                            f"Do NOT claim their saved profile was changed (it was not) - a diet choice here applies to this plan only."
                         )
                         final_state.system_message = await supervisor.generate_conversational_response(
                             user_message=user_message,

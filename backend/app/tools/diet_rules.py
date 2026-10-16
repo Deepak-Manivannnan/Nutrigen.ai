@@ -48,6 +48,79 @@ LIQUID_KEYWORDS: Set[str] = {
     "buttermilk", "dressing", "salad dressing"
 }
 
+# Category words a user says instead of naming ingredients. "No dairy" is
+# useless as a prompt token - the model has to be told that means milk, butter
+# and paneer - and it silently leaves them in otherwise.
+DAIRY_TERMS: Set[str] = {
+    "milk", "cow milk", "cheese", "cheddar", "mozzarella", "paramesan", "feta", "ricotta",
+    "butter", "cream", "heavy cream", "sour cream", "yogurt", "yoghurt", "curd", "paneer",
+    "ghee", "casein", "whey", "buttermilk", "custard", "kefir",
+}
+
+MEAT_TERMS: Set[str] = NON_VEG_KEYWORDS | {
+    "meat", "red meat", "beef", "steak", "pork", "bacon", "ham", "lamb", "mutton", "veal",
+}
+
+SEAFOOD_TERMS: Set[str] = {
+    "fish", "seafood", "salmon", "tuna", "cod", "tilapia", "haddock", "sardine",
+    "anchovy", "anchovies", "shrimp", "prawn", "crab", "lobster", "squid",
+    "octopus", "mussel", "clam", "oyster", "scallop", "sushi",
+}
+
+EGG_TERMS: Set[str] = {"egg", "eggs", "egg white", "egg yolk", "mayonnaise", "mayo", "meringue"}
+
+GLUTEN_TERMS: Set[str] = {
+    "gluten", "wheat", "wheat flour", "bread", "pasta", "noodles", "couscous", "barley",
+    "rye", "semolina", "spaghetti", "flour", "buns", "bagel", "tortilla",
+}
+
+SUGAR_TERMS: Set[str] = {
+    "sugar", "brown sugar", "white sugar", "honey", "syrup", "maple syrup", "agave",
+    "molasses", "corn syrup",
+}
+
+EXCLUSION_CATEGORIES = {
+    "dairy": DAIRY_TERMS,
+    "milk": DAIRY_TERMS,
+    "cheese": DAIRY_TERMS,
+    "meat": MEAT_TERMS,
+    "red meat": MEAT_TERMS,
+    "beef": MEAT_TERMS,
+    "pork": MEAT_TERMS,
+    "seafood": SEAFOOD_TERMS,
+    "fish": SEAFOOD_TERMS,
+    "eggs": EGG_TERMS,
+    "egg": EGG_TERMS,
+    "gluten": GLUTEN_TERMS,
+    "wheat": GLUTEN_TERMS,
+    "sugar": SUGAR_TERMS,
+    "nuts": {"peanut", "peanuts", "almond", "almonds", "cashew", "cashews", "walnut",
+             "walnuts", "pecan", "pecans", "pistachio", "pistachios", "hazelnut",
+             "hazelnuts", "brazil nut"},
+}
+
+
+def expand_exclusions(exclusions) -> list:
+    """Turn category words into the ingredients they actually stand for.
+
+    "dairy" alone gave the planner nothing actionable, so milk, butter and
+    paneer survived into the plan. Expanding here means the prompt names real
+    ingredients instead of an abstract category.
+    """
+    out, seen = [], set()
+    for raw in exclusions or []:
+        term = str(raw).strip().lower()
+        if not term:
+            continue
+        members = EXCLUSION_CATEGORIES.get(term)
+        items = sorted(members) if members else [term]
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+    return out
+
+
 def is_liquid_ingredient(name: str) -> bool:
     """
     Returns True if the ingredient is primarily a liquid (e.g. oils, milks, juices, sauces),

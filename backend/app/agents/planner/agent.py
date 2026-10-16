@@ -5,6 +5,7 @@ from backend.app.agents.base import BaseAgent
 from backend.app.agents.planner.tools import PLANNER_TOOLS
 from backend.app.schemas.domain import MealPlan, Meal, DayPlan, Ingredient
 from backend.app.llm.client import LLMClient
+from backend.app.tools.diet_rules import expand_exclusions
 
 from backend.app.observability.logging import get_logger
 
@@ -93,9 +94,12 @@ class PlannerAgent(BaseAgent[MealPlan]):
             context["current_plan"] = current_plan.model_dump()
 
         diet_rules_prompt = ""
-        # Combine allergies and exclusions for all diet types
+        # Combine allergies and exclusions for all diet types. Category words
+        # ("dairy", "seafood") are expanded into the ingredients they stand
+        # for - the planner has no reliable way to interpret a category on its
+        # own, and "no dairy" used to leave milk and butter in the plan.
         allergies_list = [str(a).lower() for a in user_profile.get("allergies", [])]
-        exclusions_list = [str(e).lower() for e in (exclusions or [])]
+        exclusions_list = expand_exclusions(exclusions or [])
         all_exclusions = list(set(allergies_list + exclusions_list))
 
         if plan_diet in ("veg", "vegetarian"):
@@ -173,8 +177,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 + (f"- Requested cuisine: {cuisine}. Favour authentic {cuisine} dishes.\n" if cuisine else "")
                 + f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
-                f"- Each day must have breakfast (~30% cal), lunch (~40% cal), and dinner (~30% cal) with realistic ingredients (amount_grams).\n"
-                f"- For EACH meal, provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm). NEVER output generic 1-liners.\n"
+                + meals_desc_fallback
+                + f"- For EACH meal, provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm). NEVER output generic 1-liners.\n"
             )
             if feedback:
                 fallback_prompt += f"\n- Address this clinical review feedback:\n" + "\n".join(f"  * {fb}" for fb in feedback)
@@ -202,8 +206,12 @@ class PlannerAgent(BaseAgent[MealPlan]):
         meal_plan.diet_type = plan_diet
         meal_plan.name = plan_name
 
-        # Strict Diet Compliance Verification and Sanitization Pass
-        self._sanitize_diet_compliance(meal_plan, plan_diet, calorie_target, user_profile)
+        # Strict Diet Compliance Verification and Sanitization Pass.
+        # exclusions must be passed here: without it the check never ran on
+        # newly generated plans (only on edits), so "no dairy" was a prompt
+        # suggestion the model was free to ignore - and it did.
+        self._sanitize_diet_compliance(
+            meal_plan, plan_diet, calorie_target, user_profile, exclusions=exclusions)
 
         from backend.app.tools.nutrition.calculator import normalize_single_person_plan
         await normalize_single_person_plan(meal_plan, calorie_target)
@@ -459,7 +467,9 @@ class PlannerAgent(BaseAgent[MealPlan]):
 
     def _sanitize_diet_compliance(self, meal_plan: MealPlan, plan_diet: str, calorie_target: float, user_profile: Optional[Dict[str, Any]] = None, exclusions: Optional[List[str]] = None):
         """Ensures zero non-compliant dishes exist in vegetarian, vegan, or allergy/exclusion restricted plans."""
-        from backend.app.tools.diet_rules import check_diet_compliance
+        from backend.app.tools.diet_rules import (
+    check_diet_compliance, expand_exclusions, DAIRY_TERMS, FALSE_POSITIVE_EXCLUSIONS,
+)
         from backend.app.schemas.domain import Ingredient
         from backend.app.tools.allergens import ALLERGEN_CANONICAL_TARGETS
 
@@ -467,9 +477,23 @@ class PlannerAgent(BaseAgent[MealPlan]):
         is_veg = dt in ("veg", "vegetarian", "vegan")
         is_vegan = dt == "vegan"
         allergies = [str(a).lower() for a in (user_profile.get("allergies", []) if user_profile else [])]
-        exclusions = [str(e).lower() for e in (exclusions or [])]
+        # Expanded for the same reason as the prompt: the violation check
+        # substring-matches each exclusion against the meal text, so a bare
+        # "dairy" only ever looked for the word "dairy" and milk and butter
+        # sailed through.
+        exclusions = expand_exclusions(exclusions or [])
         # Combine allergies and exclusions for violation checking
         all_exclusions = list(set(allergies + exclusions))
+
+        # The replacement dishes must not reintroduce what was just removed.
+        # Paneer, cow's milk and butter are dairy, so a plan that excludes
+        # dairy needs the plant version even when the diet is merely "veg" -
+        # otherwise the fix swaps a dairy meal for a different dairy meal.
+        dairy_excluded = bool(
+            DAIRY_TERMS.intersection(set(all_exclusions))
+            | DAIRY_TERMS.intersection({str(a).lower() for a in (exclusions or [])})
+        )
+        dairy_free = is_vegan or dairy_excluded
 
         if not is_veg and not all_exclusions:
             return
@@ -477,21 +501,21 @@ class PlannerAgent(BaseAgent[MealPlan]):
         fallback_veg_options = {
             "breakfast": [
                 {
-                    "name": "Tofu Scramble with Whole Wheat Toast and Avocado" if is_vegan else "Paneer & Vegetable Bhurji with Multigrain Toast",
+                    "name": "Tofu Scramble with Whole Wheat Toast and Avocado" if dairy_free else "Paneer & Vegetable Bhurji with Multigrain Toast",
                     "cals": 0.30 * calorie_target,
-                    "protein": 28.0 if is_vegan else 30.0,
+                    "protein": 28.0 if dairy_free else 30.0,
                     "carbs": 42.0,
                     "fat": 16.0,
                     "ingredients": [
-                        Ingredient(name="Firm Tofu" if is_vegan else "Fresh Paneer", amount_grams=150.0),
-                        Ingredient(name="Whole Wheat Bread" if is_vegan else "Multigrain Bread", amount_grams=60.0),
-                        Ingredient(name="Avocado" if is_vegan else "Green Bell Pepper", amount_grams=50.0),
+                        Ingredient(name="Firm Tofu" if dairy_free else "Fresh Paneer", amount_grams=150.0),
+                        Ingredient(name="Whole Wheat Bread" if dairy_free else "Multigrain Bread", amount_grams=60.0),
+                        Ingredient(name="Avocado" if dairy_free else "Green Bell Pepper", amount_grams=50.0),
                         Ingredient(name="Olive Oil", amount_grams=10.0),
                         Ingredient(name="Spinach", amount_grams=50.0)
                     ],
                     "instructions": [
                         "1. Heat olive oil in a skillet over medium heat.",
-                        "2. Crumble " + ("firm tofu" if is_vegan else "fresh paneer") + " into the skillet with turmeric, sea salt, and black pepper.",
+                        "2. Crumble " + ("firm tofu" if dairy_free else "fresh paneer") + " into the skillet with turmeric, sea salt, and black pepper.",
                         "3. Sauté for 4-5 minutes until aromatic and lightly golden, tossing in baby spinach until wilted.",
                         "4. Toast bread slices until crisp and serve warm alongside the scramble."
                     ]
@@ -519,23 +543,23 @@ class PlannerAgent(BaseAgent[MealPlan]):
             ],
             "lunch": [
                 {
-                    "name": "Spiced Chickpea & Spinach Bowl with Quinoa" if is_vegan else "Paneer Tikka with Roasted Broccoli and Brown Rice",
+                    "name": "Spiced Chickpea & Spinach Bowl with Quinoa" if dairy_free else "Paneer Tikka with Roasted Broccoli and Brown Rice",
                     "cals": 0.40 * calorie_target,
-                    "protein": 26.0 if is_vegan else 36.0,
+                    "protein": 26.0 if dairy_free else 36.0,
                     "carbs": 68.0,
                     "fat": 18.0,
                     "ingredients": [
-                        Ingredient(name="Boiled Chickpeas" if is_vegan else "Paneer Cubes", amount_grams=160.0),
-                        Ingredient(name="Cooked Quinoa" if is_vegan else "Steamed Brown Rice", amount_grams=140.0),
-                        Ingredient(name="Baby Spinach" if is_vegan else "Broccoli Florets", amount_grams=100.0),
+                        Ingredient(name="Boiled Chickpeas" if dairy_free else "Paneer Cubes", amount_grams=160.0),
+                        Ingredient(name="Cooked Quinoa" if dairy_free else "Steamed Brown Rice", amount_grams=140.0),
+                        Ingredient(name="Baby Spinach" if dairy_free else "Broccoli Florets", amount_grams=100.0),
                         Ingredient(name="Olive Oil", amount_grams=10.0),
                         Ingredient(name="Lemon Juice", amount_grams=15.0)
                     ],
                     "instructions": [
                         "1. Heat olive oil in a pan and lightly bloom ground cumin and turmeric.",
-                        "2. Add " + ("chickpeas" if is_vegan else "paneer cubes") + " and sauté on medium heat until golden and fragrant.",
-                        "3. Toss in " + ("baby spinach" if is_vegan else "broccoli florets") + " and cook for 3 minutes until tender-crisp.",
-                        "4. Plate over a generous portion of warm " + ("quinoa" if is_vegan else "brown rice") + " and finish with a squeeze of fresh lemon."
+                        "2. Add " + ("chickpeas" if dairy_free else "paneer cubes") + " and sauté on medium heat until golden and fragrant.",
+                        "3. Toss in " + ("baby spinach" if dairy_free else "broccoli florets") + " and cook for 3 minutes until tender-crisp.",
+                        "4. Plate over a generous portion of warm " + ("quinoa" if dairy_free else "brown rice") + " and finish with a squeeze of fresh lemon."
                     ]
                 },
                 {
@@ -561,21 +585,21 @@ class PlannerAgent(BaseAgent[MealPlan]):
             ],
             "dinner": [
                 {
-                    "name": "Grilled Tofu with Roasted Sweet Potato and Asparagus" if is_vegan else "Palak Paneer with Whole Wheat Roti and Roasted Asparagus",
+                    "name": "Grilled Tofu with Roasted Sweet Potato and Asparagus" if dairy_free else "Palak Paneer with Whole Wheat Roti and Roasted Asparagus",
                     "cals": 0.30 * calorie_target,
-                    "protein": 25.0 if is_vegan else 32.0,
+                    "protein": 25.0 if dairy_free else 32.0,
                     "carbs": 48.0,
                     "fat": 16.0,
                     "ingredients": [
-                        Ingredient(name="Firm Tofu" if is_vegan else "Paneer Cubes", amount_grams=140.0),
-                        Ingredient(name="Roasted Sweet Potato" if is_vegan else "Spinach Purée", amount_grams=140.0),
+                        Ingredient(name="Firm Tofu" if dairy_free else "Paneer Cubes", amount_grams=140.0),
+                        Ingredient(name="Roasted Sweet Potato" if dairy_free else "Spinach Purée", amount_grams=140.0),
                         Ingredient(name="Asparagus", amount_grams=90.0),
                         Ingredient(name="Whole Wheat Roti", amount_grams=60.0),
                         Ingredient(name="Olive Oil", amount_grams=10.0)
                     ],
                     "instructions": [
-                        "1. Sear " + ("cubed tofu" if is_vegan else "paneer cubes") + " in olive oil until golden on all sides.",
-                        "2. Prepare the " + ("roasted sweet potato" if is_vegan else "seasoned spinach sauce with cumin and garam masala") + ".",
+                        "1. Sear " + ("cubed tofu" if dairy_free else "paneer cubes") + " in olive oil until golden on all sides.",
+                        "2. Prepare the " + ("roasted sweet potato" if dairy_free else "seasoned spinach sauce with cumin and garam masala") + ".",
                         "3. Sauté asparagus in the pan until bright green and tender-crisp.",
                         "4. Plate with warm whole wheat roti and serve immediately."
                     ]
@@ -743,9 +767,17 @@ class PlannerAgent(BaseAgent[MealPlan]):
                         violates_diet = True
 
                 violates_allergy = False
+                # Substring matching alone reads "almond milk" as milk and
+                # "almond butter" as butter, which flagged dairy-free recipes
+                # and then replaced them with ones that were not. Remove the
+                # known lookalikes before matching.
+                check_text = meal_full_text
+                for lookalike in FALSE_POSITIVE_EXCLUSIONS:
+                    if lookalike in check_text:
+                        check_text = check_text.replace(lookalike, " ")
                 for exc in all_exclusions:
                     targets = ALLERGEN_CANONICAL_TARGETS.get(exc, [exc])
-                    if any(t in meal_full_text for t in targets):
+                    if any(t in check_text for t in targets):
                         violates_allergy = True
                         break
 

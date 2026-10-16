@@ -201,7 +201,10 @@ class SupervisorAgent:
                 f"or (2) use the recommended {suggested:,} kcal with {requested_display} diet, "
                 f"or (3) use their profile {profile_display} diet.\n"
                 f"CRITICAL: Do NOT start with 'Hey {name}' or greetings. Be direct, warm, and clear. "
-                f"Present options naturally without bullet points."
+                f"Present options naturally without bullet points.\n"
+                f"CRITICAL: the user has not changed anything yet. Never say or imply that you updated, "
+                f"changed or saved their profile, diet preference, calorie range or settings - nothing has been "
+                f"written. Whatever they pick will apply to THIS plan only."
             )
         else:
             prompt = (
@@ -213,7 +216,10 @@ class SupervisorAgent:
                 f"Ask whether they want to: (1) proceed with {requested_display}, "
                 f"or (2) use their profile {profile_display} diet.\n"
                 f"CRITICAL: Do NOT start with 'Hey {name}' or greetings. Be direct, warm, and clear. "
-                f"Present options naturally without bullet points."
+                f"Present options naturally without bullet points.\n"
+                f"CRITICAL: the user has not changed anything yet. Never say or imply that you updated, "
+                f"changed or saved their profile, diet preference, calorie range or settings - nothing has been "
+                f"written. Whatever they pick will apply to THIS plan only."
             )
         
         try:

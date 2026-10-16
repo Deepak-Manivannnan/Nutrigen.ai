@@ -677,7 +677,13 @@ ol {
    bottom like a receipt rather than looping back like a diagram. A retry
    appends a pass instead of rewinding, so what was tried stays visible.
    ------------------------------------------------------------------ */
+/* Agent progress bar - currently hidden on every viewport.
+
+   The component and all its styling stay in place; only the one property
+   below hides it. Delete this rule, or change `display` back to `flex` (its
+   original value), to bring the bar back. */
 .agent-trace {
+  display: none;
   flex: none;
   background: var(--green-50);
   border-top: 1px solid var(--green-200);

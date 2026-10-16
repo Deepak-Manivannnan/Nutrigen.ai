@@ -73,10 +73,6 @@ def get_ingredient_aliases() -> Dict[str, str]:
     return dict(_ingredient_aliases)
 
 
-def get_ingredient_estimates() -> Dict[str, Dict[str, Any]]:
-    """Current agent-supplied macro estimates, for logging and tests."""
-    return {k: dict(v) for k, v in _ingredient_estimates.items()}
-
 PENALTY_MODIFIERS = [
     "spread", "flour", "powder", "seasoning", "flavor", "babyfood", 
     "infant", "candy", "sweetened", "beverage", "soup", "fast foods", 

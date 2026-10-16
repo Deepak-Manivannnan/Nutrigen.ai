@@ -134,15 +134,6 @@ class PlanRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def update_status(self, plan_id: int, status: str) -> Optional[Plan]:
-        plan = await self.get_by_id(plan_id)
-        if not plan:
-            return None
-        plan.status = status
-        await self.session.commit()
-        await self.session.refresh(plan)
-        return plan
-
     async def get_latest_by_user(self, user_id: int) -> Optional[Plan]:
         stmt = (
             select(Plan)

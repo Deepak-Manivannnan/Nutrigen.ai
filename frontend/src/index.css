@@ -4675,6 +4675,20 @@ ol {
   .chat-clear-btn {
     display: inline-flex;
   }
+
+  /* Phones: keep the user's bubble packed against their avatar.
+     Normally a no-op (the bubble already fills its wrapper, so there is
+     no free space for these margins to absorb). If the wrapper ever runs
+     wide, this parks the bubble at the avatar side instead of stranding
+     bubble and avatar at opposite ends. AI rows and desktop untouched. */
+  .message-row.user > div:last-child {
+    width: fit-content;
+    max-width: 100%;
+    margin-left: auto;
+  }
+  .message-row.user .message-bubble {
+    margin-left: auto;
+  }
 }
 
 @media (max-width: 480px) {

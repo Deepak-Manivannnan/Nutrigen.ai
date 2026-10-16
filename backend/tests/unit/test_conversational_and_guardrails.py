@@ -95,7 +95,13 @@ async def test_out_of_scope_query_triggers_polite_guardrail():
     
     assert final_state.status == "out_of_scope"
     assert final_state.current_plan is None
-    assert any(p in final_state.system_message.lower() for p in ["outside of food", "dedicated exclusively", "focused exclusively", "meal planning"])
+    # Behavior, not wording: the reply must redirect to the food domain
+    # without starting a plan. Exact phrasing varies per LLM call, so assert
+    # on domain words the guardrail prompt always requires, never on full
+    # sentences.
+    reply = (final_state.system_message or "").lower()
+    assert reply.strip() != ""
+    assert any(w in reply for w in ["meal", "nutrition", "recipe", "grocer", "food", "diet"])
 
 @pytest.mark.asyncio
 async def test_edit_meal_intent_extraction():
@@ -418,10 +424,11 @@ async def test_missing_day_or_slot_prompts_user():
             user_profile={"name": "Alice", "diet_type": "veg"}
         )
         assert state.status == "conversational"
-        # Quick options provide choice of Day 1 or Day 2
-        labels = [opt["label"].lower() for opt in (state.quick_options or [])]
-        assert any("day 1 dinner" in l for l in labels)
-        assert any("day 2 dinner" in l for l in labels)
+        # No quick options anymore (typing-only chat): the pending workflow
+        # carries the which-day question instead.
+        assert state.pending_workflow is not None
+        assert state.pending_workflow.extracted_info.get("edit_stage") == "which_day"
+        assert (state.system_message or "").strip() != ""
 
         # Case 2: Day specified (Day 2), but meal slot is missing
         state2 = await run_meal_planner(
@@ -430,10 +437,9 @@ async def test_missing_day_or_slot_prompts_user():
             user_profile={"name": "Alice", "diet_type": "veg"}
         )
         assert state2.status == "conversational"
-        labels2 = [opt["label"].lower() for opt in (state2.quick_options or [])]
-        assert any("day 2 breakfast" in l for l in labels2)
-        assert any("day 2 lunch" in l for l in labels2)
-        assert any("day 2 dinner" in l for l in labels2)
+        assert state2.pending_workflow is not None
+        assert state2.pending_workflow.extracted_info.get("edit_stage") == "which_slot"
+        assert (state2.system_message or "").strip() != ""
 
 
 

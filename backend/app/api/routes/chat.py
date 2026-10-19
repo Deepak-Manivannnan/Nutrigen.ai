@@ -4,7 +4,7 @@ from backend.app.schemas.api import ChatRequest, ChatResponse
 from backend.app.db.session import get_db
 from backend.app.db.repositories.users import UserRepository
 from backend.app.db.repositories.plans import PlanRepository
-from backend.app.api.deps import get_user_repository, get_plan_repository
+from backend.app.api.deps import get_user_repository, get_authenticated_user_id, get_plan_repository
 from backend.app.orchestration.runner import run_meal_planner
 from backend.app.observability.logging import get_logger
 import time
@@ -54,14 +54,23 @@ async def chat_result(task_id: str):
 @router.post("", response_model=ChatResponse)
 async def chat_interaction(
     payload: ChatRequest,
+    caller_id: int = Depends(get_authenticated_user_id),
     user_repo: UserRepository = Depends(get_user_repository),
     session: AsyncSession = Depends(get_db)
 ):
-    user = await user_repo.get_by_id(payload.user_id)
+    # The caller is identified by their token. The user_id in the body is only
+    # accepted when it matches, so one account cannot drive another account's
+    # chat, plans or grocery list.
+    if payload.user_id != caller_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only chat as your own account.",
+        )
+    user = await user_repo.get_by_id(caller_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {payload.user_id} does not exist. Please create a profile first."
+            detail=f"User with ID {caller_id} does not exist. Please create a profile first."
         )
 
     # Format user profile for agent orchestration

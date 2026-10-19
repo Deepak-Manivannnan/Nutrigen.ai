@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     max_rounds: int = 3
     max_agent_steps: int = 6
     agent_timeout_seconds: int = 30
+
+    # HMAC key used to sign session tokens. Set AUTH_TOKEN_SECRET in the
+    # deployment environment; the fallback only exists so a fresh clone runs,
+    # and it means anyone could forge tokens if it is left in place.
+    auth_token_secret: str = ""
     default_calorie_buffer_pct: float = 0.05  # ±5%
     min_calories_adult: int = 1200
     max_calories_adult: int = 4000

@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 import { generateDemoPlan, generateDemoGrocery } from '../utils/workflowSimulator';
 import {
   fetchCurrentProfile,
+  setAuthToken,
   updateProfile as updateProfileApi,
   createProfile as createProfileApi,
   fetchPlans as fetchPlansApi,
@@ -260,6 +261,9 @@ export function AppProvider({ children }) {
     // a brand-new account into onboarding.
     setAuthReady(false);
     try {
+      // The backend now issues a signed session token; keep it alongside the
+      // cached user so authenticated requests can be sent after a reload.
+      if (userData.token) setAuthToken(userData.token);
       setUser(userData);
       localStorage.setItem('nutrigen_auth_user', JSON.stringify(userData));
       setPendingWorkflowState(loadPendingWorkflow(userData.id));
@@ -277,6 +281,7 @@ export function AppProvider({ children }) {
     if (user?.id) saveMessages(user.id, null);
     if (user?.id) saveInflight(user.id, null);
     localStorage.removeItem('nutrigen_auth_user');
+    setAuthToken(null);
     setUser(null);
     setProfile(null);
     setMessages([]);

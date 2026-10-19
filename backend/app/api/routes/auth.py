@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from backend.app.db.repositories.users import UserRepository
 from backend.app.api.deps import get_user_repository
+from backend.app.api.security import create_token
 import hashlib
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -22,6 +23,7 @@ class AuthUserResponse(BaseModel):
     email: str
     has_profile: bool = True
     profile: Optional[Dict[str, Any]] = None
+    token: str = ""
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
@@ -90,7 +92,8 @@ async def login(
         name=user.name,
         email=user.email or email,
         has_profile=has_profile,
-        profile=profile_data
+        profile=profile_data,
+        token=create_token(user.id)
     )
 
 @router.post("/register", response_model=AuthUserResponse)
@@ -114,5 +117,6 @@ async def register(
         name=user.name,
         email=user.email or email,
         has_profile=False,
-        profile=None
+        profile=None,
+        token=create_token(user.id)
     )

@@ -6,7 +6,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from backend.app.db.models import Plan, ist_now
 from backend.app.db.repositories.plans import PlanRepository
-from backend.app.api.deps import get_plan_repository
+from backend.app.api.deps import get_plan_repository, get_authenticated_user_id
 
 router = APIRouter(prefix="/plans", tags=["Meal Plans"])
 
@@ -73,32 +73,36 @@ def serialize_plan(plan: Plan) -> PlanDetailResponse:
 
 @router.get("", response_model=List[PlanDetailResponse])
 async def list_plans(
-    user_id: Optional[int] = None,
+    caller_id: int = Depends(get_authenticated_user_id),
     plan_repo: PlanRepository = Depends(get_plan_repository)
 ):
+    """Fetch the signed-in user's plans.
+
+    With no user_id this used to return every plan belonging to every account.
     """
-    Fetch all plans, optionally filtered by user_id.
-    """
-    if user_id:
-        plans = await plan_repo.get_all_by_user(user_id)
-    else:
-        stmt = (
-            select(Plan)
-            .order_by(Plan.id.desc())
-            .options(selectinload(Plan.meals))
-        )
-        result = await plan_repo.session.execute(stmt)
-        plans = list(result.scalars().all())
+    plans = await plan_repo.get_all_by_user(caller_id)
     return [serialize_plan(p) for p in plans]
+
+
+def _ensure_owned(plan, caller_id: int) -> None:
+    """Reject access to a plan that belongs to somebody else."""
+    if plan is not None and plan.user_id != caller_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this meal plan.",
+        )
+
 
 @router.get("/{plan_id}", response_model=PlanDetailResponse)
 async def get_plan_by_id(
     plan_id: int,
+    caller_id: int = Depends(get_authenticated_user_id),
     plan_repo: PlanRepository = Depends(get_plan_repository)
 ):
     plan = await plan_repo.get_by_id(plan_id)
     if not plan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+    _ensure_owned(plan, caller_id)
 
     return serialize_plan(plan)
 
@@ -106,11 +110,17 @@ async def get_plan_by_id(
 async def rename_plan(
     plan_id: int,
     payload: PlanRenameRequest,
+    caller_id: int = Depends(get_authenticated_user_id),
     plan_repo: PlanRepository = Depends(get_plan_repository)
 ):
     """
     Rename a meal plan by ID.
     """
+    existing = await plan_repo.get_by_id(plan_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+    _ensure_owned(existing, caller_id)
+
     plan = await plan_repo.rename_plan(plan_id, payload.name)
     if not plan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
@@ -119,6 +129,7 @@ async def rename_plan(
 @router.post("/{plan_id}/approve", response_model=PlanDetailResponse)
 async def approve_plan(
     plan_id: int,
+    caller_id: int = Depends(get_authenticated_user_id),
     plan_repo: PlanRepository = Depends(get_plan_repository)
 ):
     """
@@ -129,6 +140,7 @@ async def approve_plan(
     plan = await plan_repo.get_by_id(plan_id)
     if not plan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+    _ensure_owned(plan, caller_id)
 
     # Idempotency: if already approved, return existing plan
     if plan.status == "approved" and plan.grocery_list:
@@ -169,11 +181,17 @@ async def approve_plan(
 @router.delete("/{plan_id}")
 async def delete_plan(
     plan_id: int,
+    caller_id: int = Depends(get_authenticated_user_id),
     plan_repo: PlanRepository = Depends(get_plan_repository)
 ):
     """
     Delete a meal plan by ID.
     """
+    existing = await plan_repo.get_by_id(plan_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+    _ensure_owned(existing, caller_id)
+
     deleted = await plan_repo.delete_plan(plan_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")

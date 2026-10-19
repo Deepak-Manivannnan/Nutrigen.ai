@@ -11,16 +11,50 @@ import { isLiquidIngredient } from './planHelpers';
 // hosting platform requires a rebuild, not just a restart.
 export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api';
 
+// ---------------------------------------------------------------------------
+// Session token
+//
+// The backend identifies the caller from a signed bearer token, so every
+// request carries it. Without this header the API answers 401: the user id in
+// a request body or URL no longer grants access to anything.
+// ---------------------------------------------------------------------------
+const TOKEN_KEY = 'nutrigen_auth_token';
+
+export function getAuthToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setAuthToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private browsing - the session simply will not survive a reload */
+  }
+}
+
+export function authFetch(url, options = {}) {
+  const token = getAuthToken();
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+}
+
 /**
  * Fetch current user profile (tries /profile/me, then /profile/1)
  */
 export async function fetchCurrentProfile(userId) {
   try {
     const url = userId ? `${API_BASE}/profile/${userId}` : `${API_BASE}/profile/me`;
-    let res = await fetch(url);
-    if (!res.ok && userId) {
-      res = await fetch(`${API_BASE}/profile/me?user_id=${userId}`);
-    }
+    const res = await authFetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
@@ -46,7 +80,7 @@ export async function createProfile(profileData) {
     allergies: Array.isArray(profileData.allergies) ? profileData.allergies : [],
   };
 
-  const res = await fetch(`${API_BASE}/profile`, {
+  const res = await authFetch(`${API_BASE}/profile`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -64,7 +98,7 @@ export async function updateProfile(userId, updates) {
   if (payload.height_cm !== undefined) payload.height_cm = Number(payload.height_cm);
   if (payload.weight_kg !== undefined) payload.weight_kg = Number(payload.weight_kg);
 
-  const res = await fetch(`${API_BASE}/profile/${userId}`, {
+  const res = await authFetch(`${API_BASE}/profile/${userId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -78,7 +112,9 @@ export async function updateProfile(userId, updates) {
  */
 export async function fetchPlans(userId = 1) {
   try {
-    const res = await fetch(`${API_BASE}/plans?user_id=${userId}`);
+    // The backend scopes this to the signed-in user; the id is no longer what
+    // grants access, so it is not sent.
+    const res = await authFetch(`${API_BASE}/plans`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
@@ -91,7 +127,7 @@ export async function fetchPlans(userId = 1) {
  * Fetch plan by ID
  */
 export async function fetchPlanById(planId) {
-  const res = await fetch(`${API_BASE}/plans/${planId}`);
+  const res = await authFetch(`${API_BASE}/plans/${planId}`);
   if (!res.ok) throw new Error(`Plan not found: ${res.status}`);
   return await res.json();
 }
@@ -100,7 +136,7 @@ export async function fetchPlanById(planId) {
  * Approve plan (Human-in-the-Loop)
  */
 export async function approvePlanApi(planId) {
-  const res = await fetch(`${API_BASE}/plans/${planId}/approve`, {
+  const res = await authFetch(`${API_BASE}/plans/${planId}/approve`, {
     method: 'POST',
   });
   if (!res.ok) throw new Error(`Failed to approve plan: ${res.status}`);
@@ -111,7 +147,7 @@ export async function approvePlanApi(planId) {
  * Delete plan
  */
 export async function deletePlanApi(planId) {
-  const res = await fetch(`${API_BASE}/plans/${planId}`, {
+  const res = await authFetch(`${API_BASE}/plans/${planId}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error(`Failed to delete plan: ${res.status}`);
@@ -122,7 +158,7 @@ export async function deletePlanApi(planId) {
  * Rename meal plan
  */
 export async function renamePlanApi(planId, newName) {
-  const res = await fetch(`${API_BASE}/plans/${planId}/rename`, {
+  const res = await authFetch(`${API_BASE}/plans/${planId}/rename`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: newName }),
@@ -135,7 +171,7 @@ export async function renamePlanApi(planId, newName) {
  * Send chat message to orchestrator
  */
 export async function sendChatMessage(userId, message, taskId, history = [], pendingWorkflow = null, justCreatedPlanId = null) {
-  const res = await fetch(`${API_BASE}/chat`, {
+  const res = await authFetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -160,7 +196,7 @@ export async function sendChatMessage(userId, message, taskId, history = [], pen
  * Returns the ChatResponse object, or null when not (yet) available.
  */
 export async function fetchChatResult(taskId) {
-  const res = await fetch(`${API_BASE}/chat/result/${encodeURIComponent(taskId)}`);
+  const res = await authFetch(`${API_BASE}/chat/result/${encodeURIComponent(taskId)}`);
   if (res.status === 404) return null;
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Mail, Lock, Eye, EyeOff, User } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { API_BASE } from '../utils/api';
+import { API_BASE, setAuthToken } from '../utils/api';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 export default function SignUpPage() {
@@ -48,6 +48,7 @@ export default function SignUpPage() {
       if (!res.ok) {
         throw new Error(data.detail || 'Failed to create account.');
       }
+      setAuthToken(data.token);
       await signIn(data);
       addToast('Account created! Complete your profile.', 'success');
       navigate('/onboarding', { replace: true });

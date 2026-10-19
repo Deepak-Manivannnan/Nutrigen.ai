@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { API_BASE } from '../utils/api';
+import { API_BASE, setAuthToken } from '../utils/api';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 export default function SignInPage() {
@@ -40,6 +40,7 @@ export default function SignInPage() {
       if (!res.ok) {
         throw new Error(data.detail || 'Invalid email or password.');
       }
+      setAuthToken(data.token);
       signIn(data);
       addToast(`Welcome back, ${data.name}!`, 'success');
       if (data.has_profile) {

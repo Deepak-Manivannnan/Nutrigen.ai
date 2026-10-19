@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { generateDemoPlan, generateDemoGrocery } from '../utils/workflowSimulator';
+import { USER_KEY, inflightKey, readSession, writeSession } from '../utils/sessionStore';
 import {
   fetchCurrentProfile,
   hasCompletedProfile,
@@ -24,11 +25,20 @@ const GROCERY_PATH = '/app/grocery';
 
 function getStoredUser() {
   try {
-    const raw = localStorage.getItem('nutrigen_auth_user');
+    const raw = readSession(USER_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
+}
+
+// The cached identity is session-scoped for the same reason the token is:
+// it is what the app renders from before the profile round-trips, so a copy
+// outliving the tab would put the next visitor straight into the previous
+// person's app. Nothing else here changes - messages and the pending
+// workflow stay in localStorage, keyed per user, behind the session check.
+function cacheStoredUser(user) {
+  writeSession(USER_KEY, user ? JSON.stringify(user) : null);
 }
 
 function loadPendingWorkflow(userId) {
@@ -88,10 +98,15 @@ function saveMessages(userId, msgs) {
 // In-flight delivery marker: { taskId, sentAt }. Written when a message is
 // sent, cleared when its reply (or a terminal failure) is applied. On boot,
 // a leftover marker means "reload happened mid-run" → reconcile via inbox.
+//
+// Tab-scoped on purpose: the marker answers "is THIS tab waiting on a run?".
+// Closing the tab is signing out, so there is nobody left to collect for, and
+// a marker surviving the tab would only produce a stale
+// "that run didn't finish" message the next time this user signed in.
 export function loadInflight(userId) {
   if (!userId) return null;
   try {
-    const raw = localStorage.getItem(`nutrigen_inflight_${userId}`);
+    const raw = readSession(inflightKey(userId));
     const inf = raw ? JSON.parse(raw) : null;
     if (inf && typeof inf.taskId === 'string' && inf.taskId) return inf;
     return null;
@@ -104,9 +119,9 @@ export function saveInflight(userId, inflight) {
   if (!userId) return;
   try {
     if (inflight && inflight.taskId) {
-      localStorage.setItem(`nutrigen_inflight_${userId}`, JSON.stringify(inflight));
+      writeSession(inflightKey(userId), JSON.stringify(inflight));
     } else {
-      localStorage.removeItem(`nutrigen_inflight_${userId}`);
+      writeSession(inflightKey(userId), null);
     }
   } catch {
     // ignore storage failures
@@ -221,7 +236,7 @@ export function AppProvider({ children }) {
           email: liveProfile.email || `${liveProfile.name.toLowerCase().replace(/\s+/g, '')}@nutrigen.ai`,
         };
         setUser(resolvedUser);
-        localStorage.setItem('nutrigen_auth_user', JSON.stringify({ ...resolvedUser, profile: liveProfile }));
+        cacheStoredUser({ ...resolvedUser, profile: liveProfile });
 
         // Fetch persisted meal plans for THIS specific user
         const livePlans = await fetchPlansApi(liveProfile.id);
@@ -269,7 +284,7 @@ export function AppProvider({ children }) {
       // cached user so authenticated requests can be sent after a reload.
       if (userData.token) setAuthToken(userData.token);
       setUser(userData);
-      localStorage.setItem('nutrigen_auth_user', JSON.stringify(userData));
+      cacheStoredUser(userData);
       setPendingWorkflowState(loadPendingWorkflow(userData.id));
       setMessages(loadMessages(userData.id));
       await loadUserData(userData.id, userData.profile);
@@ -284,7 +299,7 @@ export function AppProvider({ children }) {
     if (user?.id) savePendingWorkflow(user.id, null);
     if (user?.id) saveMessages(user.id, null);
     if (user?.id) saveInflight(user.id, null);
-    localStorage.removeItem('nutrigen_auth_user');
+    cacheStoredUser(null);
     setAuthToken(null);
     setUser(null);
     setProfile(null);
@@ -310,7 +325,7 @@ export function AppProvider({ children }) {
   // workflow stay exactly where they are, because the user is about to sign
   // back in and would otherwise find their chat emptied by the clock.
   const endExpiredSession = useCallback(() => {
-    localStorage.removeItem('nutrigen_auth_user');
+    cacheStoredUser(null);
     setAuthToken(null);
     setUser(null);
     setProfile(null);
@@ -340,7 +355,7 @@ export function AppProvider({ children }) {
           setProfile(saved);
           const updatedUser = { ...user, name: saved.name, profile: saved };
           setUser(updatedUser);
-          localStorage.setItem('nutrigen_auth_user', JSON.stringify(updatedUser));
+          cacheStoredUser(updatedUser);
           await loadUserData(user.id, saved);
           return saved;
         }
@@ -355,7 +370,7 @@ export function AppProvider({ children }) {
         email: created.email || `${created.name.toLowerCase().replace(/\s+/g, '')}@nutrigen.ai`,
       };
       setUser(newUser);
-      localStorage.setItem('nutrigen_auth_user', JSON.stringify({ ...newUser, profile: created }));
+      cacheStoredUser({ ...newUser, profile: created });
       await loadUserData(created.id, created);
       return created;
     } catch (err) {
@@ -384,7 +399,7 @@ export function AppProvider({ children }) {
         setProfile(saved);
         setUser(prev => {
           const updated = { ...prev, name: saved.name || prev.name };
-          localStorage.setItem('nutrigen_auth_user', JSON.stringify({ ...updated, profile: saved }));
+          cacheStoredUser({ ...updated, profile: saved });
           return updated;
         });
       }

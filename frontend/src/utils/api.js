@@ -3,6 +3,7 @@
  * Connects frontend with FastAPI multi-agent backend endpoints & SSE streaming.
  */
 import { isLiquidIngredient } from './planHelpers';
+import { TOKEN_KEY, USER_KEY, readSession, writeSession } from './sessionStore';
 
 // Backend origin. `/api` on its own only resolves during `npm run dev`, where
 // vite.config.js proxies it to http://127.0.0.1:8000. A production build has no
@@ -18,7 +19,8 @@ export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/
 // request carries it. Without this header the API answers 401: the user id in
 // a request body or URL no longer grants access to anything.
 // ---------------------------------------------------------------------------
-const TOKEN_KEY = 'nutrigen_auth_token';
+// TOKEN_KEY comes from sessionStore.js - the session is per-tab, not per
+// browser, so closing the tab ends it.
 
 // A 401 from a request that carried a token means the session is no longer
 // accepted by the server. With a short token lifetime that is routine, and
@@ -27,20 +29,11 @@ const TOKEN_KEY = 'nutrigen_auth_token';
 let unauthorizedAnnounced = false;
 
 export function getAuthToken() {
-  try {
-    return localStorage.getItem(TOKEN_KEY) || '';
-  } catch {
-    return '';
-  }
+  return readSession(TOKEN_KEY) || '';
 }
 
 export function setAuthToken(token) {
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* private browsing - the session simply will not survive a reload */
-  }
+  writeSession(TOKEN_KEY, token || null);
   if (token) unauthorizedAnnounced = false;
 }
 
@@ -66,7 +59,7 @@ export function authFetch(url, options = {}) {
     // It IS conditioned on a cached user existing, so an in-flight request
     // that 401s after a deliberate sign-out does not tell someone who just
     // logged out that their session expired.
-    const hasSession = Boolean(localStorage.getItem('nutrigen_auth_user'));
+    const hasSession = Boolean(readSession(USER_KEY));
     if (res.status === 401 && hasSession && !unauthorizedAnnounced) {
       unauthorizedAnnounced = true;
       window.dispatchEvent(new Event('nutrigen:session-expired'));

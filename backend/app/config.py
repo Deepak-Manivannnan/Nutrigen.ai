@@ -7,7 +7,10 @@ class Settings(BaseSettings):
     debug: bool = True
     
     # Database
-    database_url: str = "mysql+aiomysql://root:Deepak%401224@127.0.0.1:3306/nutrigen"
+    # No default on purpose: the real connection string (including username and
+    # password) must come from the DATABASE_URL environment variable or a local
+    # .env file, never be committed to source control.
+    database_url: str = ""
     
     # API Keys
     usda_api_key: str = "DEMO_KEY"

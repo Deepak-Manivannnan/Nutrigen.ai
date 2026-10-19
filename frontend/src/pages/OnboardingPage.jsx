@@ -55,6 +55,9 @@ export default function OnboardingPage() {
   const [step, setStep] = useState(1);
   const [form, setForm] = useState(INITIAL_FORM);
   const [ageError, setAgeError] = useState('');
+  // True while the profile is being written to the server, so the last button
+  // cannot be pressed twice and does not look dead on a slow connection.
+  const [saving, setSaving] = useState(false);
 
   function set(key, val) { setForm(p => ({ ...p, [key]: val })); }
 
@@ -83,7 +86,7 @@ export default function OnboardingPage() {
     return true;
   }
 
-  function handleFinish() {
+  async function handleFinish() {
     // Validate age at form submission
     const ageVal = Number(form.age);
     if (!form.age || isNaN(ageVal) || ageVal < 18) {
@@ -103,7 +106,25 @@ export default function OnboardingPage() {
         dinner: form.fixed_dinner,
       },
     };
-    createProfile(profileData);
+
+    setSaving(true);
+    try {
+      // Wait for the server before saying anything about the result. Firing
+      // this off unawaited is what let a failed save announce itself as
+      // "Profile created!" and land the user on Home with nothing stored.
+      await createProfile(profileData);
+    } catch (err) {
+      // Nothing was saved, so nothing here may claim otherwise: no success
+      // toast, no navigation. The answers stay on screen for another attempt.
+      console.warn('Profile save failed:', err);
+      addToast(
+        'Could not save your profile. Please check your connection and try again.',
+        'error'
+      );
+      return;
+    } finally {
+      setSaving(false);
+    }
     addToast('Profile created! Welcome to Nutrigen.ai 🎉', 'success');
     // replace: sign-up and onboarding are steps toward the app, not places the
     // user should be able to Back into after landing on Home.
@@ -318,8 +339,8 @@ export default function OnboardingPage() {
                   Next <ChevronRight size={14} />
                 </button>
               ) : (
-                <button className="btn btn-primary" onClick={handleFinish} id="onboard-finish">
-                  Continue to Nutrigen.ai <ChevronRight size={14} />
+                <button className="btn btn-primary" onClick={handleFinish} id="onboard-finish" disabled={saving}>
+                  {saving ? 'Saving your profile…' : <>Continue to Nutrigen.ai <ChevronRight size={14} /></>}
                 </button>
               )}
             </div>

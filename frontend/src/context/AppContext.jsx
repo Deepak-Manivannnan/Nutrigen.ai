@@ -359,14 +359,13 @@ export function AppProvider({ children }) {
       await loadUserData(created.id, created);
       return created;
     } catch (err) {
-      console.warn('Backend create profile error, falling back locally:', err);
-      const newProfile = {
-        ...profileData,
-        id: Date.now(),
-        created_at: new Date().toISOString(),
-      };
-      setProfile(newProfile);
-      return newProfile;
+      // No local stand-in. A profile that exists only in this browser carries
+      // an id the server never issued, so every later call - chat, plans,
+      // grocery - is rejected as another account, while the interface would go
+      // on behaving as though the save worked. Hand the failure back instead
+      // and let the caller report it.
+      console.warn('Backend create profile error:', err);
+      throw err;
     } finally {
       setAuthReady(true);
     }

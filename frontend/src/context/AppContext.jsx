@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 import { generateDemoPlan, generateDemoGrocery } from '../utils/workflowSimulator';
 import {
   fetchCurrentProfile,
+  hasCompletedProfile,
   setAuthToken,
   updateProfile as updateProfileApi,
   createProfile as createProfileApi,
@@ -121,7 +122,10 @@ export function AppProvider({ children }) {
   // check a forged session, so it would block nothing.
   const stored = getStoredUser();
   const [user, setUser] = useState(stored ? { id: stored.id, name: stored.name, email: stored.email } : null);
-  const [profile, setProfile] = useState(stored?.profile || null);
+  // A cached profile is only trusted if it actually holds personal details.
+  // Older builds cached the empty shell the API returns for an un-onboarded
+  // account, and that truthy object was enough to skip onboarding on reload.
+  const [profile, setProfile] = useState(hasCompletedProfile(stored?.profile) ? stored.profile : null);
 
   // False until we know whether a session exists (and whether it has a
   // profile). The guard waits on this rather than redirecting immediately,

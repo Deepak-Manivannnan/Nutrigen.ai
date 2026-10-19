@@ -49,14 +49,36 @@ export function authFetch(url, options = {}) {
 }
 
 /**
- * Fetch current user profile (tries /profile/me, then /profile/1)
+ * Does this profile hold the personal details the app actually needs?
+ *
+ * The API returns HTTP 200 with an all-null object for an account that exists
+ * but has never been through onboarding (age/height/weight are all null). That
+ * object is truthy, so a plain `if (profile)` read it as "profile exists" and
+ * every route guard waved a brand-new user straight through to the home page,
+ * skipping onboarding entirely.
+ *
+ * These three mirror the backend's own `has_profile` test in auth.py, so the
+ * sign-in redirect and the route guards can never disagree. `goal` is
+ * deliberately not part of it: the API defaults it to "maintain", so it is set
+ * even on an account that was never onboarded.
+ */
+export function hasCompletedProfile(profile) {
+  return Boolean(profile && profile.age && profile.height_cm && profile.weight_kg);
+}
+
+/**
+ * Fetch current user profile.
+ *
+ * Returns null when the account has no completed profile - not the empty
+ * shell the API sends - so callers can treat null as "still needs onboarding".
  */
 export async function fetchCurrentProfile(userId) {
   try {
     const url = userId ? `${API_BASE}/profile/${userId}` : `${API_BASE}/profile/me`;
     const res = await authFetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const data = await res.json();
+    return hasCompletedProfile(data) ? data : null;
   } catch (err) {
     console.warn('Could not fetch profile from backend:', err);
     return null;

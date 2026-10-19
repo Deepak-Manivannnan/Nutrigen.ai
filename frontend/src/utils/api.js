@@ -4,7 +4,12 @@
  */
 import { isLiquidIngredient } from './planHelpers';
 
-const API_BASE = '/api';
+// Backend origin. `/api` on its own only resolves during `npm run dev`, where
+// vite.config.js proxies it to http://127.0.0.1:8000. A production build has no
+// such proxy, so VITE_API_BASE must point at the deployed backend (include the
+// trailing /api). Vite inlines env vars at BUILD time, so changing it on the
+// hosting platform requires a rebuild, not just a restart.
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api';
 
 /**
  * Fetch current user profile (tries /profile/me, then /profile/1)

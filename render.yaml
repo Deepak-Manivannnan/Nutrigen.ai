@@ -1,0 +1,45 @@
+# Render blueprint for NutriGen.ai
+#
+# Deploy with: Render dashboard -> New -> Blueprint -> point at this repo.
+# Secrets are NOT stored here on purpose. After the first deploy, set these in
+# the dashboard under each service's Environment tab:
+#   DATABASE_URL   mysql+aiomysql://user:pass@host:port/database
+#   GEMINI_API_KEY_1 / GEMINI_API_KEY_2
+#
+# The frontend service needs VITE_API_BASE set to the backend's public URL plus
+# /api, e.g. https://nutrigen-backend.onrender.com/api. Vite inlines env vars at
+# build time, so adding it later means triggering a redeploy.
+
+services:
+  - type: web
+    name: nutrigen-backend
+    runtime: python
+    # Left blank on purpose: the start command imports `backend.app.main`, which
+    # only resolves when the repository root is the working directory.
+    rootDir: null
+    buildCommand: pip install -r backend/requirements.txt
+    # --host 0.0.0.0 is required; without it Render cannot reach the service.
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    # /docs is static Swagger UI and returns 200 regardless of database state.
+    # Do NOT point this at /api/profile/me: it 404s until a user exists, and a
+    # fresh deployment has an empty database, so the check would never pass.
+    healthCheckPath: /docs
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY_1
+        sync: false
+      - key: GEMINI_API_KEY_2
+        sync: false
+
+  - type: web
+    name: nutrigen-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE
+        sync: false

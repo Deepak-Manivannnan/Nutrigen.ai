@@ -3031,18 +3031,24 @@ ol {
 }
 
 /* Onboarding */
+/* Base layout (steps 1-4): the card is sized by its own content, so a short
+   form like Basic info no longer leaves a tall empty box underneath it.
+
+   The page is given a MINIMUM height instead of an exact one, so a step whose
+   content is taller than the screen (Allergies, with a long list) grows the
+   page and scrolls normally instead of being clipped.
+
+   The Review step is the exception and opts into the fixed-height,
+   internally-scrolling layout via .is-review below. */
 .onboarding-page {
-  height: 100vh;
+  min-height: 100vh;
   /* dvh tracks the real viewport, so full-height screens are not pushed
      under the collapsing mobile browser toolbar. The vh line above is the
      fallback for browsers without dvh support. */
-  height: 100dvh;
-  max-height: 100vh;
-  max-height: 100dvh;
+  min-height: 100dvh;
   background: var(--gray-50);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 .onboarding-header {
@@ -3061,15 +3067,11 @@ ol {
   align-items: flex-start;
   justify-content: center;
   padding: var(--space-6) var(--space-4);
-  overflow: hidden;
 }
 
 .onboarding-container {
   width: 100%;
   max-width: 640px;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
 }
 
 .onboarding-card {
@@ -3078,10 +3080,8 @@ ol {
   border-radius: var(--radius-xl);
   overflow: hidden;
   box-shadow: var(--shadow-lg);
-  flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 0;
 }
 
 .onboarding-step-tabs {
@@ -3139,9 +3139,40 @@ ol {
 
 .onboarding-content {
   padding: var(--space-5);
+}
+
+/* Review step: the page is locked to the viewport and only the card's inner
+   content scrolls. Everything else - header, step tabs, footer buttons -
+   stays put, so the list can be read without the page moving under it.
+   A tall Review list therefore scrolls inside the card rather than pushing
+   the buttons off screen. */
+.onboarding-page.is-review {
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.onboarding-page.is-review .onboarding-body {
+  overflow: hidden;
+}
+
+.onboarding-page.is-review .onboarding-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.onboarding-page.is-review .onboarding-card {
   flex: 1;
-  overflow-y: auto;
   min-height: 0;
+}
+
+.onboarding-page.is-review .onboarding-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .onboarding-step-title {

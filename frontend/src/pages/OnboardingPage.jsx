@@ -111,7 +111,7 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="onboarding-page" id="onboarding-page">
+    <div className={`onboarding-page${step === 5 ? ' is-review' : ''}`} id="onboarding-page">
       <div className="onboarding-header">
         <Logo size="sm" />
         <span style={{ fontSize: 'var(--text-sm)', color: 'var(--gray-500)' }}>Step {step} of {STEPS.length}</span>

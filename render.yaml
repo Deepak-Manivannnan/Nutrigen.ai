@@ -41,6 +41,15 @@ services:
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
+    # The app uses BrowserRouter with real paths (/signin, /app/chat). A static
+    # host serves files literally, so requesting those paths directly returned
+    # 404 "Not Found" and a page refresh on any in-app route showed a blank
+    # screen. Rewriting every path to the SPA shell lets React Router handle
+    # routing on the client.
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       - key: VITE_API_BASE
         sync: false

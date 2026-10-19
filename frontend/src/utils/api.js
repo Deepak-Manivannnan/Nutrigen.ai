@@ -20,6 +20,12 @@ export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/
 // ---------------------------------------------------------------------------
 const TOKEN_KEY = 'nutrigen_auth_token';
 
+// A 401 from a request that carried a token means the session is no longer
+// accepted by the server. With a short token lifetime that is routine, and
+// several requests can fail together during one navigation - so the app is
+// told once, not once per failed request. A fresh sign-in re-arms it.
+let unauthorizedAnnounced = false;
+
 export function getAuthToken() {
   try {
     return localStorage.getItem(TOKEN_KEY) || '';
@@ -35,6 +41,7 @@ export function setAuthToken(token) {
   } catch {
     /* private browsing - the session simply will not survive a reload */
   }
+  if (token) unauthorizedAnnounced = false;
 }
 
 export function authFetch(url, options = {}) {
@@ -45,6 +52,26 @@ export function authFetch(url, options = {}) {
       ...(options.headers || {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
+  }).then(res => {
+    // Any 401 from this wrapper means the server did not accept the session:
+    // every endpoint behind it answers 401 only for a missing, malformed or
+    // expired token, and 403 for anything else. Sign-in and sign-up use plain
+    // fetch on purpose, so a wrong password still reaches the form as its own
+    // message rather than being mistaken for an expired session.
+    //
+    // Deliberately not conditioned on a token being present: a cached user
+    // with no token - left over from before sessions existed - also has to
+    // land on sign-in instead of being bounced to onboarding.
+    //
+    // It IS conditioned on a cached user existing, so an in-flight request
+    // that 401s after a deliberate sign-out does not tell someone who just
+    // logged out that their session expired.
+    const hasSession = Boolean(localStorage.getItem('nutrigen_auth_user'));
+    if (res.status === 401 && hasSession && !unauthorizedAnnounced) {
+      unauthorizedAnnounced = true;
+      window.dispatchEvent(new Event('nutrigen:session-expired'));
+    }
+    return res;
   });
 }
 

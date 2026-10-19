@@ -304,6 +304,29 @@ export function AppProvider({ children }) {
     setActivePlanId(null);
   }, [user?.id]);
 
+  // A 401 means the server no longer accepts the session - with a short token
+  // lifetime that is routine, not a fault. Unlike signOut() above, this clears
+  // ONLY the credential: the conversation, saved plans and any half-finished
+  // workflow stay exactly where they are, because the user is about to sign
+  // back in and would otherwise find their chat emptied by the clock.
+  const endExpiredSession = useCallback(() => {
+    localStorage.removeItem('nutrigen_auth_user');
+    setAuthToken(null);
+    setUser(null);
+    setProfile(null);
+    setAuthReady(true);
+    addToast('Your session expired. Please sign in again.', 'error');
+  }, [addToast]);
+
+  // Reported by authFetch in utils/api.js, which has no way to reach React
+  // state. Clearing the user is what triggers RequireAuth to move the app to
+  // /signin on the next render.
+  useEffect(() => {
+    const onSessionExpired = () => endExpiredSession();
+    window.addEventListener('nutrigen:session-expired', onSessionExpired);
+    return () => window.removeEventListener('nutrigen:session-expired', onSessionExpired);
+  }, [endExpiredSession]);
+
   const createProfile = useCallback(async (profileData) => {
     // Same reason as signIn: onboarding navigates to /app/home the moment this
     // resolves, so the guard must wait for the real profile rather than treat

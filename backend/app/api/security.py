@@ -18,9 +18,15 @@ import time
 
 from backend.app.config import settings
 
-# 12 hours: long enough for a working session, short enough that a shared or
-# stolen token does not stay useful indefinitely.
-TOKEN_TTL_SECONDS = 12 * 60 * 60
+# 15 minutes: the session dies shortly after login, so a token that leaks -
+# left on a shared machine, copied out of storage, or replayed from a log -
+# stops being useful almost immediately.
+#
+# This is an absolute deadline set at login, not an idle timeout: activity
+# does not extend it, so a session can lapse while the user is mid-form.
+# Nothing renews it either - there is no refresh token - so once it passes
+# the API answers 401 and the user must sign in again.
+TOKEN_TTL_SECONDS = 15 * 60
 
 
 def _b64encode(raw: bytes) -> str:

@@ -14,9 +14,10 @@ services:
   - type: web
     name: nutrigen-backend
     runtime: python
-    # Left blank on purpose: the start command imports `backend.app.main`, which
-    # only resolves when the repository root is the working directory.
-    rootDir: null
+    plan: free
+    # rootDir intentionally omitted (the spec defaults to the repo root). The
+    # start command imports `backend.app.main`, which only resolves when the
+    # working directory is the repo root, not backend/.
     buildCommand: pip install -r backend/requirements.txt
     # --host 0.0.0.0 is required; without it Render cannot reach the service.
     startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT

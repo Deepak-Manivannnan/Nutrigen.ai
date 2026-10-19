@@ -20,6 +20,33 @@ const INFLIGHT_TIMEOUT_MS = 10 * 60 * 1000;
 const BOOT_GRACE_MS = 3 * 60 * 1000;
 const RECONCILE_POLL_MS = 5000;
 
+// Reply ids already shown, held at module scope rather than in the component.
+// applyChatResponse is reached from two places - the POST that carried the
+// message, and the delivery-inbox poll that collects it after a refresh - and
+// both can report the same run. A ref would do for one build of the page, but
+// a refresh (the very thing the inbox exists for) or a navigation away and
+// back rebuilds the component and empties it with them, so the second copy of
+// a reply already on screen would render again. This outlives the component.
+// Bounded, because a long session on one device would otherwise grow it
+// without end.
+const APPLIED_TASK_IDS = new Set();
+const APPLIED_TASK_CAP = 64;
+
+/**
+ * True when this run has already been shown; otherwise records it and says no.
+ * The id is the backend's own task id, which is the same in both deliveries,
+ * so the two copies of one reply always collide here.
+ */
+function takeApplied(taskId) {
+  if (APPLIED_TASK_IDS.has(taskId)) return true;
+  APPLIED_TASK_IDS.add(taskId);
+  if (APPLIED_TASK_IDS.size > APPLIED_TASK_CAP) {
+    // Set iteration is insertion order, so this drops the oldest first.
+    APPLIED_TASK_IDS.delete(APPLIED_TASK_IDS.values().next().value);
+  }
+  return false;
+}
+
 const SUGGESTIONS = [
   'Tell me about yourself',
   'Create a meal plan',
@@ -235,9 +262,6 @@ export default function ChatPage() {
   // backend can approve a just-created plan without asking again. A ref, not
   // state: it is only read at send time and must not trigger a re-render.
   const lastPlanId = useRef(null);
-  // Reply ids already shown. The live reply and the delivery-inbox poll can
-  // both deliver the same run (remount mid-wait); the second copy is dropped.
-  const appliedTaskIds = useRef(new Set());
   const traceTaskId = activeTaskId || (isAgentRunning ? bootTaskRef.current : null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -314,12 +338,14 @@ export default function ChatPage() {
   // behaves indistinguishably (pending sync, plan sync, badges, buttons).
   // Always terminal: clears the inflight marker and the running flag.
   async function applyChatResponse(chatRes) {
-    // Same run delivered twice (live reply + inbox poll race): show it once.
-    // Only tasked replies dedup — a missing id always renders, so two
-    // identical texts from two separate runs are never swallowed.
+    // Same run delivered twice - once by the POST that carried the message,
+    // once by the delivery-inbox poll: show it once. The record lives outside
+    // the component (takeApplied), so it still holds when the page was rebuilt
+    // between the two deliveries. Only tasked replies dedup - a missing id
+    // always renders, so two identical texts from two separate runs are never
+    // swallowed.
     const seenKey = chatRes?.task_id || null;
-    if (seenKey && appliedTaskIds.current.has(seenKey)) return;
-    if (seenKey) appliedTaskIds.current.add(seenKey);
+    if (seenKey && takeApplied(seenKey)) return;
     setChatStatus(null);
     setIsAgentRunning(false);
     // The bar is progress for an in-flight run only; once the reply lands it

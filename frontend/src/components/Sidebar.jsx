@@ -3,6 +3,14 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { ChevronUp, LogOut, Edit3, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import TagInput from './TagInput';
+import ThemedSelect from './ThemedSelect';
+import {
+  COMMON_ALLERGENS,
+  resolveCategory,
+  isPredefinedAllergy,
+  resolveAllergyList,
+  sameAllergySet,
+} from '../utils/allergenTaxonomy';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 function NavHomeIcon({ active }) {
@@ -262,36 +270,16 @@ function EditProfileModal({ onClose }) {
     age: '',
   });
 
-  const [selectedAllergies, setSelectedAllergies] = useState(
-    Array.isArray(profile?.allergies) ? [...profile.allergies] : []
+  // True while the save is in flight, so the button cannot be pressed twice
+  // and does not look dead on a slow connection.
+  const [saving, setSaving] = useState(false);
+
+  const [selectedAllergies, setSelectedAllergies] = useState(() =>
+    // Resolved on load, not just on typing. Anything saved as a raw food name
+    // ("prawns", "Peanuts") folds into its category here, so the toggle shows
+    // a tick instead of a chip that could never promote itself later.
+    resolveAllergyList(profile?.allergies)
   );
-
-  const COMMON_ALLERGENS = ['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish'];
-
-  // Mirrors the server-side allergen taxonomy. When a typed food belongs to
-  // one of the seven categories the backend collapses it into that category
-  // on save, so the modal selects the category too rather than flashing a
-  // chip that would disappear on save. Foods outside these groups (mutton,
-  // lamb, beef, ...) are kept as-is by the backend and show as chips.
-  const CATEGORY_ALIASES = {
-    'Nuts': ['nut', 'nuts', 'peanut', 'peanuts', 'groundnut', 'tree nut', 'tree nuts', 'almond', 'almonds', 'walnut', 'walnuts', 'cashew', 'pistachio', 'pecan', 'hazelnut', 'macadamia'],
-    'Shellfish': ['shellfish', 'shrimp', 'prawn', 'prawns', 'crab', 'lobster', 'clam', 'clams', 'mussel', 'mussels', 'oyster', 'oysters', 'scallop', 'scallops', 'squid', 'calamari', 'octopus', 'crawfish'],
-    'Dairy': ['dairy', 'milk', 'cow milk', 'cheese', 'butter', 'cream', 'yogurt', 'yogurt', 'curd', 'paneer', 'ghee', 'casein', 'whey'],
-    'Gluten': ['gluten', 'wheat', 'barley', 'rye', 'spelt', 'seitan', 'semolina', 'couscous', 'maida', 'atta'],
-    'Eggs': ['egg', 'eggs', 'mayo', 'mayonnaise', 'albumen', 'albumin', 'meringue'],
-    'Soy': ['soy', 'soya', 'soybean', 'soybeans', 'edamame', 'tofu', 'tempeh', 'miso', 'tamari'],
-    'Fish': ['fish', 'salmon', 'tuna', 'cod', 'tilapia', 'trout', 'halibut', 'sardine', 'anchovy', 'mackerel', 'bass', 'snapper'],
-  };
-
-  function resolveCategory(value) {
-    const clean = String(value || '').trim().toLowerCase();
-    if (!clean) return null;
-    return COMMON_ALLERGENS.find(cat =>
-      (CATEGORY_ALIASES[cat] || []).some(alias => alias === clean)
-    ) || null;
-  }
-
-  const isPredefinedAllergy = (a) => COMMON_ALLERGENS.some(p => p.toLowerCase() === a.toLowerCase());
 
   // Anything the user typed that is not one of the seven categories. These
   // render as removable chips so they can actually be seen and undone —
@@ -345,19 +333,37 @@ function EditProfileModal({ onClose }) {
     setSelectedAllergies(prev => prev.filter(a => a !== value));
   }
 
-  function handleSave(e) {
+  async function handleSave(e) {
     e.preventDefault();
-    if (!validateForm()) return;
-    
-    updateProfile({
+    if (!validateForm() || saving) return;
+
+    // Allergies are only sent when they actually changed. PUT /profile runs an
+    // LLM normaliser whenever that field is present, so re-sending an untouched
+    // list made every goal-only change pay for an unrelated network round trip
+    // — which is why "Save Changes" felt instant locally and slow on Render.
+    const payload = {
       ...form,
       age: Number(form.age),
       height_cm: Number(form.height_cm),
       weight_kg: Number(form.weight_kg),
-      allergies: selectedAllergies,
-    });
-    addToast('Profile updated successfully', 'success');
-    onClose();
+    };
+    if (!sameAllergySet(selectedAllergies, profile?.allergies)) {
+      payload.allergies = selectedAllergies;
+    }
+
+    setSaving(true);
+    const ok = await updateProfile(payload);
+    setSaving(false);
+
+    // Announced from the result, not from the click. The old unconditional
+    // toast told people their profile was updated while the request was still
+    // in flight — and even when it had failed.
+    if (ok) {
+      addToast('Profile updated successfully', 'success');
+      onClose();
+    } else {
+      addToast('Could not save your changes. Please try again.', 'error');
+    }
   }
 
   return (
@@ -403,27 +409,42 @@ function EditProfileModal({ onClose }) {
             ))}
             <div className="form-group">
               <label className="form-label">Activity Level</label>
-              <select className="form-select" value={form.activity_level} onChange={e => setForm(p => ({ ...p, activity_level: e.target.value }))}>
-                <option value="low">Low (Sedentary)</option>
-                <option value="medium">Moderate (Active)</option>
-                <option value="high">High (Athletic)</option>
-              </select>
+              <ThemedSelect
+                value={form.activity_level}
+                onChange={v => setForm(p => ({ ...p, activity_level: v }))}
+                ariaLabel="Activity Level"
+                options={[
+                  { value: 'low', label: 'Low (Sedentary)' },
+                  { value: 'medium', label: 'Moderate (Active)' },
+                  { value: 'high', label: 'High (Athletic)' },
+                ]}
+              />
             </div>
             <div className="form-group">
               <label className="form-label">Goal</label>
-              <select className="form-select" value={form.goal} onChange={e => setForm(p => ({ ...p, goal: e.target.value }))}>
-                <option value="lose">Lose Weight</option>
-                <option value="maintain">Maintain Weight</option>
-                <option value="gain">Gain Weight</option>
-              </select>
+              <ThemedSelect
+                value={form.goal}
+                onChange={v => setForm(p => ({ ...p, goal: v }))}
+                ariaLabel="Goal"
+                options={[
+                  { value: 'lose', label: 'Lose Weight' },
+                  { value: 'maintain', label: 'Maintain Weight' },
+                  { value: 'gain', label: 'Gain Weight' },
+                ]}
+              />
             </div>
             <div className="form-group">
               <label className="form-label">Diet Type</label>
-              <select className="form-select" value={form.diet_type} onChange={e => setForm(p => ({ ...p, diet_type: e.target.value }))}>
-                <option value="veg">Vegetarian</option>
-                <option value="non-veg">Non-Vegetarian</option>
-                <option value="vegan">Vegan</option>
-              </select>
+              <ThemedSelect
+                value={form.diet_type}
+                onChange={v => setForm(p => ({ ...p, diet_type: v }))}
+                ariaLabel="Diet Type"
+                options={[
+                  { value: 'veg', label: 'Vegetarian' },
+                  { value: 'non-veg', label: 'Non-Vegetarian' },
+                  { value: 'vegan', label: 'Vegan' },
+                ]}
+              />
             </div>
 
             {/* Allergies & Restrictions */}
@@ -457,14 +478,14 @@ function EditProfileModal({ onClose }) {
             </div>
           </div>
           <div className="modal-footer">
-            <button type="button" className="btn btn-outline btn-sm" onClick={onClose}>Cancel</button>
+            <button type="button" className="btn btn-outline btn-sm" onClick={onClose} disabled={saving}>Cancel</button>
             <button 
               type="submit" 
-              className={`btn btn-primary btn-sm${hasErrors ? ' disabled' : ''}`}
+              className={`btn btn-primary btn-sm${hasErrors || saving ? ' disabled' : ''}`}
               id="save-profile-btn"
-              disabled={hasErrors}
+              disabled={hasErrors || saving}
             >
-              Save Changes
+              {saving ? 'Saving…' : 'Save Changes'}
             </button>
           </div>
         </form>

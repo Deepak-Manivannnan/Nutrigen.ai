@@ -4,6 +4,11 @@ import { Logo } from '../components/Logo';
 import TagInput from '../components/TagInput';
 import { ChevronRight, ChevronLeft, Check, AlertCircle } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import {
+  COMMON_ALLERGENS,
+  isPredefinedAllergy as isCategoryAllergy,
+  resolveCategory,
+} from '../utils/allergenTaxonomy';
 
 const STEPS = [
   { id: 1, label: 'Basic info' },
@@ -43,10 +48,13 @@ const INITIAL_FORM = {
   diet_type: 'non-veg', dislikes: [], allergies: [],
 };
 
-const PREDEFINED_ALLERGIES = ['Nuts', 'Shellfish', 'Dairy', 'Gluten', 'Eggs', 'Soy', 'Fish'];
+// Both now come from utils/allergenTaxonomy, which the Edit Profile modal also
+// uses. Keeping a second copy here is what let the same typed food be resolved
+// on one screen and kept verbatim on the other.
+const PREDEFINED_ALLERGIES = COMMON_ALLERGENS;
 
 function isPredefinedAllergy(allergy) {
-  return PREDEFINED_ALLERGIES.some(p => p.toLowerCase() === allergy.toLowerCase());
+  return isCategoryAllergy(allergy);
 }
 
 export default function OnboardingPage() {
@@ -287,8 +295,13 @@ export default function OnboardingPage() {
                       <TagInput
                         tags={form.allergies.filter(a => !isPredefinedAllergy(a))}
                         onAdd={t => {
-                          const exists = form.allergies.some(a => a.toLowerCase() === t.toLowerCase());
-                          if (!exists) set('allergies', [...form.allergies, t]);
+                          // Same rule as Edit Profile: a food inside one of the
+                          // seven groups ticks its category; anything else stays
+                          // as a removable chip.
+                          const category = resolveCategory(t);
+                          const target = category || t;
+                          const exists = form.allergies.some(a => a.toLowerCase() === target.toLowerCase());
+                          if (!exists) set('allergies', [...form.allergies, target]);
                         }}
                         onRemove={t => set('allergies', form.allergies.filter(a => a.toLowerCase() !== t.toLowerCase()))}
                         placeholder="e.g. sesame, mustard"

@@ -403,24 +403,31 @@ export function AppProvider({ children }) {
   }, [user, loadUserData]);
 
   const updateProfile = useCallback(async (updates) => {
-    // Optimistic UI update
-    setProfile(prev => ({ ...prev, ...updates }));
-
     const activeId = profile?.id || user?.id;
-    if (!activeId) return;
+    if (!activeId) return false;
 
+    // No optimistic write here on purpose. It used to merge `updates` into the
+    // profile immediately, but those edits only set goal/bmi inputs while the
+    // calorie fields are computed server-side - so the dashboard behind the
+    // modal showed a new goal next to old calories until the response landed,
+    // and on failure there was no reliable "before" to restore (taking that
+    // snapshot inside a state updater is not guaranteed to have run).
+    // The modal's own fields are local state, so they still feel instant; this
+    // only publishes the authoritative server values, and only on success.
     try {
       const saved = await updateProfileApi(activeId, updates);
-      if (saved) {
-        setProfile(saved);
-        setUser(prev => {
-          const updated = { ...prev, name: saved.name || prev.name };
-          cacheStoredUser({ ...updated, profile: saved });
-          return updated;
-        });
-      }
+      if (!saved) throw new Error('Empty response updating profile');
+      setProfile(saved);
+      setUser(prev => {
+        const updated = { ...prev, name: saved.name || prev.name };
+        cacheStoredUser({ ...updated, profile: saved });
+        return updated;
+      });
+      return true;
     } catch (err) {
       console.warn('Backend update profile error:', err);
+      // Nothing written, so the screen keeps the stored values unchanged.
+      return false;
     }
   }, [profile?.id, user?.id]);
 

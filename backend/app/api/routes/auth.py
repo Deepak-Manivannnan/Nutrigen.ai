@@ -49,16 +49,6 @@ async def login(
     email = payload.email.strip().lower()
     user = await user_repo.get_by_email(email)
 
-    # Demo fallback for demo credentials
-    if not user and email in ("deepak@nutrigen.ai", "demo@nutrigen.ai"):
-        user = await user_repo.get_first()
-        if not user:
-            user = await user_repo.create_account(
-                name="Deepak",
-                email=email,
-                password_hash=hash_password(payload.password)
-            )
-
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

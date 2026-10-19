@@ -15,13 +15,17 @@ class User(Base):
     name = Column(String(100), nullable=False)
     email = Column(String(255), unique=True, nullable=True, index=True)
     password_hash = Column(String(255), nullable=True)
-    age = Column(Integer, nullable=False)
-    sex = Column(String(20), nullable=False)
-    height_cm = Column(Float, nullable=False)
-    weight_kg = Column(Float, nullable=False)
-    activity_level = Column(String(20), nullable=False)
+    # Nullable on purpose: registration happens before onboarding, so a user row
+    # legitimately exists with no profile yet (has_profile is False until these
+    # are filled in). These were NOT NULL, which made MySQL reject registration
+    # on a freshly created schema with "Column 'age' cannot be null".
+    age = Column(Integer, nullable=True)
+    sex = Column(String(20), nullable=True)
+    height_cm = Column(Float, nullable=True)
+    weight_kg = Column(Float, nullable=True)
+    activity_level = Column(String(20), nullable=True)
     goal = Column(String(20), nullable=True, default="maintain")
-    diet_type = Column(String(20), nullable=False)
+    diet_type = Column(String(20), nullable=True)
     dislikes = Column(JSON, default=list)
     # Persisted calorie calculation results
     bmr = Column(Float, nullable=True)

@@ -48,6 +48,17 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN min_safe_calories FLOAT",
             "ALTER TABLE users ADD COLUMN max_safe_calories FLOAT",
             "ALTER TABLE users ADD COLUMN suggested_target_calories FLOAT",
+            # Relax the profile columns on databases created before onboarding was
+            # split out of registration. A user row legitimately exists with these
+            # empty between registering and finishing onboarding, and a fresh
+            # schema inherited NOT NULL from the old model, which made MySQL
+            # reject registration outright.
+            "ALTER TABLE users MODIFY COLUMN age INT NULL",
+            "ALTER TABLE users MODIFY COLUMN sex VARCHAR(20) NULL",
+            "ALTER TABLE users MODIFY COLUMN height_cm FLOAT NULL",
+            "ALTER TABLE users MODIFY COLUMN weight_kg FLOAT NULL",
+            "ALTER TABLE users MODIFY COLUMN activity_level VARCHAR(20) NULL",
+            "ALTER TABLE users MODIFY COLUMN diet_type VARCHAR(20) NULL",
         ]
         for stmt in migrations:
             try:

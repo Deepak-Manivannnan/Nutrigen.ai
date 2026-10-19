@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Mail, Lock, Eye, EyeOff, User } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { API_BASE } from '../utils/api';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 export default function SignUpPage() {
@@ -33,7 +34,7 @@ export default function SignUpPage() {
     }
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/register', {
+      const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -42,11 +43,11 @@ export default function SignUpPage() {
           password: form.password,
         }),
       });
+      // See SignInPage: must target API_BASE, and the body may not be JSON.
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || 'Failed to create account.');
       }
-      const data = await res.json();
       await signIn(data);
       addToast('Account created! Complete your profile.', 'success');
       navigate('/onboarding', { replace: true });

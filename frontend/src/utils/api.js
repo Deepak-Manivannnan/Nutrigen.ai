@@ -9,7 +9,7 @@ import { isLiquidIngredient } from './planHelpers';
 // such proxy, so VITE_API_BASE must point at the deployed backend (include the
 // trailing /api). Vite inlines env vars at BUILD time, so changing it on the
 // hosting platform requires a rebuild, not just a restart.
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api';
+export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api';
 
 /**
  * Fetch current user profile (tries /profile/me, then /profile/1)

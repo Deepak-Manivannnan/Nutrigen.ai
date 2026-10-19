@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { API_BASE } from '../utils/api';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 export default function SignInPage() {
@@ -26,16 +27,19 @@ export default function SignInPage() {
     }
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: form.email.trim(), password: form.password }),
       });
+      // A relative '/api' would resolve against the static host, which has no
+      // backend behind it, so the call has to go to API_BASE like every other
+      // request. Guard the parse too: an empty or non-JSON body used to surface
+      // as a raw "Unexpected end of JSON input" instead of a readable message.
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || 'Invalid email or password.');
       }
-      const data = await res.json();
       signIn(data);
       addToast(`Welcome back, ${data.name}!`, 'success');
       if (data.has_profile) {

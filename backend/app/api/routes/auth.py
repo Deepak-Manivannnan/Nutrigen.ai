@@ -55,17 +55,17 @@ async def login(
             detail="Account not found. Please register a new account or check your email."
         )
 
-    # Validate password; for developer convenience in this practice environment,
-    # if it doesn't match a legacy multi-part salt hash, seamlessly update to the user's entered password.
+    # A wrong password is rejected, never accepted. This previously overwrote the
+    # stored hash with whatever was typed whenever the input was 6+ characters,
+    # so knowing an email was enough to take over the account - and the real
+    # password stopped working. verify_password already understands both the
+    # current sha256 form and the older salted format, so the migration that
+    # branch was written for is no longer needed.
     if user.password_hash and not verify_password(user.password_hash, payload.password):
-        if len(payload.password) >= 6:
-            user.password_hash = hash_password(payload.password)
-            await user_repo.session.commit()
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid password. Please enter at least 6 characters."
-            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid password. Please try again."
+        )
 
     has_profile = bool(user.age and user.height_cm and user.weight_kg)
     profile_data = {

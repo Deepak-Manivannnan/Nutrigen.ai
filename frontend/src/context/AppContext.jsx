@@ -180,6 +180,12 @@ export function AppProvider({ children }) {
   // Messages persist per user in localStorage so a page refresh keeps the
   // conversation (deleted only via Clear chat or sign-out).
   const [messages, setMessages] = useState(() => loadMessages(stored ? stored.id : null));
+  // Mirror of `messages`, because addMessage must know the array it is about
+  // to produce WITHOUT waiting for a re-render - it persists the reply
+  // synchronously, so the reply is durable before the in-flight marker is
+  // cleared (see ChatPage). Kept in step by every setMessages call site;
+  // nothing reads it except addMessage.
+  const messagesRef = useRef(messages);
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const [workflowState, setWorkflowState] = useState(null);
   const [chatStatus, setChatStatus] = useState(null);
@@ -200,6 +206,11 @@ export function AppProvider({ children }) {
 
   // Persist chat messages on every change (per user). Transient run state
   // (typing indicator, running flag) is intentionally NOT persisted.
+  //
+  // addMessage already writes through synchronously, so for a live reply this
+  // is a second, identical write. It is kept because other writers - loading
+  // history on sign-in, Clear chat - only call setMessages. Writing the same
+  // JSON twice is cheap; losing a reply to a refresh is not.
   useEffect(() => {
     const uid = user?.id || profile?.id;
     if (uid) saveMessages(uid, messages);
@@ -286,7 +297,11 @@ export function AppProvider({ children }) {
       setUser(userData);
       cacheStoredUser(userData);
       setPendingWorkflowState(loadPendingWorkflow(userData.id));
-      setMessages(loadMessages(userData.id));
+      {
+        const restored = loadMessages(userData.id);
+        setMessages(restored);
+        messagesRef.current = restored;
+      }
       await loadUserData(userData.id, userData.profile);
     } catch (err) {
       console.warn('Sign in sync error:', err);
@@ -304,6 +319,7 @@ export function AppProvider({ children }) {
     setUser(null);
     setProfile(null);
     setMessages([]);
+    messagesRef.current = [];
     setPlans([]);
     setGroceryList(null);
     setChatBadge(false);
@@ -499,15 +515,26 @@ export function AppProvider({ children }) {
   }, [markBadge]);
 
   const addMessage = useCallback((msg) => {
-    setMessages(prev => [...prev, { ...msg, id: Date.now() + Math.random(), timestamp: new Date() }]);
+    const entry = { ...msg, id: Date.now() + Math.random(), timestamp: new Date() };
+    const next = [...messagesRef.current, entry];
+    messagesRef.current = next;
+    setMessages(next);
+
+    // Persist here, now, rather than waiting for the effect below. The reply
+    // has to be durable BEFORE the in-flight marker is cleared (see ChatPage),
+    // and the effect only runs after React has committed - which is a render
+    // later, i.e. exactly the gap a refresh could land in.
+    saveMessages(user?.id || profile?.id, next);
+
     // Only replies count: a reply that lands while the user is elsewhere (a
     // plan generating in the background, or an inbox delivery) is exactly what
     // the Chat dot is for. Messages the user typed on the Chat tab are not.
     if (msg.role === 'assistant') markBadge(setChatBadge, CHAT_PATH);
-  }, [markBadge]);
+  }, [markBadge, user?.id, profile?.id]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);
+    messagesRef.current = [];
     setWorkflowState(null);
     setChatStatus(null);
     setShowWorkflow(false);

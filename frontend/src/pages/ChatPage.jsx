@@ -351,7 +351,8 @@ export default function ChatPage() {
     // The bar is progress for an in-flight run only; once the reply lands it
     // has nothing left to report and must not linger.
     setActiveTaskId(null);
-    if (profile?.id) saveInflight(profile.id, null);
+    // NOTE: the inflight marker is deliberately NOT cleared here. See the
+    // block after addMessage below.
 
     // Keep the pending conflict context so a follow-up answer resolves it
     // (context-level, survives navigating to the Plans tab and back).
@@ -411,6 +412,18 @@ export default function ChatPage() {
       actionTarget: action ? action.target : null,
       planId: createdPlan?.id,
       });
+
+    // NOW the run is over as far as the user is concerned, so the marker can
+    // go. It has to be this late: while the marker is present, a reload means
+    // "still collecting, go and poll the inbox". Clearing it earlier - as this
+    // did - opened a window where the marker was gone but the reply had not
+    // reached the message list yet, so a refresh in that window found nothing
+    // to poll and the reply was lost even though the server was holding it.
+    // The ordering that is now guaranteed: marker present => the reply is not
+    // in the list yet; reply in the list => the marker is gone. A reload can
+    // therefore never show a reply twice, and can never miss one.
+    if (profile?.id) saveInflight(profile.id, null);
+
     // Remembered for the next turn so "approve it" right after a creation
     // resolves to that plan instead of prompting for a target.
     lastPlanId.current = createdPlan?.id || null;

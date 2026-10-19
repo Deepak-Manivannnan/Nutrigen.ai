@@ -35,15 +35,19 @@ class ProfileUpdate(BaseModel):
     allergies: Optional[List[str]] = None
 
 class ProfileResponse(BaseModel):
+    # These are Optional because a user row legitimately exists before
+    # onboarding finishes: /api/auth/register returns has_profile=False for that
+    # state. Declaring them required made every profile endpoint raise a
+    # response-validation error (HTTP 500) for a brand-new account.
     id: int
     name: str
-    age: int
-    sex: str
-    height_cm: float
-    weight_kg: float
-    activity_level: str
-    goal: Optional[str]
-    diet_type: str
+    age: Optional[int] = None
+    sex: Optional[str] = None
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    activity_level: Optional[str] = None
+    goal: Optional[str] = None
+    diet_type: Optional[str] = None
     dislikes: List[str]
     allergies: List[str]
     min_safe_calories: Optional[float] = None

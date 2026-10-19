@@ -166,6 +166,14 @@ async def get_user_calorie_range(
             message=None
         )
 
+    # A registered-but-not-yet-onboarded user has no height, weight or age, so
+    # the calculation below cannot run. Say so instead of raising a 500.
+    if not (user.age and user.sex and user.height_cm and user.weight_kg and user.activity_level):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Complete your profile (age, sex, height, weight, activity level) to get a calorie range.",
+        )
+
     # Fallback to calculation if not persisted yet
     result = calculate_mifflin_st_jeor(
         age=user.age,

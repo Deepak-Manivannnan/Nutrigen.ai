@@ -1718,7 +1718,44 @@ async def run_meal_planner(    user_id: int,
             target_name=intent_data.target_plan_name
         )
         if not target_plan:
-            target_plan = draft_plans[0]
+            if not named_target:
+                # Nothing named and nothing resolvable: the generic asks above
+                # already handled every real draft count, so this is only
+                # reachable in a state we have no wording for. Fall back to the
+                # first draft rather than claim an action.
+                target_plan = draft_plans[0]
+            else:
+                # The user named a plan that is not in their account. Never
+                # substitute an unrelated one: doing so handed the model a plan
+                # they never asked about, and it described it back as if they
+                # had - inventing a "keto" plan that did not exist.
+                # find_referenced_plan's day/diet keyword heuristics can also
+                # match on a word like "keto", so the name the model quotes may
+                # not even be the one the user typed.
+                wanted = (intent_data.target_plan_name or "").strip()
+                saved_names = ", ".join(f"'{p.name}'" for p in all_plans)
+                context_prompt = (
+                    f"The user asked to approve a meal plan called {wanted!r}, but no plan by that name exists in "
+                    f"their account. They currently have {len(all_plans)} saved plan(s): {saved_names}. "
+                    f"Each name above is the literal, exact name of a real saved plan - quote them only, and never "
+                    f"invent, add or repeat any other name, cuisine or diet word from the user's message. "
+                    f"In friendly, natural English (1-2 sentences), tell them you could not find a plan by that name, "
+                    f"list what they do have saved, and offer to create a new plan for them instead. "
+                    f"IMPORTANT: do NOT approve anything — the named plan was not found."
+                )
+                response_text = await _ask_without_claiming(
+                    supervisor,
+                    user_message=user_message,
+                    context=context_prompt,
+                    history=history,
+                    user_name=user_profile.get("name"),
+                )
+                state.system_message = response_text
+                state.status = "conversational"
+                # No pending approval to carry: the plan they named is not
+                # here, so a bare "yes" must not resolve to some other draft.
+                state.pending_workflow = None
+                return state
 
         # Check if already approved
         if target_plan.status == "approved" and target_plan.grocery_list:

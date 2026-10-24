@@ -215,4 +215,10 @@ pytest backend/tests
 
 > The `backend/tests_live/` suite calls the real Gemini API and is billed — run it by hand only when needed.
 
+---
+
+## 🧭 Architecture Decisions
+
+The reasoning behind the system's shape — hub-and-spoke orchestration, deterministic safety rules, LLM routing, data fallbacks, persistence, auth, and the known trade-offs — is recorded in [`docs/adr/`](docs/adr/README.md). Start with the index; it includes reading paths and maps each decision to the code it governs.
+
 <!-- No license file ships with the repo yet; add one (e.g. MIT LICENSE) before publishing. -->

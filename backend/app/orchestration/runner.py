@@ -30,7 +30,11 @@ def find_referenced_plan(
         if p:
             return p
     if target_name:
-        t_clean = target_name.strip().lower()
+        # The classifier is told to extract the name "in quotes or mentioned",
+        # so a real plan arrives here as '"Good" plan'. Compare without the
+        # quotation marks: leaving them in meant an existing plan never
+        # matched, and every caller then treated it as missing.
+        t_clean = re.sub(r"[\"'`]+", "", target_name).strip().lower()
         p = next((p for p in all_plans if p.name.strip().lower() == t_clean or t_clean in p.name.strip().lower() or p.name.strip().lower() in t_clean), None)
         if p:
             return p
@@ -95,6 +99,26 @@ def find_referenced_plan(
     if fallback_to_first:
         return all_plans[0]
     return None
+
+
+# "my plan", "the meal plan" - a reference that names nothing in particular.
+# These must keep resolving through history and the single-plan fallback
+# rather than being reported as missing, so they are excluded from the
+# not-found check below. Anything else ("keto plan") claims a specific plan
+# that either exists or does not.
+_GENERIC_PLAN_REF = re.compile(
+    r"^(?:my|our|the|this|that)?\s*(?:current|new|latest|saved)?\s*"
+    r"(?:meal\s+)?plans?(?:\s+\d+)?$",
+    re.IGNORECASE,
+)
+
+
+def _is_generic_plan_ref(name: Optional[str]) -> bool:
+    """True when the extracted plan name carries no identifying words."""
+    if not name or not name.strip():
+        return True
+    return bool(_GENERIC_PLAN_REF.match(name.strip()))
+
 
 # =========================================================================
 # Pending-workflow interruption helpers (LLM-first)
@@ -1939,6 +1963,52 @@ async def run_meal_planner(    user_id: int,
             state.status = "conversational"
             return state
 
+        # The user asked to update a plan they named, and no plan by that name
+        # exists. Never substitute a different one: the resolver below falls
+        # back to the first (or only) saved plan, so "update my keto plan" came
+        # back as "what would you like to update in '3-Day Veg Plan'?" - a plan
+        # the user never mentioned. Report the miss and offer to create one.
+        # find_referenced_plan is called strictly here: no history, because a
+        # recent message listing every plan would resolve any invented name,
+        # and no fallback, because a fallback is the substitution itself.
+        _want = (intent_data.target_plan_name or "").strip()
+        _want_id = intent_data.target_plan_id
+        if _want or _want_id:
+            # Quote normalisation lives inside find_referenced_plan, so the
+            # extracted '"Good" plan' resolves to the real plan here too.
+            _strict = find_referenced_plan(
+                user_message,
+                all_plans,
+                target_id=_want_id,
+                target_name=intent_data.target_plan_name,
+                fallback_to_first=False,
+            )
+            _claiming_a_specific_plan = _want_id is not None or (
+                bool(_want) and not _is_generic_plan_ref(_want)
+            )
+            if _strict is None and _claiming_a_specific_plan:
+                wanted = _want or f"#{_want_id}"
+                saved_names = ", ".join(f"'{p.name}'" for p in all_plans)
+                context_prompt = (
+                    f"The user asked to update a meal plan called {wanted!r}, but no plan by that name exists in "
+                    f"their account. They currently have {len(all_plans)} saved plan(s): {saved_names}. "
+                    f"Each name above is the literal, exact name of a real saved plan - quote them only, and never "
+                    f"invent, add or repeat any other name, cuisine or diet word from the user's message. "
+                    f"In friendly, natural English (1-2 sentences), tell them the plan they want to update is not in "
+                    f"their Plans tab, list what they do have saved, and offer to create a new plan for them instead. "
+                    f"IMPORTANT: do NOT update, edit or regenerate anything - the named plan was not found."
+                )
+                response_text = await _ask_without_claiming(
+                    supervisor,
+                    user_message=user_message,
+                    context=context_prompt,
+                    history=history,
+                    user_name=user_profile.get("name"),
+                )
+                state.system_message = response_text
+                state.status = "conversational"
+                return state
+
         # Whether the LLM extracted actionable edit specifics (slot, dish,
         # calories, add/remove operation, plan-wide scope) or exclusions.
         has_excl = bool(intent_data.requested_exclusions and len(intent_data.requested_exclusions) > 0)
@@ -2399,7 +2469,7 @@ async def run_meal_planner(    user_id: int,
         diet_pending = bool(pending_info.get("diet_pending"))
         cal_pending = bool(pending_info.get("cal_pending"))
         diet_resolved = bool(pending_info.get("diet_resolved")) or (diet_pending and user_diet is not None)
-        cal_resolved = bool(pending_info.get("cal_resolved")) or (cal_pending and user_cal is not None)
+        cal_resolved = bool(pending_info.get("cal_resolved"))
 
         # A confirmation the user gave in this very message settles the
         # conflict even when no pending workflow survives to say so. The gate
@@ -2407,7 +2477,10 @@ async def run_meal_planner(    user_id: int,
         # question was asked a second time for an answer already given.
         if intent_data.diet_conflict_confirmed or intent_data.chosen_diet_type:
             diet_resolved = True
-        if intent_data.calorie_guardrail_confirmed or intent_data.chosen_calorie_target is not None:
+        # Calories are only "resolved" when the user explicitly confirms a
+        # guardrail prompt. A bare calorie number or chosen target does not
+        # clear the question - the value must pass the safety check first.
+        if intent_data.calorie_guardrail_confirmed:
             cal_resolved = True
 
         diet_conflict = bool(req_diet and req_diet != profile_diet)
@@ -2583,34 +2656,57 @@ async def run_meal_planner(    user_id: int,
             )
             return state
 
-        # Calorie Guardrail Check: evaluate against the resolved diet (no diet
-        # conflict) so a confirmed diet no longer re-triggers the diet question.
-        if not cal_resolved:
-            is_safe, err_msg, meta = supervisor.check_input_guardrail(
-                user_profile=user_profile,
-                requested_calories=req_cal,
-                requested_days=req_days,
-                fixed_meals=fixed,
-                requested_diet_type=None
-            )
-            if not is_safe:
-                suggested = meta.get("suggested_target", 2350.0)
-                min_safe = meta.get("min_safe", 2250.0)
-                max_safe = meta.get("max_safe", 2450.0)
-                diet_display = {"veg": "vegetarian", "non-veg": "non-vegetarian", "vegan": "vegan"}.get(effective_diet, effective_diet)
-                cal_display = int(req_cal) if req_cal is not None else int(suggested)
-                # Acknowledge the diet choice the user just confirmed BEFORE
-                # asking the calorie question — never silently drop it.
+        # Calorie Guardrail Check: always validate before proceeding. Never let
+        # an unsafe target slip through just because a question was "answered".
+        is_safe, err_msg, meta = supervisor.check_input_guardrail(
+            user_profile=user_profile,
+            requested_calories=req_cal,
+            requested_days=req_days,
+            fixed_meals=fixed,
+            requested_diet_type=None
+        )
+        if not is_safe:
+            suggested = meta.get("suggested_target", 2350.0)
+            min_safe = meta.get("min_safe", 2250.0)
+            max_safe = meta.get("max_safe", 2450.0)
+            diet_display = {"veg": "vegetarian", "non-veg": "non-vegetarian", "vegan": "vegan"}.get(effective_diet, effective_diet)
+            cal_display = int(req_cal) if req_cal is not None else int(suggested)
+            cal_pending = bool(pending_info.get("cal_pending"))
+
+            # Use the guardrail's own message so the goal (lose/maintain/gain)
+            # and direction (below/above) are accurate.
+            goal = user_profile.get("goal", "maintain")
+            relation = "below" if (req_cal or 0) < min_safe else "above"
+            if goal == "lose":
+                goal_guidance = (
+                    f"Since your goal is to lose weight, your daily target should stay within "
+                    f"{int(min_safe):,}–{int(max_safe):,} kcal to support sustainable fat loss "
+                    f"without muscle wasting."
+                )
+            elif goal == "gain":
+                goal_guidance = (
+                    f"Since your goal is to gain weight, your daily target should be at or above "
+                    f"{int(min_safe):,}–{int(max_safe):,} kcal to support healthy weight gain."
+                )
+            else:
+                goal_guidance = (
+                    f"Since your goal is to maintain weight, your daily target should be within "
+                    f"{int(min_safe):,}–{int(max_safe):,} kcal. Planning below this range can "
+                    f"lead to nutritional deficiencies and fatigue."
+                )
+
+            if cal_pending:
+                # User is insisting on an unsafe value after already being warned.
+                # Strictly refuse - do not ask again.
                 guardrail_context = (
-                    f"The user just confirmed they want {diet_display} for this {req_days}-day meal plan. "
-                    f"First acknowledge that choice warmly (e.g. confirm that {diet_display} is what this plan will use). "
-                    f"Then explain their requested target of {cal_display:,} kcal/day is below their safe maintenance "
-                    f"range of {int(min_safe):,}–{int(max_safe):,} kcal for their maintain-weight goal "
-                    f"(recommended {int(suggested):,} kcal), and ask them to confirm the recommended "
-                    f"{int(suggested):,} kcal or pick another safe value below. "
-                    f"Keep it natural and conversational, 2-4 sentences, no greeting, no bullet points. "
-                    f"CRITICAL: their saved profile has NOT been changed. The diet they just chose applies to THIS "
-                    f"plan only. Never say or imply you updated their profile, their preferences or their settings."
+                    f"The user confirmed they want {diet_display} for this {req_days}-day meal plan, "
+                    f"but they are insisting on {cal_display:,} kcal/day which is outside their safe "
+                    f"range of {int(min_safe):,}–{int(max_safe):,} kcal for their {goal} goal. "
+                    f"{goal_guidance} The recommended target is {int(suggested):,} kcal. "
+                    f"Politely and firmly refuse to create a plan at {cal_display:,} kcal. "
+                    f"Offer to create one at {int(suggested):,} kcal instead or another value within "
+                    f"the safe range. Do NOT offer to proceed at the unsafe value. Keep it warm but "
+                    f"firm, 2-3 sentences, no greeting."
                 )
                 msg = await supervisor.generate_conversational_response(
                     user_message=user_message,
@@ -2620,43 +2716,71 @@ async def run_meal_planner(    user_id: int,
                 )
                 state.system_message = msg
                 state.status = "conversational"
-                diet_lbl = {"veg": "veg", "non-veg": "non-veg", "vegan": "vegan"}.get(effective_diet, "veg")
+                state.pending_workflow = None
                 await supervisor.log_step(
                     state=state,
                     from_agent="supervisor",
                     to_agent="user",
                     msg_type="feedback",
                     content=msg,
-                    payload={"action": "guardrail_block", "calories": req_cal, "suggested": suggested}
-                )
-                # Store pending workflow so the next partial answer is understood
-                state.pending_workflow = PendingWorkflow(
-                    workflow_type="new_plan",
-                    pending_conflicts=["calorie_guardrail"],
-                    asked_questions=[msg],
-                    extracted_info={
-                        "effective_diet": effective_diet,
-                        "requested_diet": req_diet,
-                        "diet_resolved": True,
-                        "cal_pending": True,
-                        "cal_resolved": False,
-                        "cal_val": req_cal if req_cal is not None else suggested,
-                        "days_val": req_days,
-                        "suggested": suggested,
-                        "min_safe": min_safe,
-                        "max_safe": max_safe,
-                        "req_days": req_days,
-                        # Snapshot of the exact prompt shown, so resuming after an
-                        # interruption re-presents the same question to the user.
-                        "prompt_text": msg,
-                    },
-                    next_expected_decision="calorie_guardrail_resolution",
-                    original_intent="new_plan",
-                    original_message=user_message,
-                    user_profile_at_start=user_profile.copy(),
-                    created_at=datetime.utcnow().isoformat()
+                    payload={"action": "calorie_refused", "calories": req_cal, "suggested": suggested}
                 )
                 return state
+
+            # First time hitting unsafe - ask confirmation with safe options only.
+            guardrail_context = (
+                f"The user just confirmed they want {diet_display} for this {req_days}-day meal plan. "
+                f"First acknowledge that choice warmly. Then explain their requested target of "
+                f"{cal_display:,} kcal/day is {relation} their safe range of "
+                f"{int(min_safe):,}–{int(max_safe):,} kcal for their {goal} goal. "
+                f"{goal_guidance} Ask them to confirm the recommended {int(suggested):,} kcal "
+                f"or pick another safe value within the range. Do NOT offer to proceed at the "
+                f"unsafe value. Keep it natural and conversational, 2-4 sentences, no greeting, "
+                f"no bullet points. CRITICAL: their saved profile has NOT been changed. The diet "
+                f"they just chose applies to THIS plan only."
+            )
+            msg = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=guardrail_context,
+                history=history,
+                user_name=user_profile.get("name")
+            )
+            state.system_message = msg
+            state.status = "conversational"
+            await supervisor.log_step(
+                state=state,
+                from_agent="supervisor",
+                to_agent="user",
+                msg_type="feedback",
+                content=msg,
+                payload={"action": "guardrail_block", "calories": req_cal, "suggested": suggested}
+            )
+            # Store pending workflow so the next partial answer is understood
+            state.pending_workflow = PendingWorkflow(
+                workflow_type="new_plan",
+                pending_conflicts=["calorie_guardrail"],
+                asked_questions=[msg],
+                extracted_info={
+                    "effective_diet": effective_diet,
+                    "requested_diet": req_diet,
+                    "diet_resolved": True,
+                    "cal_pending": True,
+                    "cal_resolved": False,
+                    "cal_val": req_cal if req_cal is not None else suggested,
+                    "days_val": req_days,
+                    "suggested": suggested,
+                    "min_safe": min_safe,
+                    "max_safe": max_safe,
+                    "req_days": req_days,
+                    "prompt_text": msg,
+                },
+                next_expected_decision="calorie_guardrail_resolution",
+                original_intent="new_plan",
+                original_message=user_message,
+                user_profile_at_start=user_profile.copy(),
+                created_at=datetime.utcnow().isoformat()
+            )
+            return state
 
         # All conflicts resolved - clear any pending workflow before planning
         state.pending_workflow = None

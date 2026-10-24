@@ -197,9 +197,9 @@ class SupervisorAgent:
                 f"Additionally, {cal_val:,} kcal/day is below their safe maintenance range of {min_safe:,}–{max_safe:,} kcal. "
                 f"The recommended target is {suggested:,} kcal/day.\n\n"
                 f"Your task: Explain both conflicts (diet + calories) naturally in 2-3 sentences. "
-                f"Ask whether they want to: (1) proceed with {requested_display} at {cal_val:,} kcal, "
-                f"or (2) use the recommended {suggested:,} kcal with {requested_display} diet, "
-                f"or (3) use their profile {profile_display} diet.\n"
+                f"Ask whether they want to: (1) use the recommended {suggested:,} kcal with {requested_display} diet, "
+                f"or (2) use their profile {profile_display} diet with its recommended calories. "
+                f"CRITICAL: Do NOT offer to proceed at {cal_val:,} kcal because it is outside their safe range. "
                 f"CRITICAL: Do NOT start with 'Hey {name}' or greetings. Be direct, warm, and clear. "
                 f"Present options naturally without bullet points.\n"
                 f"CRITICAL: the user has not changed anything yet. Never say or imply that you updated, "
@@ -234,9 +234,9 @@ class SupervisorAgent:
                 suggested = int(meta.get("suggested_target", 2250.0))
                 return (
                     f"Your profile preference is {profile_display}, but you requested a {requested_display} meal plan at {cal_val:,} kcal/day. "
-                    f"That's below your safe range ({min_safe:,}–{max_safe:,} kcal). "
-                    f"Would you like me to create the {requested_display} plan at {cal_val:,} kcal, "
-                    f"or at the recommended {suggested:,} kcal, or use your {profile_display} profile instead?"
+                    f"That's outside your safe range ({min_safe:,}–{max_safe:,} kcal). "
+                    f"Would you like me to create the {requested_display} plan at the recommended "
+                    f"{suggested:,} kcal, or use your {profile_display} profile diet instead?"
                 )
             return (
                 f"Your profile preference is {profile_display}, but you requested a {requested_display} meal plan. "

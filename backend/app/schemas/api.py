@@ -96,6 +96,7 @@ class ChatResponse(BaseModel):
     plan_id: Optional[int] = None
     intent: Optional[str] = None
     is_workflow: bool = False
+    profile_updated: bool = False
     pending_workflow: Optional[Dict[str, Any]] = None
     # No quick_options: the chat is typing-only. Every reply is answered by
     # typing, so the API deliberately ships no tappable reply buttons.

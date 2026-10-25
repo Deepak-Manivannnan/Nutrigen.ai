@@ -14,7 +14,9 @@ ASSUMED_BATCH_SERVINGS = 4
 # with the country ("India", "United States"). Map the forms users actually
 # type - and the country spellings that turn up in the data - onto one key.
 _AREA_ALIASES = {
-    "south indian": "indian", "north indian": "indian",
+    "south indian": "indian", "north indian": "indian", "punjabi": "indian", "kerala": "indian",
+    "tamil": "indian", "andhra": "indian", "gujarati": "indian", "bengali": "indian",
+    "maharashtrian": "indian", "hyderabadi": "indian", "rajasthani": "indian", "goan": "indian",
     "india": "indian",
     "italy": "italian", "italian food": "italian",
     "usa": "american", "us": "american", "united states": "american",

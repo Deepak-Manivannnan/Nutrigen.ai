@@ -46,6 +46,18 @@ class PlannerAgent(BaseAgent[MealPlan]):
             timeout_seconds=timeout_seconds or 600
         )
 
+    @staticmethod
+    def _cuisine_rule(cuisine: Optional[str]) -> str:
+        """The instruction that keeps every meal inside the cuisine the user asked for."""
+        if not cuisine or not str(cuisine).strip():
+            return ""
+        c = str(cuisine).strip()
+        return (
+            f"CUISINE RULE: the user asked for {c} food. Every breakfast, lunch, dinner and snack must be a genuine "
+            f"{c} dish made the {c} way, with ingredients typical of {c} cooking. Do NOT include dishes from other "
+            f"cuisines. Create variety by using different {c} dishes. Meals the user locked stay exactly as they wrote them."
+        )
+
     async def generate_plan(
         self,
         days: int,
@@ -76,7 +88,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
             f"Provide exactly {days} days, with {meals_spec}, ingredients in grams, and accurate calories.\n"
         )
         if cuisine:
-            task_instruction += f"Requested cuisine: {cuisine}. Favour authentic {cuisine} dishes.\n"
+            task_instruction += self._cuisine_rule(cuisine) + "\n"
         if feedback:
             task_instruction += (
                 f"\nCRITICAL REVISION FEEDBACK FROM PREVIOUS ROUND (Must be addressed):\n"
@@ -188,7 +200,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
                 f"- Exclude ingredients: {exclusions or []}\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
-                + (f"- Requested cuisine: {cuisine}. Favour authentic {cuisine} dishes.\n" if cuisine else "")
+                + (f"- {self._cuisine_rule(cuisine)}\n" if cuisine else "")
                 + f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
                 + meals_desc_fallback
                 + f"- For EACH meal, provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm). NEVER output generic 1-liners.\n"
@@ -310,9 +322,11 @@ class PlannerAgent(BaseAgent[MealPlan]):
         user_profile: Dict[str, Any],
         exclusions: Optional[List[str]],
         avoid_names: List[str],
+        cuisine: Optional[str] = None,
     ) -> Meal:
         """Ask the AI for ONE replacement meal; retry once if it breaks a rule."""
         constraints = self._constraint_lines(plan_diet, user_profile, exclusions)
+        cuisine_line = f"- {self._cuisine_rule(cuisine)}\n" if cuisine else ""
         rejected_note = ""
         meal: Optional[Meal] = None
         for _attempt in range(2):
@@ -321,6 +335,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"Write a replacement {meal_type} for Day {day_number}.\n"
                 f"Why the previous {meal_type} was rejected: {' | '.join(reasons)}\n"
                 f"Hard rules:\n{constraints}\n"
+                f"{cuisine_line}"
                 f"- Target about {int(target_cal)} kcal (±5%) for this single-person meal.\n"
                 f"- Ingredients in grams (amount_grams), realistic single-person portions.\n"
                 f"- 3 to 4 numbered preparation steps in `instructions`.\n"
@@ -360,6 +375,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
         version: int = 1,
         task_id: Optional[str] = None,
         exclusions: Optional[List[str]] = None,
+        cuisine: Optional[str] = None,
     ) -> MealPlan:
         """Redo only what the Supervisor flagged (a RepairTargets instruction).
 
@@ -418,7 +434,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
             self._replacement_meal(
                 day_number=day_no, meal_type=meal_type, target_cal=cal, reasons=reasons,
                 plan_diet=plan_diet, user_profile=user_profile, exclusions=exclusions,
-                avoid_names=kept_names,
+                avoid_names=kept_names, cuisine=cuisine,
             )
             for day_no, _i, meal_type, cal, reasons in jobs
         ])
@@ -458,7 +474,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
         edit_details: Any,
         user_profile: Dict[str, Any],
         task_id: Optional[str] = None,
-        exclusions: Optional[List[str]] = None
+        exclusions: Optional[List[str]] = None,
+        cuisine: Optional[str] = None
     ) -> MealPlan:
         """
         Modifies a specific meal slot (or specific day, or scrubbed exclusions) in an existing meal plan
@@ -471,36 +488,24 @@ class PlannerAgent(BaseAgent[MealPlan]):
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
         edit_scope = getattr(edit_details, "edit_scope", None)
         edit_exclusions = [str(e).strip().lower() for e in (exclusions or []) if str(e or "").strip()]
+        # The cuisine of the plan being edited (or the one named for this edit): new
+        # meals must stay inside it.
+        cuisine_line = f"- {self._cuisine_rule(cuisine)}\n" if cuisine else ""
 
-        cl_inst = instructions.lower()
-
-        # Meat/pork-family words so "ham", "bacon", "sausage" style requests are
-        # caught even when phrased without the parent ingredient name.
-        meat_words = ["pork", "beef", "turkey", "meat", "chicken", "fish", "dairy", "allerg",
-                      "ham", "bacon", "sausage", "pepperoni", "salami", "prosciutto", "pancetta", "lard"]
-
+        # What the edit targets comes from the model's structured verdict
+        # (edit_details: day, meal_type, operation, edit_scope) and the
+        # supervisor's requested_exclusions. The instruction text is NOT searched
+        # for words like "remove", "all meals" or "pork" to work this out.
         target_meal_type = getattr(edit_details, "meal_type", None)
-        if not target_meal_type:
-            for mt in ["snack", "breakfast", "lunch", "dinner"]:
-                if mt in cl_inst:
-                    target_meal_type = mt
-                    break
 
-        # Check if the instruction asks to replace recipes across the plan containing specific excluded ingredients
-        is_exclusion_scrub = (not target_meal_type) and (
-            (
-                any(w in cl_inst for w in meat_words)
-                and any(w in cl_inst for w in ["replace", "remove", "exclude", "without", "free", "scrub", "different recipes", "swap", "swap out"])
-            ) or (bool(user_profile.get("allergies")) and any(w in cl_inst for w in ["exclude", "remove", "without", "replace recipes", "replace the recipes"])) \
-                or (bool(edit_exclusions) and (edit_scope == "plan" or (
-                    getattr(edit_details, "day", None) is None and getattr(edit_details, "meal_type", None) is None)))
+        # A plan-wide scrub of excluded ingredients: the model listed what must
+        # go (requested_exclusions) and the edit covers the whole plan.
+        is_exclusion_scrub = (not target_meal_type) and bool(edit_exclusions) and (
+            edit_scope == "plan" or getattr(edit_details, "day", None) is None
         )
 
         if is_exclusion_scrub:
             allergies_list = [str(a).lower() for a in user_profile.get("allergies", [])]
-            for exc in ["pork", "beef", "turkey", "dairy", "ham", "bacon", "sausage", "chicken", "fish"]:
-                if exc in cl_inst and exc not in allergies_list:
-                    allergies_list.append(exc)
             # Structured exclusions from the supervisor always apply (they name
             # exactly what must go, e.g. "ham", "beef").
             for exc in edit_exclusions:
@@ -532,6 +537,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                             f"- Target calories: ~{int(target_cal)} kcal (±5%)\n"
                             f"- ABSOLUTE HARD CONSTRAINT: ZERO {', '.join(allergies_list)}. Do NOT include any {', '.join(allergies_list)}.\n"
                             f"- Allowed protein sources: {p_str}.\n"
+                            f"{cuisine_line}"
                             f"- Provide realistic single-person ingredients with exact amount_grams.\n"
                             f"- Provide 3 to 4 numbered step-by-step instructions.\n"
                         )
@@ -559,20 +565,9 @@ class PlannerAgent(BaseAgent[MealPlan]):
             self._sanitize_diet_compliance(updated_plan, plan_diet, current_plan.target_calories, user_profile, exclusions=edit_exclusions)
             return updated_plan
 
-        target_meal_type = getattr(edit_details, "meal_type", None)
-        if not target_meal_type:
-            for mt in ["snack", "breakfast", "lunch", "dinner"]:
-                if mt in cl_inst:
-                    target_meal_type = mt
-                    break
-
-        # Check if the instruction asks to update an entire day's meals
-        # (whole-phrase matching, same reason as above: "small meals" must
-        # never read as "all meals").
-        is_entire_day = (
-            (not target_meal_type and any(re.search(rf"\b{re.escape(k)}\b", cl_inst) for k in ["entire day", "all meals", "whole day", "all 3 meals", "all 4 meals", "day meals"]))
-            or (not target_meal_type and bool(re.search(r'\bday\s*\d+\b', cl_inst)) and not any(m in cl_inst for m in ["breakfast", "lunch", "dinner", "snack"]))
-        )
+        # Redo a whole day only when the model said so (edit_scope == "day") and
+        # named no single meal. Phrases in the text are not searched for.
+        is_entire_day = (not target_meal_type) and edit_scope == "day"
 
         target_day = getattr(edit_details, "day", None)
         if target_day is None:
@@ -595,43 +590,17 @@ class PlannerAgent(BaseAgent[MealPlan]):
         if not target_day_plan:
             return current_plan
 
-        # AI-first operation: the LLM's structured verdict rules. The keyword
-        # guess below runs ONLY when the model left operation blank. It uses
-        # whole-word matching — bare substrings once read "added" as "add"
-        # (turning a replace into a plan-wide add) and would read "input" as
-        # "put", so never go back to `in` matching here.
-        _op_llm = getattr(edit_details, "operation", None)
-
-        def _has_word(*words):
-            return any(re.search(rf"\b{re.escape(w)}\b", cl_inst) for w in words)
-
-        if _op_llm:
-            operation = _op_llm
-        elif _has_word("add", "include", "put"):
-            operation = "add"
-        elif _has_word("remove", "delete", "drop"):
-            operation = "remove"
-        else:
-            operation = "replace"
-
-        # Negation guard shared by the remove/append overrides below: words
-        # like "don't remove anything, replace lunch" must never trigger a
-        # destructive path. Errs toward replace (regenerate), never destroy.
-        # (Bare "no," is deliberately NOT a negation word: "no, just add it"
-        # agrees to the action instead of refusing it.)
-        _negated_action = bool(re.search(
-            "([^.]{0,30}?\b(don\x27t|dont|do not|does not|did not|can\x27t|cannot|never|without|not)\b[^.]{0,30}?\b(remove|delete|drop|add|include|put)\b)",
-            cl_inst,
-        ))
+        # The operation is the model's structured verdict (add / remove / replace);
+        # when it left it blank the edit is a replace. The instruction text is
+        # never searched for "add" or "remove": that is how "added" once turned a
+        # replace into a plan-wide add, and a destructive path must never hang on
+        # a word match.
+        operation = getattr(edit_details, "operation", None) or "replace"
 
         is_plan_wide_snack = (
             target_meal_type == "snack"
             and (
-                getattr(edit_details, "edit_scope", None) == "plan"
-                # Whole-phrase matching: bare substrings once read "small
-                # meals" as "all meals" and fired plan-wide rewrites by
-                # accident. Never go back to `in` matching here.
-                or any(re.search(rf"\b{re.escape(k)}\b", cl_inst) for k in ["all days", "every day", "all meals", "each day", "whole plan", "entire plan", "all the days", "all 4 days", "all 3 days", "all 5 days", "all 7 days"])
+                edit_scope == "plan"
                 or (getattr(edit_details, "day", None) is None and operation in ("add", "remove"))
             )
         )
@@ -645,10 +614,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
                     d.total_carbs_g = round(sum(m.carbs_g for m in d.meals), 1)
                     d.total_fat_g = round(sum(m.fat_g for m in d.meals), 1)
             else:
-                if any(k in cl_inst for k in ["lightweight", "light", "low calorie", "low-calorie"]):
-                    snack_cal = target_meal_cal or 120.0
-                else:
-                    snack_cal = target_meal_cal or (0.10 * current_plan.target_calories)
+                # A "light" snack arrives as target_meal_calories from the model.
+                snack_cal = target_meal_cal or (0.10 * current_plan.target_calories)
 
                 for d in updated_plan.days:
                     existing_snack = next((m for m in d.meals if m.meal_type.lower() == "snack"), None)
@@ -661,6 +628,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                         f"- Diet type: {plan_diet} (FOR VEGETARIAN: ZERO MEAT/CHICKEN/FISH/SEAFOOD, FOR VEGAN: ZERO ANIMAL PRODUCTS)\n"
                         f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
                         f"- Also strictly exclude these user-rejected ingredients: {edit_exclusions if edit_exclusions else 'none'}.\n"
+                        f"{cuisine_line}"
                         f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                         f"- Provide realistic single-person ingredients with exact amount_grams.\n"
                         f"- Provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving).\n"
@@ -694,6 +662,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Exclude allergies: {user_profile.get('allergies', [])}\n"
                 f"- Also strictly exclude these user-rejected ingredients: {edit_exclusions if edit_exclusions else 'none'}. Do NOT include any of them.\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
+                f"{cuisine_line}"
                 f"- Meals to include: {len(target_day_plan.meals)} balanced meals ({', '.join(m.meal_type for m in target_day_plan.meals)}).\n"
                 f"- For EACH meal, provide realistic ingredients (amount_grams) and detailed 3 to 4 numbered step-by-step 'instructions' (prep, cook, season, serve warm).\n"
             )
@@ -725,18 +694,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
             old_meal = target_day_plan.meals[meal_idx] if meal_idx is not None else None
             old_dish = old_meal.recipe_name if old_meal else "existing dish"
 
-            # Get operation type from edit_details (default: replace).
-            # AI-first: an explicit LLM verdict is trusted as-is. The keyword
-            # clause below may only ADD a remove trigger when the model left
-            # operation blank AND the request is not negated — it must never
-            # overrule "replace" (e.g. "don't remove anything, replace lunch"
-            # deletes nothing).
-            _op_llm = getattr(edit_details, "operation", None)
-            operation = _op_llm or "replace"
-            _remove_word = any(re.search(rf"\b{re.escape(k)}\b", cl_inst) for k in ["remove", "delete", "drop"])
-
-            # Handle remove operation
-            if operation == "remove" or (_op_llm is None and _remove_word and not _negated_action):
+            # Handle remove operation (only when the model's verdict is "remove").
+            if operation == "remove":
                 if meal_idx is not None:
                     removed_meal = target_day_plan.meals.pop(meal_idx)
                     logger.info(f"[PlannerAgent] Removed meal '{removed_meal.recipe_name}' ({target_meal_type}) from Day {target_day}")
@@ -750,11 +709,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
             else:
                 if target_meal_type == "snack":
                     slot_cal = target_meal_cal or (
-                        120.0 if any(k in cl_inst for k in ["lightweight", "light", "low calorie", "low-calorie"])
-                        else (
-                            old_meal.calories if old_meal and old_meal.calories > 50
-                            else (0.10 * current_plan.target_calories)
-                        )
+                        old_meal.calories if old_meal and old_meal.calories > 50
+                        else (0.10 * current_plan.target_calories)
                     )
                 else:
                     slot_cal = target_meal_cal or (
@@ -766,6 +722,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                     f"You are the Meal Planner Agent. Generate a single replacement {target_meal_type} meal for Day {target_day}.\n"
                     f"- Meal type: {target_meal_type}\n"
                     f"- Replaces previous dish: '{old_dish}'\n"
+                    f"{cuisine_line}"
                     f"- User modification request: '{instructions}'\n"
                     f"- Target calories: ~{int(slot_cal)} kcal (±5%)\n"
                     f"- Diet type: {plan_diet} (FOR VEGETARIAN: ZERO MEAT/CHICKEN/FISH/SEAFOOD, FOR VEGAN: ZERO ANIMAL PRODUCTS)\n"
@@ -787,13 +744,11 @@ class PlannerAgent(BaseAgent[MealPlan]):
                         target_day_plan.meals[meal_idx] = replacement_meal
                     else:
                         # The targeted slot does not exist on this day. Append
-                        # ONLY for an explicit add (LLM verdict, or the model's
-                        # own blank-operation guess when unnegated). Anything
-                        # else leaves the day untouched: this branch previously
-                        # overwrote the day's LAST meal, so "replace the snack
-                        # on day 5" (no snack there) silently ate dinner.
-                        _add_word = any(re.search(rf"\b{re.escape(k)}\b", cl_inst) for k in ["add", "include", "put"])
-                        if operation == "add" or (_op_llm is None and _add_word and not _negated_action):
+                        # ONLY for an explicit add (the model's verdict).
+                        # Anything else leaves the day untouched: this branch
+                        # previously overwrote the day's LAST meal, so "replace
+                        # the snack on day 5" (no snack there) silently ate dinner.
+                        if operation == "add":
                             target_day_plan.meals.append(replacement_meal)
                         else:
                             logger.warning(

@@ -12,7 +12,8 @@ def validate_input_request(
     """
     Input guardrail:
     1. Verifies adult age requirement (> 18).
-    2. Validates days (1-14 days allowed, default 7).
+    2. Validates days (1 to the configured maximum). A missing number of days is never
+       replaced by a default: the caller asks the user.
     3. Compares requested calories with Mifflin-St Jeor safe range.
        If out of range, blocks and provides the clinically safe range.
     4. Checks fixed meals against diet type and allergies.
@@ -57,7 +58,7 @@ def validate_input_request(
         }
 
     # 1. Days check
-    days = requested_days if (requested_days and 1 <= requested_days <= settings.max_plan_days) else settings.default_plan_days
+    days = requested_days if (requested_days and 1 <= requested_days <= settings.max_plan_days) else None
 
     # 3. Calorie range check (to get target_cal)
     target_cal = requested_calories if requested_calories is not None else suggested_target

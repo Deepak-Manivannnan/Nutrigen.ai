@@ -177,6 +177,7 @@ async def chat_interaction(
         plan_id=plan_id,
         intent=final_state.intent,
         is_workflow=is_wf,
+        profile_updated=bool(getattr(final_state, "profile_updated", False)),
         deleted_plan_id=final_state.deleted_plan_id,
         pending_workflow=final_state.pending_workflow.model_dump() if final_state.pending_workflow else None
     )

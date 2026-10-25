@@ -33,6 +33,7 @@ class PlanDetailResponse(BaseModel):
     days: int
     calorie_target: float
     diet_type: Optional[str] = "veg"
+    cuisine: Optional[str] = None
     status: str
     version: int = 1
     grocery_list: Optional[Dict[str, Any]] = None
@@ -64,6 +65,7 @@ def serialize_plan(plan: Plan) -> PlanDetailResponse:
         days=plan.days,
         calorie_target=plan.calorie_target,
         diet_type=plan_diet,
+        cuisine=getattr(plan, "cuisine", None),
         status=plan.status,
         version=getattr(plan, "version", 1) or 1,
         grocery_list=plan.grocery_list,

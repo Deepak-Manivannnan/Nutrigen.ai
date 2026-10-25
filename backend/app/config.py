@@ -65,7 +65,6 @@ class Settings(BaseSettings):
     min_calories_adult: int = 1200
     max_calories_adult: int = 4000
     min_age_allowed: int = 18
-    default_plan_days: int = 7
     # Longest plan built in a single run. A 7-day plan is the largest that
     # reliably fits one structured write from the planner agent; longer plans
     # came back truncated or internally inconsistent, so anything above this is

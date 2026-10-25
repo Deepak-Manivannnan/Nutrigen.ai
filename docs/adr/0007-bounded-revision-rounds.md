@@ -62,7 +62,7 @@ but never saved, so past escalations cannot be audited.
 
 ## Code map
 
-- `backend/app/config.py` — `max_rounds`, `max_plan_days`, `default_plan_days`
+- `backend/app/config.py` — `max_rounds`, `max_plan_days` (there is no default length: the chat asks)
 - `backend/app/orchestration/graph.py` — draft -> parallel reviews -> decision -> repair
 - `backend/app/orchestration/supervisor/routing.py` — proceed / retry / escalate, and
   `find_repair_targets` (reports -> flagged meals/days)

@@ -23,7 +23,7 @@ The use case is simple, so the focus stays on the agents: how they are organized
 5. The Supervisor runs the agents, one step at a time (see section 5).
 6. The user sees the plan, grocery list, and estimated cost, then approves.
 
-**Days rule:** "tomorrow" = 1 day, "for 3 days" = 3 days, nothing said = 7 days.
+**Days rule:** "tomorrow" = 1 day, "for 3 days" = 3 days, "a week" = 7 days. If the user does not say how many days, the app asks (naturally, mentioning the 7-day maximum); it never assumes a length. Everything else they already asked for (cuisine, exclusions, diet, calories, locked meals) is kept with the open question, so their answer completes the request.
 
 ---
 
@@ -255,7 +255,7 @@ Edge cases:
 | `users` | id, name, age, sex, height_cm, weight_kg, activity_level, goal, diet_type, dislikes, standing_fixed_meals |
 | `user_allergies` | user_id, allergen |
 | `allergen_sources` | allergen, ingredient (hidden sources, used by `check_allergens`) |
-| `plans` | id, user_id, days, calorie_target, status, created_at |
+| `plans` | id, user_id, days, calorie_target, cuisine, status, created_at |
 | `plan_meals` | plan_id, day, meal_type, locked, recipe_name, source, ingredients (grams), calories, macros |
 | `agent_trace` | task_id, from, to, type, payload, timestamp (audit log and timeline) |
 Database: MySQL (`nutrigen`).

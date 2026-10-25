@@ -19,11 +19,12 @@ IntentType = Literal[
     "list_plans",
     "resume_request",
     "cancel_request",
+    "unclear",
 ]
 
 class PendingWorkflow(BaseModel):
     """Stores pending meal plan creation workflow state"""
-    workflow_type: Literal["new_plan", "edit_meal", "delete_plan", "approve_plan"] = "new_plan"
+    workflow_type: Literal["new_plan", "edit_meal", "delete_plan", "approve_plan", "save_dislikes"] = "new_plan"
     pending_conflicts: List[str] = Field(default_factory=list)
     asked_questions: List[str] = Field(default_factory=list)
     extracted_info: Dict[str, Any] = Field(default_factory=dict)
@@ -67,6 +68,9 @@ class PlanState(BaseModel):
     # No quick_options: the chat is typing-only, so the runner never builds
     # tappable reply buttons.
     plan_id: Optional[int] = None
+    # True when this turn changed the user's saved profile (e.g. foods added to
+    # their dislikes), so the app can refresh what it shows.
+    profile_updated: bool = False
     
     # New field for handling off-topic messages during active meal-planning workflow
     pending_workflow: Optional[PendingWorkflow] = None

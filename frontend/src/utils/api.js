@@ -316,7 +316,11 @@ export async function sendChatMessage(userId, message, taskId, history = [], pen
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.detail || `Chat request failed with ${res.status}`);
+    // The HTTP status travels with the error so callers can react to "what
+    // happened" (e.g. 404: the account is gone) without reading the message text.
+    const chatErr = new Error(errData.detail || `Chat request failed with ${res.status}`);
+    chatErr.status = res.status;
+    throw chatErr;
   }
   return await res.json();
 }

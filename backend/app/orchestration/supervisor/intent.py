@@ -44,6 +44,7 @@ IntentType = Literal[
     "list_plans",   # Request to list/show/view the user's saved meal plans
     "resume_request", # User wants to resume a pending meal planning workflow
     "cancel_request", # User wants to cancel a pending meal planning workflow
+    "unclear",      # The message cannot be understood (random characters, a lone dot, an accidental send, a typo that changes the meaning)
 ]
 
 class UserIntentExtraction(BaseModel):
@@ -65,7 +66,7 @@ class UserIntentExtraction(BaseModel):
     )
     requested_cuisine: Optional[str] = Field(
         None,
-        description="Regional cuisine explicitly requested (e.g. 'South Indian' -> 'Indian', 'Italian food' -> 'Italian', 'Mediterranean' -> 'Mediterranean'). TheMealDB area names are: American, British, Canadian, Chinese, Croatian, Dutch, Egyptian, Filipino, French, Greek, Indian, Irish, Italian, Jamaican, Japanese, Kenyan, Malaysian, Mexican, Moroccan, Polish, Portuguese, Russian, Spanish, Thai, Tunisian, Turkish, Ukrainian, Uruguayan, Vietnamese. Map to the closest one. None if not mentioned."
+        description="The cuisine the user asked the meals to follow, kept as they described it, including regional detail (e.g. 'South Indian', 'Punjabi', 'Kerala', 'Italian', 'Mediterranean', 'Thai'). Do NOT generalise it ('South Indian' stays 'South Indian', not 'Indian'). None if no cuisine is mentioned."
     )
     requested_exclusions: List[str] = Field(
         default_factory=list,
@@ -97,11 +98,11 @@ class UserIntentExtraction(BaseModel):
     )
     target_plan_id: Optional[int] = Field(
         None,
-        description="Plan ID mentioned by user (e.g., 'Delete Plan 9' -> 9, 'Rename Plan 1' -> 1)."
+        description="ID of the saved plan the user is referring to, taken from the SAVED PLANS list (by name, number, length, diet, or a reference like 'it'/'that one'). Null when no specific plan is pointed at or it is ambiguous."
     )
     target_plan_name: Optional[str] = Field(
         None,
-        description="Plan name mentioned by user (e.g., 'Good Meal' in 'delete Good Meal' or 'update Good Meal')."
+        description="Name of a specific plan the user named (e.g. 'Good Meal' in 'delete Good Meal'). Null for generic references like 'my plan' or 'it'."
     )
     new_plan_name: Optional[str] = Field(
         None,
@@ -109,7 +110,19 @@ class UserIntentExtraction(BaseModel):
     )
     is_delete_confirmation: bool = Field(
         default=False,
-        description="True if user is confirming deletion (e.g. 'yes, delete it', 'yes delete plan 9', 'yes', 'confirm', 'go ahead')."
+        description="True if user is confirming deletion (e.g. 'yes, delete it', 'yes delete plan 9', 'yes', 'confirm', 'go ahead'). Only meaningful when a delete confirmation is pending."
+    )
+    abandon_pending_work: bool = Field(
+        default=False,
+        description="True ONLY when the user explicitly tells you to drop, replace or restart the work in progress ('forget it', 'start over', 'cancel', 'never mind', 'do a new plan instead'). False for a plain new request that does not say to abandon the pending work."
+    )
+    save_preference_answer: Optional[bool] = Field(
+        None,
+        description="Only when a 'save_dislikes' question is pending (the assistant asked whether to remember foods as dislikes): true if the user says yes, false if they say no / only for this plan, null if the message is not an answer to that question."
+    )
+    unclear_reason: Optional[str] = Field(
+        None,
+        description="Only when intent is 'unclear': one short sentence on why it could not be understood, and your best guess of what the user may have meant if you have one (e.g. 'only a full stop' or 'looks like a typo of \"yes\"')."
     )
     is_update_request: bool = Field(
         default=False,
@@ -242,13 +255,19 @@ NutriGen's domain is STRICTLY LIMITED to:
       | "Can you please create a meal plan for me" (while something else is in progress) | new_plan | A plain create request - the app offers continue-or-restart |
       | "Create a new plan instead" | cancel_request | "instead" abandons the pending work |
 
+15. **unclear**: The message cannot be understood well enough to act on or to answer sensibly.
+    - A lone dot or punctuation ("." , "?", "...") , random characters ("asdfgh", "kjhsd 83jd"), a string of digits or a mix of digits and letters with no meaning ("48392", "x7q2"), an accidental send, or a word so garbled that you cannot tell what was meant.
+    - Ordinary spelling mistakes and small typos do NOT make a message unclear. Read through them the way a person would ("creat a mael plan for 3 dys" is new_plan).
+    - A bare number is NOT unclear when it answers a pending question (a calorie target, a day count) - use the pending workflow context.
+    - Never guess an action for an unclear message and never pick edit/delete/approve for it. Set unclear_reason to a short note, including your best guess of what they may have meant if you have one.
+
 ---
 
 ### PARAMETER EXTRACTION RULES
 
 **requested_days**: 
 - "tomorrow" -> 1, "for 3 days" -> 3, "for a week" -> 7, "5-day" -> 5
-- If not mentioned -> default 7 days (configurable, max 14 days)
+- If the user does not say how many days -> null. NEVER assume a number: the application asks for it. 'a week' / 'the whole week' -> 7.
 
 **requested_calories** (DAILY TOTAL ONLY):
 - "1800 kcal", "1900 calories", "2000 cal" -> 1800.0, 1900.0, 2000.0
@@ -281,7 +300,7 @@ NutriGen's domain is STRICTLY LIMITED to:
 **edit_details** (only for edit_meal intent):
 - day: "day 2" -> 2, "on day 3" -> 3
 - meal_type: "breakfast"/"lunch"/"dinner"/"snack"
-- target_meal_calories: SLOT calories only (e.g. "400-500 kcal" -> 450.0, "500 kcal" -> 500.0)
+- target_meal_calories: SLOT calories only (e.g. "400-500 kcal" -> 450.0, "500 kcal" -> 500.0). A "light" or "small" snack with no number -> about 120.0.
 - instructions: Full user message for context
 - dish_to_replace: Specific dish mentioned ("replace paneer tikka"). For ingredient swaps ("replace all beef dishes with chicken", "swap out the pork"), ALWAYS set this to the ingredient/dish being removed ("beef dishes", "pork") — never leave it null when the message names what goes away.
 - operation: "add" (for "add a snack"), "remove" (for "remove the snack"), "replace" (default for "replace/swap/change")
@@ -291,18 +310,22 @@ NutriGen's domain is STRICTLY LIMITED to:
     - Use "day" ONLY when the message covers every meal of that one day ("redo day 2", "change all of day 3", "rebuild day 2"). "Update day 2 with a different meal" names ONE meal, so that is "slot" scope with day set.
   - When a scope is widened but the message names no day or no slot, keep day/meal_type null so the app can ask which one. Silently regenerating a whole day or the whole plan is the one outcome you must never produce.
 
-**target_plan_id**: "Plan #9", "Plan 9", "#9" -> 9
-
-**target_plan_name**: Plan name in quotes or mentioned
-- "delete 'Good Meal'", "update Good Meal" -> "Good Meal"
-- Check quotes first: "Good Meal", 'Good Plan'
+**target_plan_id** and **target_plan_name** (the "SAVED PLANS" list in the context shows the user's real plans):
+- You are the one who works out WHICH saved plan the user means. The application will not search the message for plan names, day counts or diet words, and it will not guess "the first plan" - if you leave both fields empty it asks the user.
+- Set target_plan_id to the ID of the plan when the user points at one by any means: its name, "Plan #9", its length or diet ("the 5 day one", "the vegetarian plan"), or a reference to the conversation ("it", "that plan", "the one we just made" - the list marks the plan created in the previous reply).
+- Set target_plan_name only when the user names a specific plan ("Good Meal", "keto plan"), even one that is not in the list (so the app can say it does not exist). NEVER put generic words like "my plan", "the meal plan" or "it" there.
+- Leave both empty when the user does not point at a specific plan, or when several plans fit and you cannot tell which.
 
 **new_plan_name**: For rename_plan, the new name
 - "Rename Plan 1 to High Protein" -> "High Protein"
 
-**is_delete_confirmation**: 
-- True if user confirms: "yes", "yeah", "confirm", "go ahead", "delete it", "ok"
-- Check if previous assistant asked for confirmation (from history)
+**is_delete_confirmation**:
+- True only if the user is confirming a deletion that is pending (check PENDING WORKFLOW CONTEXT and the previous assistant message): "yes", "yeah", "confirm", "go ahead", "delete it", "ok, do it".
+- False for anything that is not a clear yes: questions, hesitation, "wait", "which one?", a change of subject. A word like "ok" or "no" inside another sentence is not a confirmation - read the whole message.
+
+**abandon_pending_work**:
+- True only when the user explicitly says to drop, replace or restart the work in progress ("forget it", "start over", "cancel that", "never mind", "do a new plan instead").
+- False for a plain request that does not say to abandon what is pending.
 
 **is_update_request**: 
 - True ONLY if general "update my meal plan" WITHOUT specific meal slot details
@@ -366,6 +389,18 @@ When PENDING WORKFLOW CONTEXT is provided, the user's message may be a PARTIAL a
    calorie number, that is an answer to the pending question (rules 1-2). NEVER classify such messages as
    chat/app_info/explain.
 
+8b. **Days answer**: If pending_conflicts includes "days_missing" (the assistant asked how many days the plan should cover) and
+   the user answers with a length ("3", "3 days", "five", "a week", "the whole week", "tomorrow", "as many as you can" -> 7):
+   - Set intent = "new_plan" (or original_intent) and requested_days to that number.
+   - Do NOT set diet or calorie confirmation flags; do not repeat other details, the application remembers them.
+   - If the user instead asks a question about the limit ("what's the maximum?"), answer-type intents apply (chat/explain), not new_plan.
+
+10. **Save-dislikes answer**: If pending_conflicts includes "save_dislikes" (the assistant created a plan with foods to exclude and asked whether to
+   remember them as the user's disliked foods for future plans):
+   - "yes", "yes please", "save them", "add them" -> save_preference_answer = true
+   - "no", "just for this plan", "don't save", "only this time" -> save_preference_answer = false
+   - Any other message (a new request, a question) is NOT an answer: leave save_preference_answer null and classify the message normally.
+
 8. **Profile-defaults agreement**: If the assistant just offered to create the plan with the user's saved profile
    defaults (check the conversation history for that offer) and the user agrees — "yes", "go ahead", "use my profile",
    "create it with my defaults", "sounds good, do it" — set intent = "new_plan" AND use_profile_defaults = true.
@@ -406,18 +441,56 @@ CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers die
 Return a UserIntentExtraction object with ALL fields populated. Use null/empty defaults for non-applicable fields.
 """
 
+def summarize_plans_for_intent(plans: Optional[List[Any]], just_created_plan_id: Optional[int] = None) -> str:
+    """Describe the user's saved plans so the model can say WHICH plan a message means.
+
+    The application used to search the raw message for plan names, day counts
+    and diet words after the fact. Showing the model the real plans lets it
+    resolve "the 5 day one" or "it" itself; the code then only validates that
+    the id/name it returns exists and belongs to the user.
+    """
+    if not plans:
+        return "SAVED PLANS: the user has no saved plans.\n\n"
+    lines = []
+    for p in plans:
+        pid = getattr(p, "id", None)
+        name = (getattr(p, "name", None) or f"Plan #{pid}")
+        days = getattr(p, "days", None)
+        cal = getattr(p, "calorie_target", None)
+        diet = getattr(p, "diet_type", None) or "diet not set"
+        status = getattr(p, "status", None) or "draft"
+        cal_txt = f"{int(cal):,} kcal/day" if cal else "calories not set"
+        lines.append(f'- ID {pid}: "{name}" - {days} days, {cal_txt}, {diet}, status {status}')
+    block = "SAVED PLANS (use these IDs for target_plan_id):\n" + "\n".join(lines) + "\n"
+    if just_created_plan_id is not None and any(getattr(p, "id", None) == just_created_plan_id for p in plans):
+        block += f"The plan created in the assistant's previous reply is ID {just_created_plan_id}.\n"
+    return block + "\n"
+
+
 async def extract_user_intent(
     user_message: str,
     client: Optional[LLMClient] = None,
     history: Optional[List[Dict[str, Any]]] = None,
-    pending_workflow: Optional[Any] = None
+    pending_workflow: Optional[Any] = None,
+    plans: Optional[List[Any]] = None,
+    just_created_plan_id: Optional[int] = None,
 ) -> UserIntentExtraction:
     """
     Supervisor semantic intent parser using LLM reasoning.
     Leverages LLM intelligence to classify ANY user message against NutriGen's domain boundaries.
     """
+    # Nothing readable to interpret (empty, a lone dot, only symbols): there is
+    # no point asking the model, and no way to guess an action. This is input
+    # hygiene, not intent matching - any message with a letter or digit still
+    # goes to the model.
+    if not any(ch.isalnum() for ch in (user_message or "")):
+        return UserIntentExtraction(
+            intent="unclear",
+            unclear_reason="The message has no letters or numbers in it (empty or only punctuation/symbols).",
+        )
+
     llm = client or get_llm_client("supervisor")
-    context = _build_context_from_history(history)
+    context = _build_context_from_history(history) + summarize_plans_for_intent(plans, just_created_plan_id)
     
     # Include pending workflow context if available
     workflow_context = ""
@@ -460,6 +533,11 @@ PENDING WORKFLOW CONTEXT:
         # an honest service-trouble message instead of a canned fallback reply.
         raise
     except Exception as e:
-        logger.warning(f"Error in LLM intent extraction: {e}. Applying safe fallback.")
-        # Minimal fallback - let LLM handle it on retry, default to chat
-        return UserIntentExtraction(intent="chat")
+        logger.warning(f"Error in LLM intent extraction: {e}. Asking the user to rephrase.")
+        # The model's answer could not be read. Guessing an intent here (the old
+        # fallback silently treated it as small talk) would answer a question
+        # nobody asked; say so and ask instead.
+        return UserIntentExtraction(
+            intent="unclear",
+            unclear_reason="The assistant could not interpret this message (a temporary problem reading it).",
+        )

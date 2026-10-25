@@ -19,7 +19,8 @@ class PlanRepository:
         status: str = "draft",
         name: Optional[str] = None,
         diet_type: Optional[str] = None,
-        version: int = 1
+        version: int = 1,
+        cuisine: Optional[str] = None
     ) -> Plan:
         plan_name = name or getattr(meal_plan, "name", None) or f"{days}-Day Meal Plan"
         plan_diet = diet_type or getattr(meal_plan, "diet_type", "veg") or "veg"
@@ -29,6 +30,7 @@ class PlanRepository:
             days=days,
             calorie_target=calorie_target,
             diet_type=plan_diet,
+            cuisine=(cuisine or getattr(meal_plan, "cuisine", None) or None),
             status=status,
             version=version,
             grocery_list=grocery_list.model_dump() if grocery_list else None
@@ -217,6 +219,7 @@ class PlanRepository:
             days=day_plans,
             target_calories=plan.calorie_target,
             diet_type=plan.diet_type or "veg",
+            cuisine=getattr(plan, "cuisine", None),
             average_daily_calories=avg_cals,
             version=plan.version or 1
         )

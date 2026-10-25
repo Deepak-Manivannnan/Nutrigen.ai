@@ -40,6 +40,7 @@ async def init_db():
             "ALTER TABLE plans ADD COLUMN name VARCHAR(150)",
             "ALTER TABLE plans ADD COLUMN version INT NOT NULL DEFAULT 1",
             "ALTER TABLE plans ADD COLUMN diet_type VARCHAR(50) DEFAULT 'veg'",
+            "ALTER TABLE plans ADD COLUMN cuisine VARCHAR(100) NULL",
             "ALTER TABLE plans ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
             "ALTER TABLE plans ADD COLUMN approved_at DATETIME NULL",
             "ALTER TABLE plan_meals ADD COLUMN diet_type VARCHAR(50) DEFAULT 'veg'",

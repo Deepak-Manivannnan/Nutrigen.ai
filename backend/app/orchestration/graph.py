@@ -59,6 +59,20 @@ def create_meal_planner_graph(
             }
 
         days = len(state.current_plan.days) if state.current_plan else meta["days"]
+        if not days:
+            # The number of days is never assumed. The chat layer asks for it
+            # before the graph starts; reaching here without it is a bug, so
+            # stop rather than quietly plan some other length.
+            msg = await sup_agent.log_step(
+                state=state, from_agent="supervisor", to_agent="user", msg_type="error",
+                content="Input Guardrail Blocked: the number of days is missing.",
+                payload={"error": "days_missing"}
+            )
+            return {
+                "status": "failed",
+                "system_message": "I need to know how many days the plan should cover before I can build it.",
+                "trace": [msg]
+            }
         target_cal = state.current_plan.target_calories if state.current_plan else meta["calorie_target"]
 
         action_desc = "Modifying meal in existing plan" if state.intent == "edit_meal" else f"Assigning {days}-day plan ({target_cal:.0f} kcal/day)"
@@ -122,7 +136,8 @@ def create_meal_planner_graph(
                 edit_details=state.edit_details,
                 user_profile=state.user_profile,
                 task_id=state.task_id,
-                exclusions=(state.intent_data.requested_exclusions if state.intent_data else None)
+                exclusions=(state.intent_data.requested_exclusions if state.intent_data else None),
+                cuisine=getattr(state, "cuisine", None),
             )
         else:
             plan: Optional[MealPlan] = None
@@ -152,6 +167,7 @@ def create_meal_planner_graph(
                         version=state.plan_version,
                         task_id=state.task_id,
                         exclusions=state.intent_data.requested_exclusions if state.intent_data else None,
+                        cuisine=getattr(state, "cuisine", None),
                     )
                 except Exception as repair_err:
                     # Never leave the user without a plan because a repair
@@ -170,7 +186,7 @@ def create_meal_planner_graph(
                 )
 
                 plan = await p_agent.generate_plan(
-                    days=state.days or 7,
+                    days=state.days,
                     calorie_target=state.calorie_target or 2000.0,
                     user_profile=state.user_profile,
                     fixed_meals=state.fixed_meals,

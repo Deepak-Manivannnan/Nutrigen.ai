@@ -143,7 +143,7 @@ class EditPlanner(FakePlanner):
         super().__init__()
         self.modify_calls = []
 
-    async def modify_meal(self, current_plan, edit_details, user_profile, task_id=None, exclusions=None):
+    async def modify_meal(self, current_plan, edit_details, user_profile, task_id=None, exclusions=None, **kwargs):
         self.modify_calls.append(edit_details)
         updated = current_plan.model_copy(deep=True)
         updated.days[0].meals[1] = meal("lunch", "Paneer Wrap", "paneer")

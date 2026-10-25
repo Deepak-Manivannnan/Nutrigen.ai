@@ -183,25 +183,30 @@ async def test_user_reported_update_plan_selection():
     assert extraction.is_update_request is True
     assert extraction.edit_details is None
 
-def test_find_referenced_plan_by_day_count():
+def test_find_referenced_plan_only_looks_up_what_the_model_identified():
+    """The resolver validates the model's id/name; it does not search the message."""
     from backend.app.orchestration.runner import find_referenced_plan
-    from unittest.mock import MagicMock
-    p1 = MagicMock(id=1, days=5, diet_type="veg")
-    p1.name = "5-Day Veg Plan"
-    p2 = MagicMock(id=2, days=3, diet_type="non-veg")
-    p2.name = "3-Day Non-veg Plan"
+    from types import SimpleNamespace
+    p1 = SimpleNamespace(id=1, name="5-Day Veg Plan", days=5, diet_type="veg")
+    p2 = SimpleNamespace(id=2, name="3-Day Non-veg Plan", days=3, diet_type="non-veg")
     all_plans = [p1, p2]
-    
-    # User says "the 5 day meal plan"
-    matched = find_referenced_plan("the 5 day meal plan", all_plans, fallback_to_first=False)
-    assert matched is not None
-    assert matched.id == 1
-    assert matched.name == "5-Day Veg Plan"
-    
-    # User says "the 3-day plan"
-    matched_3 = find_referenced_plan("the 3-day plan", all_plans, fallback_to_first=False)
-    assert matched_3 is not None
-    assert matched_3.id == 2
+
+    # By id and by name (what the model returns)
+    assert find_referenced_plan("", all_plans, target_id=2).id == 2
+    assert find_referenced_plan("", all_plans, target_name='"5-Day Veg Plan" plan').id == 1
+
+    # Words in the message are NOT searched: no plan name, day count or diet match.
+    assert find_referenced_plan("the 5 day meal plan", all_plans, fallback_to_first=False) is None
+    assert find_referenced_plan("the vegetarian plan", all_plans) is None
+    assert find_referenced_plan("5-Day Veg Plan", all_plans) is None
+
+    # Never "the first plan" when several exist; a lone plan is the only candidate.
+    assert find_referenced_plan("anything", all_plans, fallback_to_first=True) is None
+    assert find_referenced_plan("anything", [p1], fallback_to_first=True).id == 1
+    assert find_referenced_plan("anything", [p1], fallback_to_first=False) is None
+    assert find_referenced_plan("x", [], target_id=1) is None
+    # An id that is not among the user's plans resolves to nothing.
+    assert find_referenced_plan("", all_plans, target_id=99, fallback_to_first=False) is None
 
 @pytest.mark.asyncio
 async def test_llm_extracts_non_veg_and_exclusions():
@@ -221,7 +226,7 @@ async def test_llm_extracts_non_veg_and_exclusions():
 async def test_multi_turn_edit_meal_slot_inherits_good_plan():
     from backend.app.orchestration.supervisor.intent import extract_user_intent
     from backend.app.orchestration.runner import find_referenced_plan
-    from unittest.mock import MagicMock
+    from types import SimpleNamespace
 
     history = [
         {"role": "user", "content": "hey i want to update a meal plan"},
@@ -231,22 +236,22 @@ async def test_multi_turn_edit_meal_slot_inherits_good_plan():
     ]
     user_msg = "hey i want you to replace the day 1 dinner meal with something else"
 
-    extraction = await extract_user_intent(user_msg, history=history)
+    p_veg = SimpleNamespace(id=1, name="5-Day Veg Plan", days=5, calorie_target=2000, diet_type="veg", status="draft")
+    p_good = SimpleNamespace(id=2, name="Good plan", days=3, calorie_target=1800, diet_type="non-veg", status="draft")
+    all_plans = [p_veg, p_good]
+
+    # The model is shown the saved plans and resolves "the Good plan" itself.
+    extraction = await extract_user_intent(user_msg, history=history, plans=all_plans)
     assert extraction.intent == "edit_meal"
     assert extraction.edit_details is not None
     assert extraction.edit_details.day == 1
     assert extraction.edit_details.meal_type == "dinner"
-    assert extraction.target_plan_name is not None
-    assert "good" in extraction.target_plan_name.lower()
 
-    # Verify find_referenced_plan resolves the Good plan from history
-    p_veg = MagicMock(id=1, days=5, diet_type="veg")
-    p_veg.name = "5-Day Veg Plan"
-    p_good = MagicMock(id=2, days=3, diet_type="non-veg")
-    p_good.name = "Good plan"
-    all_plans = [p_veg, p_good]
-
-    matched = find_referenced_plan(user_msg, all_plans, target_name=extraction.target_plan_name, history=history)
+    matched = find_referenced_plan(
+        user_msg, all_plans,
+        target_id=extraction.target_plan_id, target_name=extraction.target_plan_name,
+        fallback_to_first=False,
+    )
     assert matched is not None
     assert matched.id == 2
     assert matched.name == "Good plan"

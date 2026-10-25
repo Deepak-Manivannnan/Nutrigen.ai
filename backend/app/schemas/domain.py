@@ -33,6 +33,7 @@ class MealPlan(BaseModel):
     days: List[DayPlan] = Field(..., description="List of daily meal plans for all requested days. MUST NOT BE EMPTY.")
     target_calories: float
     diet_type: Optional[str] = "veg"
+    cuisine: Optional[str] = None
     average_daily_calories: float = 0.0
     version: int = 1
 

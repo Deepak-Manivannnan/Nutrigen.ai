@@ -58,6 +58,8 @@ class Plan(Base):
     days = Column(Integer, nullable=False, default=7)
     calorie_target = Column(Float, nullable=False)
     diet_type = Column(String(50), default="veg", nullable=True)
+    # The cuisine the plan was asked for (e.g. "South Indian"); later edits stay in it. NULL for older plans.
+    cuisine = Column(String(100), nullable=True)
     status = Column(String(50), default="draft")  # draft, approving, approved, rejected, escalated
     version = Column(Integer, default=1, nullable=False)
     grocery_list = Column(JSON, nullable=True)

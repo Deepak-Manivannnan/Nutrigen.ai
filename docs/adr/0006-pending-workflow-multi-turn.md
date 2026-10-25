@@ -1,6 +1,6 @@
 # Multi-turn questions are explicit, client-persisted pending workflows
 
-**Status:** Accepted · **Recorded:** 2026-10-22
+**Status:** Accepted · **Recorded:** 2026-10-22 · **Updated:** 2026-10-25
 
 ## Context
 
@@ -24,6 +24,12 @@ Model an open question as a `PendingWorkflow` object and round-trip it through t
   right question.
 - `resume_request` continues the pending work; `cancel_request` drops it; a genuinely new
   request triggers an interruption message that lets the user choose.
+- **Pausing is not cancelling** (2026-10-25). "Let me think about it", "not now, maybe
+  later" or "let me cook first" sets `defer_pending`: nothing is done, the pending question
+  is kept, and a later answer ("yes, delete it", "3 days") resolves it without being asked
+  again. This applies to every kind of open question. Only a refusal ("no", "keep it",
+  "cancel") drops it; when the model is unsure it chooses pausing, the safe side. Before this,
+  a pause was read as a cancel and the user had to start the action over.
 - `extracted_info` accumulates answers, so a question is not asked twice.
 
 ## Consequences

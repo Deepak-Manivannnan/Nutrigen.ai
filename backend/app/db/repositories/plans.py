@@ -30,7 +30,9 @@ class PlanRepository:
             days=days,
             calorie_target=calorie_target,
             diet_type=plan_diet,
-            cuisine=(cuisine or getattr(meal_plan, "cuisine", None) or None),
+            # Only the cuisine the user asked for is saved. The plan object may carry a
+            # cuisine the planning model filled in on its own; that is never stored.
+            cuisine=(cuisine or None),
             status=status,
             version=version,
             grocery_list=grocery_list.model_dump() if grocery_list else None

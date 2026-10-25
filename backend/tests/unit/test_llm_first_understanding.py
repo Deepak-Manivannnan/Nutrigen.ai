@@ -313,3 +313,42 @@ async def test_a_delete_request_while_something_else_is_pending_still_interrupts
 
     assert FakeRepo.deleted == []
     assert "in the middle of" in world.replies[-1]["context"]
+
+
+# ------------------------------------------------------------------ pausing is not cancelling
+@pytest.mark.parametrize("make_pending", [
+    lambda: delete_pending("Veg Week"),
+    lambda: runner.make_approve_pending("Approve Veg Week?", "approve", PROFILE, target_plan_name="Veg Week"),
+    lambda: runner.make_edit_pending("Which meal?", "ask_slot", "Veg Week", "update", PROFILE),
+])
+async def test_pausing_keeps_the_open_question_for_every_kind_of_action(world, make_pending):
+    pending = make_pending()
+    # Even if the model also labels it a cancel, the pause wins: keeping work is the safe side.
+    state = await run(world, "let me think about it", UserIntentExtraction(intent="cancel_request", defer_pending=True), pending=pending)
+
+    assert state.pending_workflow is pending
+    assert FakeRepo.deleted == []
+    ctx = world.replies[-1]["context"]
+    assert "question is still open" in ctx and "nothing has been changed" in ctx
+
+
+async def test_after_a_pause_a_plain_yes_deletes_without_asking_again(world):
+    first = await run(world, "ok let me cook dinner first", UserIntentExtraction(intent="chat", defer_pending=True),
+                      pending=delete_pending("Veg Week"))
+    second = await run(world, "ok I'm back, yes delete it", UserIntentExtraction(intent="delete_plan", is_delete_confirmation=True),
+                       pending=first.pending_workflow)
+
+    assert FakeRepo.deleted == [2]
+    assert second.status == "deleted"
+
+
+async def test_a_real_no_still_cancels(world):
+    state = await run(world, "no, keep it", UserIntentExtraction(intent="cancel_request", abandon_pending_work=True),
+                      pending=delete_pending("Veg Week"))
+    assert state.pending_workflow is None and FakeRepo.deleted == []
+
+
+async def test_a_pause_with_nothing_open_is_just_chat(world):
+    state = await run(world, "let me think", UserIntentExtraction(intent="chat", defer_pending=True))
+    assert state.status == "conversational" and state.pending_workflow is None
+    assert not any("question is still open" in r["context"] for r in world.replies)

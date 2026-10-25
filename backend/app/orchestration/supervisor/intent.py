@@ -116,6 +116,10 @@ class UserIntentExtraction(BaseModel):
         default=False,
         description="True ONLY when the user explicitly tells you to drop, replace or restart the work in progress ('forget it', 'start over', 'cancel', 'never mind', 'do a new plan instead'). False for a plain new request that does not say to abandon the pending work."
     )
+    defer_pending: bool = Field(
+        default=False,
+        description="True when a question is pending and the user wants to pause it and come back later WITHOUT refusing it ('let me think about it', 'not now, maybe later', 'let me cook first', 'give me a minute', 'I'll decide later'). Then intent must NOT be cancel_request and abandon_pending_work is false."
+    )
     save_preference_answer: Optional[bool] = Field(
         None,
         description="Only when a 'save_dislikes' question is pending (the assistant asked whether to remember foods as dislikes): true if the user says yes, false if they say no / only for this plan, null if the message is not an answer to that question."
@@ -413,6 +417,11 @@ When PENDING WORKFLOW CONTEXT is provided, the user's message may be a PARTIAL a
    (diet conflict, calorie guardrail, edit clarification, or delete confirmation):
    - Set intent = "cancel_request"
    - A lone "Cancel" message ALWAYS cancels whatever is pending — NEVER classify it as chat.
+
+4b. **Pausing is not cancelling.** If the user wants to come back to the pending question later WITHOUT saying no
+   ("let me think about it", "not now, maybe later", "let me cook dinner first", "give me a minute", "I'll decide later"):
+   - Set defer_pending = true, abandon_pending_work = false, intent = "chat". NEVER cancel_request.
+   - Only a refusal ("no", "keep it", "cancel", "forget it", "don't") cancels. When unsure between pausing and refusing, choose pausing.
 
 5. **If user provides a COMPLETE answer resolving ALL pending conflicts** (specifies both diet AND calories):
    - Set intent = "new_plan" (or original_intent)

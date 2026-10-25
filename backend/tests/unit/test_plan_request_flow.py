@@ -334,3 +334,30 @@ async def test_modify_meal_prompts_hold_the_new_meal_to_the_cuisine():
     await PlannerAgent(client=llm, max_steps=1).modify_meal(
         finished_plan(), edit, dict(PROFILE), cuisine="South Indian")
     assert "genuine South Indian dish" in llm.call_history[0]["prompt"]
+
+
+def test_only_the_cuisine_the_user_asked_for_is_saved():
+    import inspect
+    from backend.app.db.repositories.plans import PlanRepository
+    src = inspect.getsource(PlanRepository.create_plan)
+    assert 'getattr(meal_plan, "cuisine"' not in src            # the planner's own guess is never stored
+
+
+async def test_the_planners_own_cuisine_guess_is_dropped():
+    from backend.app.agents.planner.agent import PlannerAgent
+    from backend.tests.fakes.fake_llm import FakeLLMClient
+    guessed = finished_plan().model_copy(update={"cuisine": "Indian & Mediterranean fusion"})
+    llm = FakeLLMClient()
+    llm.queue_structured_response(guessed)
+    out = await PlannerAgent(client=llm, max_steps=1).generate_plan(days=1, calorie_target=2050.0, user_profile=dict(PROFILE))
+    assert out.cuisine is None
+
+    llm2 = FakeLLMClient()
+    llm2.queue_structured_response(guessed.model_copy())
+    out2 = await PlannerAgent(client=llm2, max_steps=1).generate_plan(days=1, calorie_target=2050.0, user_profile=dict(PROFILE), cuisine="South Indian")
+    assert out2.cuisine == "South Indian"
+
+
+async def test_a_plan_without_a_requested_cuisine_is_saved_with_none(world, creating_graph):
+    await run(world, "3 day plan", new_plan(requested_days=3))
+    assert CreatingRepo.created[0]["cuisine"] is None

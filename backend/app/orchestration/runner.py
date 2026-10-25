@@ -1094,6 +1094,23 @@ async def _run_meal_planner_impl(    user_id: int,
         state.status = "conversational"
         return state
 
+    # The user wants to pause the open question and come back to it ("let me think
+    # about it", "not now, maybe later"). That is not a refusal: nothing is done and
+    # nothing is dropped, so a later "yes" still answers the same question. This
+    # applies to every kind of open question (delete, approve, update, new plan).
+    if state.pending_workflow is not None and intent_data.defer_pending:
+        state.system_message = await _ask_without_claiming(
+            supervisor, user_message=user_message, history=history, user_name=user_profile.get("name"),
+            context=(
+                f"The user wants a moment before answering. You were {_describe_pending_work(state.pending_workflow)} "
+                f"and that question is still open. In one or two warm, natural sentences (no greeting), say that is "
+                f"completely fine, that nothing has been changed, and that they can simply reply whenever they are ready "
+                f"(say what a reply would do, in plain words). Do not ask anything new and do not do anything."
+            ),
+        )
+        state.status = "conversational"
+        return state
+
     # The assistant asked whether to remember the foods the user left out of
     # their last plan as dislikes. The model reads the yes/no; code saves.
     if state.pending_workflow is not None and state.pending_workflow.workflow_type == "save_dislikes":

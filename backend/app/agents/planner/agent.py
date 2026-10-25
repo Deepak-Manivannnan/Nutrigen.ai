@@ -251,6 +251,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
         meal_plan.version = version
         meal_plan.diet_type = plan_diet
         meal_plan.name = plan_name
+        # The model may fill in a cuisine it chose itself; only the user's request counts.
+        meal_plan.cuisine = cuisine or None
 
         # Strict Diet Compliance Verification and Sanitization Pass.
         # exclusions must be passed here: without it the check never ran on
@@ -480,6 +482,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
         repaired.target_calories = calorie_target
         repaired.version = version
         repaired.diet_type = plan_diet
+        repaired.cuisine = cuisine if cuisine else current_plan.cuisine
 
         # Same deterministic diet/allergy clean-up generate_plan applies. It only
         # touches a meal that actually breaks a rule.

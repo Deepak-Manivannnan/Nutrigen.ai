@@ -71,44 +71,81 @@ async def test_deterministic_meal_summation():
     assert result["calories"] == expected_cal
     assert result["protein_g"] == round(31.0 * 1.5 + 2.7 * 2.0, 1)  # 46.5 + 5.4 = 51.9
 
+def _meal(meal_type, name, ingredients):
+    return Meal(meal_type=meal_type, recipe_name=name,
+                ingredients=[Ingredient(name=n, amount_grams=g) for n, g in ingredients])
+
+
+def _balanced_day(day_number, scale=1.0):
+    """A realistic ~2,000 kcal day of ordinary foods (all in the offline staples table)."""
+    return DayPlan(day_number=day_number, meals=[
+        _meal("breakfast", "Oats and banana", [("oats", 100 * scale), ("whole milk", 200 * scale), ("banana", 100 * scale)]),
+        _meal("lunch", "Paneer dal rice", [("rice", 250 * scale), ("lentils", 200 * scale), ("paneer", 100 * scale)]),
+        _meal("dinner", "Chicken rice bowl", [("chicken breast", 150 * scale), ("rice", 150 * scale), ("olive oil", 10 * scale), ("broccoli", 150 * scale)]),
+    ])
+
+
+def _vegetable_only_day(day_number):
+    """So little energy that no amount of portion balancing can reach 2,000 kcal."""
+    return DayPlan(day_number=day_number, meals=[
+        _meal("breakfast", "Cucumber plate", [("cucumber", 200), ("tomato", 100)]),
+        _meal("lunch", "Garden salad", [("tomato", 250), ("cucumber", 200), ("spinach", 100)]),
+        _meal("dinner", "Greens", [("spinach", 250), ("broccoli", 200)]),
+    ])
+
+
 @pytest.mark.asyncio
 async def test_plan_tolerance_audit_pass_and_fail():
-    """Verify ±5% calorie tolerance boundaries in pure Python code."""
-    target = 2000.0
-    # ±5% is [1900.0, 2100.0]
+    """Verify the +/-5% calorie tolerance in pure Python code.
 
-    # Day 1: 1950 kcal (Pass)
-    # Day 2: 2300 kcal (+300 kcal, Fail)
-    # Day 3: 1700 kcal (-300 kcal, Fail)
+    The audit first balances portions to single-person size (ingredients are capped,
+    meals are scaled toward their slot's share of the day), so a day only fails when
+    even the balanced portions cannot reach the target - e.g. a vegetable-only day.
+    """
+    target = 2000.0
     plan = MealPlan(
         target_calories=target,
-        days=[
-            DayPlan(day_number=1, meals=[
-                Meal(meal_type="breakfast", recipe_name="M1", ingredients=[Ingredient(name="oats", amount_grams=501.3)]) # 389 * 5.013 ≈ 1950
-            ]),
-            DayPlan(day_number=2, meals=[
-                Meal(meal_type="lunch", recipe_name="M2", ingredients=[Ingredient(name="chicken breast", amount_grams=1394.0)]) # 165 * 13.94 ≈ 2300
-            ]),
-            DayPlan(day_number=3, meals=[
-                Meal(meal_type="dinner", recipe_name="M3", ingredients=[Ingredient(name="white rice", amount_grams=1307.7)]) # 130 * 13.077 ≈ 1700
-            ])
-        ]
+        days=[_balanced_day(1), _vegetable_only_day(2), _vegetable_only_day(3)],
     )
 
     passed, issues, daily_totals = await audit_meal_plan_nutrition(plan, target_calories=target, tolerance_pct=0.05)
 
     assert passed is False
-    assert len(issues) == 2
-    assert any(i.day_number == 2 and i.diff_calories > 0 for i in issues)
-    assert any(i.day_number == 3 and i.diff_calories < 0 for i in issues)
     assert len(daily_totals) == 3
+    # Day 1 lands inside [1900, 2100] and raises nothing.
+    day1 = next(t for t in daily_totals if t.day_number == 1)
+    assert abs(day1.calories - target) <= 0.05 * target
+    assert {i.day_number for i in issues} == {2, 3}
+    # Both flagged days are far under target, and the issue says by how much.
+    for issue in issues:
+        total = next(t for t in daily_totals if t.day_number == issue.day_number)
+        assert issue.diff_calories < -0.05 * target
+        assert issue.diff_calories == round(total.calories - target, 1)
+
 
 @pytest.mark.asyncio
-async def test_nutrition_agent_overrules_hallucinated_llm_math():
+async def test_audit_balances_oversized_portions_instead_of_failing_them():
+    """Portions twice as big as one person eats are scaled down, so the day passes."""
+    target = 2000.0
+    plan = MealPlan(target_calories=target, days=[_balanced_day(1, scale=2.0)])
+
+    passed, issues, daily_totals = await audit_meal_plan_nutrition(plan, target_calories=target, tolerance_pct=0.05)
+
+    assert passed is True and issues == []
+    assert abs(daily_totals[0].calories - target) <= 0.05 * target
+
+
+@pytest.fixture
+def three_meal_veg_day_plan():
+    return MealPlan(target_calories=1800.0, days=[_vegetable_only_day(1)])
+
+
+@pytest.mark.asyncio
+async def test_nutrition_agent_overrules_hallucinated_llm_math(three_meal_veg_day_plan):
     """
-    SKEPTICAL TEST: If the LLM hallucinates that a 2400 kcal day is 1800 kcal
-    and marks passed: True, the Nutrition Agent's code math MUST overrule it
-    and enforce passed: False with exact diff_calories!
+    SKEPTICAL TEST: if the LLM claims a far-too-low day is exactly 1800 kcal and marks
+    passed: True, the Nutrition Agent's code math MUST overrule it - passed False, the
+    day flagged, and the totals taken from the code, not from the LLM.
     """
     fake_llm = FakeLLMClient()
     fake_llm.queue_structured_response(AgentStepAction(
@@ -127,22 +164,12 @@ async def test_nutrition_agent_overrules_hallucinated_llm_math():
 
     agent = NutritionAgent(client=fake_llm, max_steps=3)
     target = 1800.0
-    # Create actual day with 2600 kcal worth of ingredients (far over target)
-    plan = MealPlan(
-        target_calories=target,
-        days=[
-            DayPlan(
-                day_number=1,
-                meals=[
-                    Meal(
-                        meal_type="lunch",
-                        recipe_name="Huge Meal",
-                        ingredients=[Ingredient(name="rice", amount_grams=2000.0)] # 130 * 20 = 2600 kcal
-                    )
-                ]
-            )
-        ]
-    )
+    plan = three_meal_veg_day_plan
+
+    # What the deterministic code says about this very plan (audited on a copy,
+    # because the audit balances portions in place).
+    _, expected_issues, expected_totals = await audit_meal_plan_nutrition(plan.model_copy(deep=True), target)
+    assert len(expected_issues) == 1
 
     report = await agent.review_plan(
         plan=plan,
@@ -154,5 +181,7 @@ async def test_nutrition_agent_overrules_hallucinated_llm_math():
     assert report.passed is False
     assert len(report.issues) == 1
     assert report.issues[0].day_number == 1
-    assert report.issues[0].diff_calories == 800.0  # 2600 - 1800 = +800 kcal
-    assert report.daily_totals[0].calories == 2600.0  # Code total, NOT LLM hallucinated 1800
+    assert report.issues[0].diff_calories < -0.05 * target
+    assert report.issues[0].diff_calories == expected_issues[0].diff_calories
+    assert report.daily_totals[0].calories == expected_totals[0].calories   # code total...
+    assert report.daily_totals[0].calories != 1800.0                        # ...NOT the LLM's invention

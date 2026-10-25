@@ -26,13 +26,13 @@ the code looks the way it does; the code remains the source of truth for **how**
 | [0004](./0004-allergy-veto-and-fail-closed.md) | Allergy veto is absolute and verification fails closed | Accepted | changing checks, error handling, or approval |
 | [0005](./0005-llm-first-intent-contract.md) | One structured LLM call classifies intent and extracts parameters | Accepted | adding an intent or a request parameter |
 | [0006](./0006-pending-workflow-multi-turn.md) | Multi-turn questions are explicit, client-persisted pending workflows | Accepted | changing confirmations, resume, or cancel |
-| [0007](./0007-bounded-revision-rounds.md) | Plans are built in one pass, revised at most 3 rounds, capped at 7 days | Accepted | changing limits or supporting longer plans |
+| [0007](./0007-bounded-revision-rounds.md) | First draft in one pass; retry rounds redo only the flagged meals/days, at most 3; capped at 7 days | Accepted | changing limits or supporting longer plans |
 | [0008](./0008-per-agent-llm-routing-and-resilience.md) | Two Gemini keys, per-agent models, retries and a circuit breaker | Accepted | touching model choice, quotas, or LLM failures |
 | [0009](./0009-tool-grounded-nutrition-math.md) | Nutrition numbers come from tools; maths is deterministic | Accepted | changing nutrition lookup or portioning |
 | [0010](./0010-allergen-taxonomy-and-investigation.md) | Allergen matching uses a canonical taxonomy plus investigation | Accepted | changing allergen data or matching rules |
 | [0011](./0011-external-data-fallbacks-and-provenance.md) | External data degrades to AI fallbacks, labelled with provenance | Accepted | changing recipes, prices, or trust labels |
 | [0012](./0012-mysql-schema-evolve-in-place.md) | MySQL with startup schema evolution, no migration tool | Accepted | changing tables, deploying, or adding environments |
-| [0013](./0013-signed-session-tokens.md) | Stateless HMAC session tokens with a 15-minute absolute lifetime | Accepted | changing auth, sessions, or deployment secrets |
+| [0013](./0013-signed-session-tokens.md) | 15-minute signed access tokens plus a revocable, rotating refresh key (stay signed in) | Accepted | changing auth, sessions, or deployment secrets |
 | [0014](./0014-plan-lifecycle-and-versioning.md) | Plans are versioned drafts with idempotent human approval | Accepted | changing plan persistence, statuses, or approval |
 | [0015](./0015-trace-hub-and-sse.md) | Agent events are persisted and streamed over SSE | Accepted | changing observability or the live timeline |
 | [0016](./0016-frontend-state-and-reload-recovery.md) | React SPA with reload-safe delivery and per-user local history | Accepted | changing frontend state, chat delivery, or sessions |

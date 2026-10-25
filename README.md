@@ -202,6 +202,10 @@ The system employs a swarm of specialized agents orchestrated via LangGraph:
 | `APP_ENV` | Application environment (`development` / `production`) | `development` |
 | `MAX_ROUNDS` | Maximum iterative revision rounds per plan run | `3` |
 | `AGENT_TIMEOUT_SECONDS`| Timeout threshold per individual agent call | `30` |
+| `AUTH_TOKEN_SECRET` | Long random string that signs login tokens. **Required in production**: if it is empty the code falls back to a public development secret and anyone could forge a login | Required in production |
+| `FRONTEND_ORIGINS` | Website address(es) allowed to call the API from a browser, comma separated, no trailing slash (e.g. `https://nutrigen-frontend.onrender.com`). Empty in production means no website is allowed; in development any `localhost` port works | Required in production |
+| `REFRESH_TOKEN_TTL_DAYS` | How many days of not using the app before a user must sign in again (each use renews it) | `30` |
+| `DEBUG` | Verbose debug logging (can include user messages). Keep off in production | `false` |
 
 ---
 

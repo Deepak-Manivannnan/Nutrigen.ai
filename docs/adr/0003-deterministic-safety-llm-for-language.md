@@ -1,6 +1,6 @@
 # Safety rules are code; the LLM only handles language and judgement
 
-**Status:** Accepted · **Recorded:** 2026-10-22
+**Status:** Accepted · **Recorded:** 2026-10-22 · **Updated:** 2026-10-25
 
 ## Context
 
@@ -21,6 +21,12 @@ Deterministic rules currently include:
 - A safe daily band of target ±100 kcal, clamped to 1200–4000 kcal.
 - Adults only (18+), plans capped at 7 days, calorie requests outside the band refused
   with the safe range and an offer of the suggested target.
+- Profile measurements are range-checked when a profile is created *and* when it is
+  updated (age 18-120, height 100-250 cm, weight 30-300 kg). The limits live in
+  `schemas/api.py` and are mirrored by the onboarding and Edit Profile forms
+  (`frontend/src/utils/profileLimits.js`); an absurd value such as age 1000 can no longer
+  reach the calorie formula. Stored values are not range-checked when read, so older rows
+  keep loading.
 - Diet-type conflicts and fixed-meal conflicts checked before planning.
 - A separate ±5% tolerance used to audit a finished day against its target. This is not
   the same band as the input guardrail above.

@@ -1,6 +1,6 @@
 # MySQL is evolved in place at startup; there is no migration tool
 
-**Status:** Accepted · **Recorded:** 2026-10-22
+**Status:** Accepted · **Recorded:** 2026-10-22 · **Updated:** 2026-10-25
 
 ## Context
 
@@ -14,7 +14,9 @@ fields were added to users.
 Use a single MySQL database (`nutrigen`) through async SQLAlchemy and `aiomysql`, and
 evolve it at application startup.
 
-- `Base.metadata.create_all` creates missing tables.
+- `Base.metadata.create_all` creates missing tables. New tables are simply added to the
+  models: `refresh_tokens` (ADR 0013) appeared this way, with no manual step, the first
+  time any process ran `init_db` against the database.
 - A hand-maintained list of `ALTER TABLE` statements adds or relaxes columns for older
   databases; each statement is attempted and failures are ignored.
 - Startup also normalises existing plans (vegetarian substitutions, single-person
@@ -36,7 +38,10 @@ stale until something breaks at runtime. `create_all` never changes an existing 
 every alteration must be remembered manually. Startup performs writes and can race when
 more than one instance boots. The data normalisation silently rewrites users' saved plans
 on every boot — useful as a repair, risky as a habit. Tests are not hermetic; they need a
-reachable MySQL instance. Moving to Postgres would require revisiting the JSON and
+reachable MySQL instance, and they run `init_db` and create throwaway users in whatever
+database `DATABASE_URL` points to. A development machine whose `.env` points at the
+production database therefore creates tables and test rows there, so use a separate
+database for development and tests. Moving to Postgres would require revisiting the JSON and
 timestamp choices.
 
 ## Code map

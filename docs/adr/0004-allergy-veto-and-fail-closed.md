@@ -1,6 +1,6 @@
 # The allergy veto is absolute and verification fails closed
 
-**Status:** Accepted · **Recorded:** 2026-10-22
+**Status:** Accepted · **Recorded:** 2026-10-22 · **Updated:** 2026-10-25
 
 ## Context
 
@@ -23,7 +23,7 @@ Screen allergies in three independent layers and never guess when a layer is una
 The Supervisor then applies fixed rules:
 
 - Any allergy failure is a veto. It outranks nutrition feedback and cannot be waived by
-  another agent.
+  another agent. A veto sends the Planner back to redo only the vetoed meal (ADR 0007).
 - If either reviewer raises an exception, `parallel_reviews_node` returns `status:
   "failed"`. Nothing is approved, and the user is told that verification could not run.
 - At the round limit, the run escalates with the outstanding reasons instead of shipping
@@ -41,6 +41,21 @@ literal — compound or regional names can be vetoed on suspicion, and new aller
 work if the taxonomy or the investigation catches them. Custom allergens fall back to
 singularised literal matching, which is weaker than the curated entries. Grocery items
 are screened too, so a safe meal plan can still fail on a packaged good.
+
+**Known gaps (found in the 2026-10-25 pre-launch review; not yet fixed):**
+
+- "Fails closed" holds when a reviewer *raises*. If only the Allergy agent's AI call fails,
+  `AllergyAgent.review_plan` catches it and continues with the deterministic matching alone,
+  and the report still reads "Allergies verified". Hidden sources the deterministic list
+  does not know (for example naan or pesto) then depend on the AI.
+- The deterministic list is short. Measured misses included gluten via bread, chapati,
+  naan, pasta and noodles; egg via brioche; peanut via satay; tree nuts via pesto and
+  marzipan; fish via Worcestershire sauce. Substring matching also over-blocks (pork flags
+  "chamomile" and "graham"; nuts flags "nutritional yeast"). `lookup_ingredient` is a
+  static note, not a real lookup.
+- At the round limit the plan is saved with status `escalated` and presented as ready, and
+  `POST /plans/{id}/approve` (and approval by chat) neither checks that status nor re-runs
+  the allergy and diet checks. Editing a profile's allergies does not re-check saved plans.
 
 ## Code map
 

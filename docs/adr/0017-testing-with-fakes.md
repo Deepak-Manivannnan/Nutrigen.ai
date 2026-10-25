@@ -1,6 +1,6 @@
 # Tests use fake models and fake APIs; live-model tests are a separate suite
 
-**Status:** Accepted · **Recorded:** 2026-10-22
+**Status:** Accepted · **Recorded:** 2026-10-22 · **Updated:** 2026-10-25
 
 ## Context
 
@@ -39,7 +39,16 @@ schema non-compliance, or a new model's quirks. The live suite is easy to forget
 regressions can survive until a manual run. The default suite is not hermetic either: it
 uses `AsyncSessionLocal`, so it needs the configured MySQL instance and the startup schema,
 and it writes rows to that database. There is no separate test database or transaction
-rollback by default. Coverage of "the LLM reasons correctly about curry paste" is
+rollback by default. Because of that, tests that call `init_db` or create users should
+not be pointed at a production database (ADR 0012). The repair, refresh-token, password,
+CORS, profile-limit, routing and chat-inbox tests need no database at all. Tests also drift
+when the code is deliberately changed: the audit now balances portions before checking
+calories (ADR 0009) and the Shopper computes quantities and costs in code, so
+`test_nutrition_skeptical.py` and `test_shopper.py` were rewritten on 2026-10-25 around
+realistic meals and a faked price tool. Several DB-backed tests
+(`integration/test_graph.py`, `integration/test_user_reported_flow.py`,
+`unit/test_chat_and_plans_api.py`, `unit/test_profile_api.py`) are still out of date with
+the input guardrail and the bearer-token requirement. Coverage of "the LLM reasons correctly about curry paste" is
 necessarily thin.
 
 ## Code map

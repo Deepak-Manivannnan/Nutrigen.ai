@@ -86,6 +86,26 @@ class PlanMeal(Base):
 
     plan = relationship("Plan", back_populates="meals")
 
+class RefreshToken(Base):
+    """A long-lived "stay signed in" key (see api/routes/auth.py /refresh).
+
+    Only a hash of the key is stored, so a database leak does not hand out
+    working sessions. Each use of a key replaces it with a new one (`rotated_at`
+    marks the old one); all keys from one sign-in share a `family_id` so they
+    can be cancelled together. Times are naive UTC.
+    """
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False)
+    family_id = Column(String(36), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    rotated_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+
 class AgentTrace(Base):
     __tablename__ = "agent_trace"
 

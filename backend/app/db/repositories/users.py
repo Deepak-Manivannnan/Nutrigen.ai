@@ -74,6 +74,11 @@ class UserRepository:
         await self.session.refresh(user)
         return await self.get_by_id(user.id)
 
+    async def set_password_hash(self, user: User, new_hash: str) -> None:
+        """Store a freshly computed password hash (used to upgrade old hashes)."""
+        user.password_hash = new_hash
+        await self.session.commit()
+
     async def get_first(self) -> Optional[User]:
         stmt = select(User).order_by(User.id.asc()).options(selectinload(User.allergies))
         result = await self.session.execute(stmt)

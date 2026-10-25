@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { ChevronUp, LogOut, Edit3, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { validateProfileField, PROFILE_LIMITS } from '../utils/profileLimits';
 import TagInput from './TagInput';
 import ThemedSelect from './ThemedSelect';
 import {
@@ -267,7 +268,10 @@ function EditProfileModal({ onClose }) {
   });
 
   const [errors, setErrors] = useState({
+    name: '',
     age: '',
+    height_cm: '',
+    weight_kg: '',
   });
 
   // True while the save is in flight, so the button cannot be pressed twice
@@ -288,17 +292,16 @@ function EditProfileModal({ onClose }) {
 
   // Validation function
   const validateForm = useCallback(() => {
-    const newErrors = { age: '' };
-    
-    // Age validation
-    const ageValue = Number(form.age);
-    if (form.age !== '' && (isNaN(ageValue) || ageValue < 18)) {
-      newErrors.age = 'Age must be 18 or above';
-    }
-    
+    const newErrors = {
+      name: String(form.name || '').trim() ? '' : 'Name is required',
+      age: validateProfileField('age', form.age),
+      height_cm: validateProfileField('height_cm', form.height_cm),
+      weight_kg: validateProfileField('weight_kg', form.weight_kg),
+    };
+
     setErrors(newErrors);
     return Object.values(newErrors).every(e => e === '');
-  }, [form.age]);
+  }, [form.name, form.age, form.height_cm, form.weight_kg]);
 
   // Check if form has any errors
   const hasErrors = Object.values(errors).some(e => e !== '');
@@ -376,10 +379,10 @@ function EditProfileModal({ onClose }) {
         <form onSubmit={handleSave}>
           <div className="modal-body">
             {[
-              { key: 'name', label: 'Name', type: 'text' },
+              { key: 'name', label: 'Name', type: 'text', error: errors.name },
               { key: 'age', label: 'Age', type: 'number', error: errors.age },
-              { key: 'height_cm', label: 'Height (cm)', type: 'number' },
-              { key: 'weight_kg', label: 'Weight (kg)', type: 'number' },
+              { key: 'height_cm', label: 'Height (cm)', type: 'number', error: errors.height_cm },
+              { key: 'weight_kg', label: 'Weight (kg)', type: 'number', error: errors.weight_kg },
             ].map(f => (
               <div className="form-group" key={f.key}>
                 <label className="form-label">{f.label}</label>
@@ -387,15 +390,14 @@ function EditProfileModal({ onClose }) {
                   className={`form-input${f.error ? ' form-input-error' : ''}`}
                   type={f.type}
                   value={form[f.key]}
+                  min={PROFILE_LIMITS[f.key]?.min}
+                  max={PROFILE_LIMITS[f.key]?.max}
                   onChange={e => {
                     setForm(p => ({ ...p, [f.key]: e.target.value }));
-                    if (f.key === 'age') {
-                      const ageValue = Number(e.target.value);
-                      if (e.target.value !== '' && (isNaN(ageValue) || ageValue < 18)) {
-                        setErrors(prev => ({ ...prev, age: 'Age must be 18 or above' }));
-                      } else {
-                        setErrors(prev => ({ ...prev, age: '' }));
-                      }
+                    if (PROFILE_LIMITS[f.key]) {
+                      setErrors(prev => ({ ...prev, [f.key]: validateProfileField(f.key, e.target.value) }));
+                    } else if (f.key === 'name') {
+                      setErrors(prev => ({ ...prev, name: e.target.value.trim() ? '' : 'Name is required' }));
                     }
                   }}
                   onBlur={validateForm}

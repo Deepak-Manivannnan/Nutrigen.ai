@@ -75,6 +75,44 @@ class AllergyReport(BaseModel):
     investigated_items: List[InvestigatedItem] = Field(default_factory=list)
     summary: str = ""
 
+class RepairItem(BaseModel):
+    """One piece of a draft plan the Supervisor wants the Planner to redo."""
+    day_number: int
+    # None means "every unlocked meal of that day" (a calorie problem is about
+    # the whole day); a meal type means exactly that one meal.
+    meal_type: Optional[str] = None
+    reasons: List[str] = Field(default_factory=list)
+
+class RepairTargets(BaseModel):
+    """The Supervisor's instruction to the Planner for a retry round.
+
+    Built by the Supervisor from the Nutrition and Allergy reports and handed
+    to the Planner as plain data - the Planner never sees those reports.
+    """
+    items: List[RepairItem] = Field(default_factory=list)
+    # Flagged slots that cannot be redone because the user locked them.
+    locked_skipped: List[str] = Field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.items
+
+    def whole_days(self) -> List[RepairItem]:
+        return [i for i in self.items if i.meal_type is None]
+
+    def single_meals(self) -> List[RepairItem]:
+        return [i for i in self.items if i.meal_type is not None]
+
+    def describe(self) -> str:
+        parts = []
+        days = sorted(i.day_number for i in self.whole_days())
+        if days:
+            parts.append("day(s) " + ", ".join(str(d) for d in days))
+        meals = sorted((i.day_number, i.meal_type) for i in self.single_meals())
+        if meals:
+            parts.append("meal(s) " + ", ".join(f"day {d} {m}" for d, m in meals))
+        return "; ".join(parts) if parts else "nothing"
+
 class GroceryItem(BaseModel):
     name: str
     category: str = "produce"

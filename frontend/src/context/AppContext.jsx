@@ -1,9 +1,11 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { USER_KEY, inflightKey, readSession, writeSession } from '../utils/sessionStore';
+import { USER_KEY, inflightKey, readSession, writeSession, readPersistent, writePersistent } from '../utils/sessionStore';
 import {
   fetchCurrentProfile,
   hasCompletedProfile,
   setAuthToken,
+  setRefreshToken,
+  revokeSessionOnServer,
   updateProfile as updateProfileApi,
   createProfile as createProfileApi,
   fetchPlans as fetchPlansApi,
@@ -24,20 +26,25 @@ const GROCERY_PATH = '/app/grocery';
 
 function getStoredUser() {
   try {
-    const raw = readSession(USER_KEY);
+    const raw = readPersistent(USER_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
 
-// The cached identity is session-scoped for the same reason the token is:
-// it is what the app renders from before the profile round-trips, so a copy
-// outliving the tab would put the next visitor straight into the previous
-// person's app. Nothing else here changes - messages and the pending
-// workflow stay in localStorage, keyed per user, behind the session check.
+// The cached identity is what the app renders from before the profile
+// round-trips. It lives in persistent storage together with the tokens, so
+// reopening the app after closing the tab signs you straight back in; Sign out
+// removes it. The tokens never go in here - they have their own keys - so
+// they are stripped from the copy that is cached.
 function cacheStoredUser(user) {
-  writeSession(USER_KEY, user ? JSON.stringify(user) : null);
+  if (!user) {
+    writePersistent(USER_KEY, null);
+    return;
+  }
+  const { token, refresh_token, ...identity } = user; // eslint-disable-line no-unused-vars
+  writePersistent(USER_KEY, JSON.stringify(identity));
 }
 
 function loadPendingWorkflow(userId) {
@@ -293,6 +300,7 @@ export function AppProvider({ children }) {
       // The backend now issues a signed session token; keep it alongside the
       // cached user so authenticated requests can be sent after a reload.
       if (userData.token) setAuthToken(userData.token);
+      if (userData.refresh_token) setRefreshToken(userData.refresh_token);
       setUser(userData);
       cacheStoredUser(userData);
       setPendingWorkflowState(loadPendingWorkflow(userData.id));
@@ -310,6 +318,8 @@ export function AppProvider({ children }) {
   }, [loadUserData]);
 
   const signOut = useCallback(() => {
+    // Cancel the refresh key on the server first (it is cleared locally below).
+    revokeSessionOnServer();
     if (user?.id) savePendingWorkflow(user.id, null);
     if (user?.id) saveMessages(user.id, null);
     if (user?.id) saveInflight(user.id, null);

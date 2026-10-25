@@ -1,7 +1,7 @@
 import operator
 from typing import Annotated, List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
-from backend.app.schemas.domain import MealPlan, NutritionReport, AllergyReport, GroceryList
+from backend.app.schemas.domain import MealPlan, NutritionReport, AllergyReport, GroceryList, RepairTargets
 from backend.app.schemas.messages import AgentMessage
 
 IntentType = Literal[
@@ -52,6 +52,10 @@ class PlanState(BaseModel):
     nutrition_report: Optional[NutritionReport] = None
     allergy_report: Optional[AllergyReport] = None
     grocery_list: Optional[GroceryList] = None
+
+    # Set by the Supervisor when it sends the plan back for a retry: exactly
+    # which meals/days the Planner should redo. Cleared once the Planner has used it.
+    repair_targets: Optional[RepairTargets] = None
     
     round: int = 1
     max_rounds: int = 3

@@ -323,6 +323,11 @@ export default function ChatPage() {
       const displayMsg = rawMsg && !rawMsg.includes('Failed to fetch')
         ? rawMsg
         : "I'm having trouble connecting to the server. Please try again in a moment.";
+      // An error the server itself reported is final for this run, so drop the
+      // waiting note: otherwise a later reload would collect the same error
+      // from the inbox and show it a second time. A dropped connection is
+      // different (the server may still finish), so the note stays for that.
+      if (rawMsg && !rawMsg.includes('Failed to fetch')) saveInflight(uid, null);
       if (rawMsg.toLowerCase().includes('does not exist')) {
         loadUserData(null);
       }

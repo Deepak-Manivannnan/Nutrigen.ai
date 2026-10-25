@@ -91,6 +91,21 @@ def create_meal_planner_graph(
         if state.system_message and state.round > 1:
             feedback_list = state.system_message.splitlines()
 
+        # On a retry round the Supervisor has already worked out, from the two
+        # reviews, exactly which meals/days to redo and put that instruction on
+        # the state. The Planner redoes only those (see repair_plan); if there
+        # is no specific instruction, the whole plan is regenerated as before.
+        repair_targets = None
+        if (
+            state.intent != "edit_meal"
+            and state.round > 1
+            and state.current_plan
+            and state.repair_targets is not None
+            and not state.repair_targets.is_empty
+            and len(state.current_plan.days) == (state.days or len(state.current_plan.days))
+        ):
+            repair_targets = state.repair_targets
+
         if state.intent == "edit_meal" and state.current_plan and state.edit_details:
             day_num = getattr(state.edit_details, "day", None) or 1
             m_type = getattr(state.edit_details, "meal_type", None) or "meal"
@@ -110,29 +125,64 @@ def create_meal_planner_graph(
                 exclusions=(state.intent_data.requested_exclusions if state.intent_data else None)
             )
         else:
-            msg_start = await sup_agent.log_step(
-                state=state,
-                from_agent="supervisor",
-                to_agent="planner_agent",
-                msg_type="task",
-                content=f"Planner Agent starting meal schedule generation for {state.days} days ({state.calorie_target:.0f} kcal/day target)...",
-                payload={"task": "plan_meals", "days": state.days, "calorie_target": state.calorie_target}
-            )
+            plan: Optional[MealPlan] = None
 
-            plan: MealPlan = await p_agent.generate_plan(
-                days=state.days or 7,
-                calorie_target=state.calorie_target or 2000.0,
-                user_profile=state.user_profile,
-                fixed_meals=state.fixed_meals,
-                feedback=feedback_list,
-                version=state.plan_version,
-                task_id=state.task_id,
-                current_plan=state.current_plan,
-                plan_name=getattr(state, "plan_name", None),
-                cuisine=getattr(state, "cuisine", None),
-                exclusions=state.intent_data.requested_exclusions if state.intent_data else None,
-                include_snack=getattr(state, "include_snack", False) or (getattr(state.intent_data, "include_snack", False) if state.intent_data else False)
-            )
+            if repair_targets is not None:
+                # Retry round: only the meals/days the reviewers flagged are
+                # redone; everything that passed is carried over unchanged.
+                msg_start = await sup_agent.log_step(
+                    state=state,
+                    from_agent="supervisor",
+                    to_agent="planner_agent",
+                    msg_type="task",
+                    content=f"Planner Agent repairing only the flagged parts ({repair_targets.describe()}); all other meals stay unchanged...",
+                    payload={
+                        "task": "plan_meals",  # same task name as a full pass, so the progress bar treats it the same
+                        "repair": True,
+                        "days": sorted(i.day_number for i in repair_targets.whole_days()),
+                        "meals": [f"day {i.day_number} {i.meal_type}" for i in repair_targets.single_meals()],
+                    }
+                )
+                try:
+                    plan = await p_agent.repair_plan(
+                        current_plan=state.current_plan,
+                        targets=repair_targets,
+                        calorie_target=state.calorie_target or state.current_plan.target_calories,
+                        user_profile=state.user_profile,
+                        version=state.plan_version,
+                        task_id=state.task_id,
+                        exclusions=state.intent_data.requested_exclusions if state.intent_data else None,
+                    )
+                except Exception as repair_err:
+                    # Never leave the user without a plan because a repair
+                    # failed: fall back to writing the whole plan again.
+                    logger.warning(f"Targeted repair failed ({repair_err}); regenerating the whole plan instead.")
+                    plan = None
+
+            if plan is None:
+                msg_start = await sup_agent.log_step(
+                    state=state,
+                    from_agent="supervisor",
+                    to_agent="planner_agent",
+                    msg_type="task",
+                    content=f"Planner Agent starting meal schedule generation for {state.days} days ({state.calorie_target:.0f} kcal/day target)...",
+                    payload={"task": "plan_meals", "days": state.days, "calorie_target": state.calorie_target}
+                )
+
+                plan = await p_agent.generate_plan(
+                    days=state.days or 7,
+                    calorie_target=state.calorie_target or 2000.0,
+                    user_profile=state.user_profile,
+                    fixed_meals=state.fixed_meals,
+                    feedback=feedback_list,
+                    version=state.plan_version,
+                    task_id=state.task_id,
+                    current_plan=state.current_plan,
+                    plan_name=getattr(state, "plan_name", None),
+                    cuisine=getattr(state, "cuisine", None),
+                    exclusions=state.intent_data.requested_exclusions if state.intent_data else None,
+                    include_snack=getattr(state, "include_snack", False) or (getattr(state.intent_data, "include_snack", False) if state.intent_data else False)
+                )
 
 
         msg = await sup_agent.log_step(
@@ -151,6 +201,8 @@ def create_meal_planner_graph(
         return {
             "current_plan": plan,
             "status": "reviewing",
+            # The instruction has been carried out; the next retry (if any) gets a fresh one.
+            "repair_targets": None,
             "trace": [msg_start, msg]
         }
 
@@ -286,12 +338,18 @@ def create_meal_planner_graph(
                 to_agent="planner_agent",
                 msg_type="feedback",
                 content=f"Supervisor requesting Planner revision (Round {state.round + 1}): {decision.reason}",
-                payload={"feedback": decision.feedback, "next_round": state.round + 1}
+                payload={
+                    "feedback": decision.feedback,
+                    "next_round": state.round + 1,
+                    "repair": decision.repair.describe() if decision.repair else None,
+                }
             )
             return {
                 "round": state.round + 1,
                 "plan_version": state.plan_version + 1,
                 "system_message": feedback_str,
+                # The Supervisor's instruction to the Planner: redo exactly these.
+                "repair_targets": decision.repair,
                 "trace": [msg]
             }
 

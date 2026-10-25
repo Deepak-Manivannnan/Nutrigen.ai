@@ -21,10 +21,9 @@ services:
     buildCommand: pip install -r backend/requirements.txt
     # --host 0.0.0.0 is required; without it Render cannot reach the service.
     startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
-    # /docs is static Swagger UI and returns 200 regardless of database state.
-    # Do NOT point this at /api/profile/me: it 404s until a user exists, and a
-    # fresh deployment has an empty database, so the check would never pass.
-    healthCheckPath: /docs
+    # /docs is switched off in production (it lists every endpoint), so the
+    # health check uses /health, which answers without touching the database.
+    healthCheckPath: /health
     envVars:
       - key: APP_ENV
         value: production
@@ -37,6 +36,11 @@ services:
       # HMAC key for session tokens. Set this in the dashboard; without it the
       # built-in fallback is used and anyone could forge a valid token.
       - key: AUTH_TOKEN_SECRET
+        sync: false
+      # The website(s) allowed to call this API, e.g.
+      # https://nutrigen-frontend.onrender.com (no trailing slash, comma
+      # separated for several). Without it the browser blocks the frontend.
+      - key: FRONTEND_ORIGINS
         sync: false
 
   - type: web

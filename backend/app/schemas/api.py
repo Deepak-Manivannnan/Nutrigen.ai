@@ -1,13 +1,24 @@
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import List, Optional, Literal, Dict, Any
 from datetime import datetime
+from backend.app.config import settings
+
+# Sensible limits for body measurements, shared by creating and updating a
+# profile. The frontend mirrors these in src/utils/profileLimits.js - change
+# both together. Age follows the app-wide adult minimum.
+AGE_MIN = settings.min_age_allowed
+AGE_MAX = 120
+HEIGHT_MIN_CM = 100
+HEIGHT_MAX_CM = 250
+WEIGHT_MIN_KG = 30
+WEIGHT_MAX_KG = 300
 
 class ProfileCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    age: int = Field(..., ge=1, le=120)
+    age: int = Field(..., ge=AGE_MIN, le=AGE_MAX)
     sex: Literal["male", "female", "other"]
-    height_cm: float = Field(..., ge=50, le=250)
-    weight_kg: float = Field(..., ge=20, le=300)
+    height_cm: float = Field(..., ge=HEIGHT_MIN_CM, le=HEIGHT_MAX_CM)
+    weight_kg: float = Field(..., ge=WEIGHT_MIN_KG, le=WEIGHT_MAX_KG)
     activity_level: Literal["low", "medium", "high"]
     goal: Optional[Literal["lose", "maintain", "gain"]] = "maintain"
     diet_type: Literal["veg", "non-veg", "vegan"]
@@ -23,11 +34,11 @@ class ProfileCreate(BaseModel):
         return []
 
 class ProfileUpdate(BaseModel):
-    name: Optional[str] = None
-    age: Optional[int] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    age: Optional[int] = Field(None, ge=AGE_MIN, le=AGE_MAX)
     sex: Optional[Literal["male", "female", "other"]] = None
-    height_cm: Optional[float] = None
-    weight_kg: Optional[float] = None
+    height_cm: Optional[float] = Field(None, ge=HEIGHT_MIN_CM, le=HEIGHT_MAX_CM)
+    weight_kg: Optional[float] = Field(None, ge=WEIGHT_MIN_KG, le=WEIGHT_MAX_KG)
     activity_level: Optional[Literal["low", "medium", "high"]] = None
     goal: Optional[Literal["lose", "maintain", "gain"]] = None
     diet_type: Optional[Literal["veg", "non-veg", "vegan"]] = None

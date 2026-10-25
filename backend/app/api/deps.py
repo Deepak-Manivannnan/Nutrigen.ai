@@ -4,6 +4,7 @@ from backend.app.db.session import get_db
 from backend.app.db.repositories.users import UserRepository
 from backend.app.db.repositories.plans import PlanRepository
 from backend.app.db.repositories.trace import TraceRepository
+from backend.app.db.repositories.refresh_tokens import RefreshTokenRepository
 from backend.app.api.security import decode_token
 
 async def get_user_repository(session: AsyncSession = Depends(get_db)) -> UserRepository:
@@ -14,6 +15,9 @@ async def get_plan_repository(session: AsyncSession = Depends(get_db)) -> PlanRe
 
 async def get_trace_repository(session: AsyncSession = Depends(get_db)) -> TraceRepository:
     return TraceRepository(session)
+
+async def get_refresh_token_repository(session: AsyncSession = Depends(get_db)) -> RefreshTokenRepository:
+    return RefreshTokenRepository(session)
 
 
 def get_authenticated_user_id(authorization: str = Header(default="")) -> int:

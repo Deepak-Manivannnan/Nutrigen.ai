@@ -1,9 +1,10 @@
 import os
 import re
+import asyncio
 from typing import Dict, Any, Optional, List
 from backend.app.agents.base import BaseAgent
 from backend.app.agents.planner.tools import PLANNER_TOOLS
-from backend.app.schemas.domain import MealPlan, Meal, DayPlan, Ingredient
+from backend.app.schemas.domain import MealPlan, Meal, DayPlan, Ingredient, RepairTargets
 from backend.app.llm.client import LLMClient
 from backend.app.tools.diet_rules import expand_exclusions
 
@@ -229,6 +230,227 @@ class PlannerAgent(BaseAgent[MealPlan]):
         await normalize_single_person_plan(meal_plan, calorie_target)
 
         return meal_plan
+
+    # ------------------------------------------------------------------
+    # Targeted repair (used by the Supervisor's retry rounds)
+    #
+    # generate_plan() rewrites the whole plan. After a review that flagged only
+    # some meals or days that is wasteful and risky: every retry could change
+    # meals that had already passed. repair_plan() starts from the previous
+    # draft and only asks the AI for the flagged parts; every other meal is
+    # copied across untouched, so nothing that passed can regress.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _slot_shares(four_meals: bool) -> Dict[str, float]:
+        # Same split the portion normaliser uses, so a repaired meal lands where
+        # the audit expects it.
+        if four_meals:
+            return {"breakfast": 0.25, "lunch": 0.35, "dinner": 0.25, "snack": 0.15}
+        return {"breakfast": 0.30, "lunch": 0.40, "dinner": 0.30, "snack": 0.10}
+
+    def _constraint_lines(self, plan_diet: str, user_profile: Dict[str, Any], exclusions: Optional[List[str]]) -> str:
+        lines = [f"- Diet type: {plan_diet}."]
+        if plan_diet in ("veg", "vegetarian"):
+            lines.append("- 100% vegetarian: no meat, poultry, fish, seafood, gelatin or eggs.")
+        elif plan_diet == "vegan":
+            lines.append("- 100% vegan: no animal products at all (no meat, fish, eggs, dairy, honey).")
+        allergies = [str(a) for a in user_profile.get("allergies", [])]
+        if allergies:
+            lines.append(f"- ALLERGIES (absolute, zero tolerance, including hidden sources): {', '.join(allergies)}.")
+        excluded = expand_exclusions(exclusions or [])
+        if excluded:
+            lines.append(f"- Also exclude completely: {', '.join(excluded)}.")
+        dislikes = [str(d) for d in user_profile.get("dislikes", [])]
+        if dislikes:
+            lines.append(f"- Avoid these disliked foods: {', '.join(dislikes)}.")
+        return "\n".join(lines)
+
+    async def _meal_problems(
+        self, meal: Meal, plan_diet: str, user_profile: Dict[str, Any], exclusions: Optional[List[str]]
+    ) -> List[str]:
+        """Deterministic check of one freshly written meal (no AI)."""
+        from backend.app.tools.allergens import check_allergens
+        from backend.app.tools.diet_rules import check_diet_compliance
+
+        names = [i.name for i in meal.ingredients] + [meal.recipe_name]
+        banned = [str(a) for a in user_profile.get("allergies", [])] + expand_exclusions(exclusions or [])
+        problems: List[str] = []
+        for v in await check_allergens(banned, names):
+            problems.append(f"'{v['ingredient']}' is not allowed ({v['allergen']})")
+        for dv in check_diet_compliance(plan_diet, names):
+            problems.append(f"'{dv['ingredient']}' breaks the {plan_diet} diet")
+        return problems
+
+    async def _scale_meal_to_calories(self, meal: Meal, target_cal: float) -> None:
+        """Scale one meal's portions so its tool-computed calories hit the target."""
+        from backend.app.tools.nutrition import calculator
+        from backend.app.tools.diet_rules import is_liquid_ingredient
+
+        nut = await calculator.calculate_meal_nutrition(meal)
+        current = nut["calories"]
+        if current > 0 and target_cal > 0 and abs(current - target_cal) > 0.05 * target_cal:
+            scale = max(0.2, min(3.5, target_cal / current))
+            for ing in meal.ingredients:
+                floor = 5.0 if is_liquid_ingredient(ing.name) else 10.0
+                ing.amount_grams = max(floor, min(280.0, round(ing.amount_grams * scale, 1)))
+            nut = await calculator.calculate_meal_nutrition(meal)
+        meal.calories = nut["calories"]
+        meal.protein_g = nut["protein_g"]
+        meal.carbs_g = nut["carbs_g"]
+        meal.fat_g = nut["fat_g"]
+
+    async def _replacement_meal(
+        self,
+        *,
+        day_number: int,
+        meal_type: str,
+        target_cal: float,
+        reasons: List[str],
+        plan_diet: str,
+        user_profile: Dict[str, Any],
+        exclusions: Optional[List[str]],
+        avoid_names: List[str],
+    ) -> Meal:
+        """Ask the AI for ONE replacement meal; retry once if it breaks a rule."""
+        constraints = self._constraint_lines(plan_diet, user_profile, exclusions)
+        rejected_note = ""
+        meal: Optional[Meal] = None
+        for _attempt in range(2):
+            prompt = (
+                f"You are repairing ONE meal of an existing {plan_diet} meal plan. "
+                f"Write a replacement {meal_type} for Day {day_number}.\n"
+                f"Why the previous {meal_type} was rejected: {' | '.join(reasons)}\n"
+                f"Hard rules:\n{constraints}\n"
+                f"- Target about {int(target_cal)} kcal (±5%) for this single-person meal.\n"
+                f"- Ingredients in grams (amount_grams), realistic single-person portions.\n"
+                f"- 3 to 4 numbered preparation steps in `instructions`.\n"
+                f"- Do NOT reuse any of these dishes, they are already in the plan: {', '.join(avoid_names) or 'none'}.\n"
+                f"- Set meal_type to \"{meal_type}\".{rejected_note}"
+            )
+            try:
+                candidate: Meal = await self.llm.generate_structured(prompt=prompt, response_schema=Meal)
+            except Exception as e:
+                logger.warning(f"[PlannerAgent] Replacement meal call failed (day {day_number} {meal_type}): {e}")
+                continue
+            candidate.meal_type = meal_type
+            candidate.diet_type = plan_diet
+            candidate.locked = False
+            candidate.source = "ai_generated"
+            await self._scale_meal_to_calories(candidate, target_cal)
+            meal = candidate
+            problems = await self._meal_problems(candidate, plan_diet, user_profile, exclusions)
+            if not problems:
+                return candidate
+            rejected_note = (
+                f"\n- Your previous attempt was rejected: {'; '.join(problems)}. "
+                f"Choose completely different ingredients."
+            )
+        if meal is None:
+            raise RuntimeError(f"Could not write a replacement {meal_type} for day {day_number}.")
+        # Still breaking a rule after two tries: hand it on. The diet/allergy
+        # clean-up below and the next review round deal with it.
+        return meal
+
+    async def repair_plan(
+        self,
+        current_plan: MealPlan,
+        targets: RepairTargets,
+        calorie_target: float,
+        user_profile: Dict[str, Any],
+        version: int = 1,
+        task_id: Optional[str] = None,
+        exclusions: Optional[List[str]] = None,
+    ) -> MealPlan:
+        """Redo only what the Supervisor flagged (a RepairTargets instruction).
+
+        The Planner receives plain "redo these slots/days, here is why" data from
+        the Supervisor and never sees the Nutrition or Allergy reports.
+
+        - A flagged meal is replaced by one new meal; its calories stay what the
+          old meal's were, so the day's total is unchanged.
+        - A flagged day has every unlocked meal replaced and the day is then
+          portion-balanced to the calorie target.
+        - Every other meal is the previous draft's meal, copied across.
+        """
+        from backend.app.tools.nutrition import calculator
+
+        plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
+        repaired = current_plan.model_copy(deep=True)
+        day_by_number = {d.day_number: d for d in repaired.days}
+
+        # (day_number, index in day.meals, meal_type, calorie target, reasons)
+        jobs: List[tuple] = []
+        whole_days: List[int] = []
+
+        for item in targets.whole_days():
+            day_no, reasons = item.day_number, item.reasons
+            day = day_by_number[day_no]
+            shares = self._slot_shares(len(day.meals) >= 4)
+            unlocked = [(i, m) for i, m in enumerate(day.meals) if not m.locked]
+            share_sum = sum(shares.get(m.meal_type.lower(), 0.3) for _, m in unlocked) or 1.0
+            budget = calorie_target - sum(m.calories for m in day.meals if m.locked)
+            if budget <= 0:
+                budget = calorie_target * share_sum
+            for i, m in unlocked:
+                cal = budget * shares.get(m.meal_type.lower(), 0.3) / share_sum
+                jobs.append((day_no, i, m.meal_type.lower(), cal, reasons))
+            whole_days.append(day_no)
+
+        for item in targets.single_meals():
+            day_no, meal_type, reasons = item.day_number, item.meal_type.lower(), item.reasons
+            if day_no in whole_days:
+                continue  # that whole day is already being redone
+            day = day_by_number[day_no]
+            idx, old = next((i, m) for i, m in enumerate(day.meals) if m.meal_type.lower() == meal_type)
+            shares = self._slot_shares(len(day.meals) >= 4)
+            cal = old.calories if old.calories and old.calories > 0 else calorie_target * shares.get(meal_type, 0.3)
+            jobs.append((day_no, idx, meal_type, cal, reasons))
+
+        replacing = {(d, i) for d, i, *_ in jobs}
+        kept_names = sorted({
+            m.recipe_name
+            for d in repaired.days
+            for i, m in enumerate(d.meals)
+            if (d.day_number, i) not in replacing and m.recipe_name
+        })
+
+        new_meals = await asyncio.gather(*[
+            self._replacement_meal(
+                day_number=day_no, meal_type=meal_type, target_cal=cal, reasons=reasons,
+                plan_diet=plan_diet, user_profile=user_profile, exclusions=exclusions,
+                avoid_names=kept_names,
+            )
+            for day_no, _i, meal_type, cal, reasons in jobs
+        ])
+        for (day_no, idx, *_rest), new_meal in zip(jobs, new_meals):
+            day_by_number[day_no].meals[idx] = new_meal
+
+        # A flagged day is re-balanced as a unit (only that day, on its own).
+        for day_no in whole_days:
+            position = next(i for i, d in enumerate(repaired.days) if d.day_number == day_no)
+            single = MealPlan(days=[repaired.days[position]], target_calories=calorie_target, diet_type=plan_diet)
+            await calculator.normalize_single_person_plan(single, calorie_target)
+            repaired.days[position] = single.days[0]
+
+        repaired.target_calories = calorie_target
+        repaired.version = version
+        repaired.diet_type = plan_diet
+
+        # Same deterministic diet/allergy clean-up generate_plan applies. It only
+        # touches a meal that actually breaks a rule.
+        self._sanitize_diet_compliance(repaired, plan_diet, calorie_target, user_profile, exclusions=exclusions)
+
+        for day_no in {d for d, *_ in jobs}:
+            day = next(d for d in repaired.days if d.day_number == day_no)
+            day.total_calories = round(sum(m.calories for m in day.meals), 1)
+            day.total_protein_g = round(sum(m.protein_g for m in day.meals), 1)
+            day.total_carbs_g = round(sum(m.carbs_g for m in day.meals), 1)
+            day.total_fat_g = round(sum(m.fat_g for m in day.meals), 1)
+        if repaired.days:
+            repaired.average_daily_calories = round(
+                sum(d.total_calories for d in repaired.days) / len(repaired.days), 1
+            )
+        return repaired
 
     async def modify_meal(
         self,

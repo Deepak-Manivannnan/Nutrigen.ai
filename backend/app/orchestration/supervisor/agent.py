@@ -73,7 +73,8 @@ class SupervisorAgent:
             current_round=state.round,
             nutrition_report=state.nutrition_report,
             allergy_report=state.allergy_report,
-            max_rounds=state.max_rounds
+            max_rounds=state.max_rounds,
+            plan=state.current_plan,
         )
 
     async def generate_explanation(

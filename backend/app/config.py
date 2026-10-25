@@ -4,7 +4,23 @@ from typing import Optional
 class Settings(BaseSettings):
     app_name: str = "NutriGen.ai"
     app_env: str = "development"
-    debug: bool = True
+    # Verbose DEBUG logging. Off by default; switch on in your local .env only
+    # (DEBUG=true). Debug logs can contain user messages and internal details.
+    debug: bool = False
+
+    # Websites allowed to call this API from a browser, comma separated, e.g.
+    # FRONTEND_ORIGINS=https://nutrigen-frontend.onrender.com
+    # Left empty: local development allows http://localhost / 127.0.0.1 on any
+    # port, while production allows NO website until this is set.
+    frontend_origins: str = ""
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
+
+    @property
+    def cors_origins(self) -> list:
+        return [o.strip().rstrip("/") for o in self.frontend_origins.split(",") if o.strip()]
     
     # Database
     # No default on purpose: the real connection string (including username and
@@ -41,6 +57,10 @@ class Settings(BaseSettings):
     # deployment environment; the fallback only exists so a fresh clone runs,
     # and it means anyone could forge tokens if it is left in place.
     auth_token_secret: str = ""
+    # How long a "stay signed in" key lasts without being used. Every use hands
+    # out a fresh key, so someone who keeps using the app is never signed out;
+    # someone who stays away this long has to sign in again.
+    refresh_token_ttl_days: int = 30
     default_calorie_buffer_pct: float = 0.05  # ±5%
     min_calories_adult: int = 1200
     max_calories_adult: int = 4000

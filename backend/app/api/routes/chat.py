@@ -7,7 +7,9 @@ from backend.app.db.repositories.plans import PlanRepository
 from backend.app.api.deps import get_user_repository, get_authenticated_user_id, get_plan_repository
 from backend.app.orchestration.runner import run_meal_planner
 from backend.app.observability.logging import get_logger
+from backend.app.llm.client import LLMUnavailableError
 import time
+import uuid
 
 logger = get_logger("api.chat")
 router = APIRouter(prefix="/chat", tags=["Chat & Agents"])
@@ -23,7 +25,9 @@ _INBOX_TTL_S = 30 * 60
 _INBOX_MAX_ENTRIES = 200
 
 
-def _inbox_store(task_id: str, response: ChatResponse) -> None:
+def _inbox_store(task_id: str, response: ChatResponse, user_id: int) -> None:
+    # Entries are keyed by (user, task) so one account can neither read nor
+    # overwrite a reply that belongs to another account, even with the same id.
     now = time.time()
     for key in [k for k, v in _RESPONSE_INBOX.items()
                 if now - v.get("completed_at", 0) > _INBOX_TTL_S]:
@@ -31,20 +35,49 @@ def _inbox_store(task_id: str, response: ChatResponse) -> None:
     if len(_RESPONSE_INBOX) >= _INBOX_MAX_ENTRIES:
         oldest = min(_RESPONSE_INBOX, key=lambda k: _RESPONSE_INBOX[k].get("completed_at", 0))
         _RESPONSE_INBOX.pop(oldest, None)
-    _RESPONSE_INBOX[task_id] = {"completed_at": now, "response": response.model_dump()}
+    _RESPONSE_INBOX[(user_id, task_id)] = {"completed_at": now, "response": response.model_dump()}
+
+
+def _inbox_store_failure(payload: ChatRequest, user_id: int, message: str) -> None:
+    """File a failed run in the inbox too.
+
+    The browser that sent the request may already be gone (page reloaded), so
+    the error response has nowhere to land. Filing it here lets the reloaded
+    page collect the error right away instead of waiting out its timeout. The
+    caller's pending workflow is handed back unchanged so a crash does not
+    wipe a half-finished conversation.
+    """
+    if not payload.task_id:
+        return
+    _inbox_store(
+        payload.task_id,
+        ChatResponse(
+            response=message,
+            task_id=payload.task_id,
+            status="failed",
+            pending_workflow=payload.pending_workflow,
+        ),
+        user_id,
+    )
 
 
 @router.get("/result/{task_id}")
-async def chat_result(task_id: str):
+async def chat_result(
+    task_id: str,
+    caller_id: int = Depends(get_authenticated_user_id),
+):
     """Fetch a finished chat response by task_id (delivery after reload).
 
+    Requires sign-in and only returns replies that belong to the caller.
     200 with the full ChatResponse envelope when the run completed,
-    404 when unknown, still running, or expired.
+    404 when unknown, still running, expired, or owned by someone else
+    (the same answer in every case, so nothing is revealed).
     """
-    entry = _RESPONSE_INBOX.get(task_id)
+    key = (caller_id, task_id)
+    entry = _RESPONSE_INBOX.get(key)
     if not entry or (time.time() - entry.get("completed_at", 0) > _INBOX_TTL_S):
         if entry:
-            _RESPONSE_INBOX.pop(task_id, None)
+            _RESPONSE_INBOX.pop(key, None)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No completed response for this task yet"
@@ -101,11 +134,27 @@ async def chat_interaction(
             pending_workflow=payload.pending_workflow,
             just_created_plan_id=payload.just_created_plan_id,
         )
-    except Exception as e:
-        logger.error(f"Error during agent execution: {e}")
+    except LLMUnavailableError as e:
+        # The AI service is down or out of quota. Say so plainly; the exact
+        # error stays in the server log.
+        logger.warning(f"AI service unavailable during chat: {e}")
+        message = "Our AI service is busy right now. Please try again in a few minutes."
+        _inbox_store_failure(payload, caller_id, message)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=message
+        )
+    except Exception:
+        # Never send the raw exception text to the user: it can contain SQL,
+        # file paths or library internals. Log it in full on the server and
+        # give the user a short reference to quote instead.
+        error_ref = uuid.uuid4().hex[:8]
+        logger.exception(f"Error during agent execution (ref {error_ref})")
+        message = f"Something went wrong while handling your request. Please try again. (ref: {error_ref})"
+        _inbox_store_failure(payload, caller_id, message)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error executing agent workflow: {str(e)}"
+            detail=message
         )
 
     # Find persisted plan ID if created
@@ -134,6 +183,6 @@ async def chat_interaction(
     # File the finished response in the delivery inbox under the client's
     # task_id so a reloaded client can still collect it.
     if payload.task_id:
-        _inbox_store(payload.task_id, chat_response)
+        _inbox_store(payload.task_id, chat_response, caller_id)
     return chat_response
 

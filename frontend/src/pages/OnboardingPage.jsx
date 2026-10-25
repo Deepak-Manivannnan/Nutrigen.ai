@@ -4,6 +4,7 @@ import { Logo } from '../components/Logo';
 import TagInput from '../components/TagInput';
 import { ChevronRight, ChevronLeft, Check, AlertCircle } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { validateProfileField, PROFILE_LIMITS } from '../utils/profileLimits';
 import {
   COMMON_ALLERGENS,
   isPredefinedAllergy as isCategoryAllergy,
@@ -63,21 +64,34 @@ export default function OnboardingPage() {
   const [step, setStep] = useState(1);
   const [form, setForm] = useState(INITIAL_FORM);
   const [ageError, setAgeError] = useState('');
+  const [heightError, setHeightError] = useState('');
+  const [weightError, setWeightError] = useState('');
   // True while the profile is being written to the server, so the last button
   // cannot be pressed twice and does not look dead on a slow connection.
   const [saving, setSaving] = useState(false);
 
   function set(key, val) { setForm(p => ({ ...p, [key]: val })); }
 
+  // Checks age, height and weight against the allowed ranges, shows any
+  // problems next to the fields, and says whether everything is acceptable.
+  function checkBody() {
+    const errs = {
+      age: validateProfileField('age', form.age),
+      height_cm: validateProfileField('height_cm', form.height_cm),
+      weight_kg: validateProfileField('weight_kg', form.weight_kg),
+    };
+    setAgeError(errs.age);
+    setHeightError(errs.height_cm);
+    setWeightError(errs.weight_kg);
+    return !Object.values(errs).some(Boolean);
+  }
+
   function handleNext() {
     if (step === 1) {
-      const ageVal = Number(form.age);
-      // Allow proceeding to next step if all basic fields are filled
-      // Age validation happens in real-time and at form submission
       if (!form.age || !form.sex || !form.height_cm || !form.weight_kg) {
         return;
       }
-      setAgeError('');
+      if (!checkBody()) return;
     }
     if (step < 5) setStep(s => s + 1);
   }
@@ -87,18 +101,19 @@ export default function OnboardingPage() {
 
   function canProceed() {
     if (step === 1) {
-      // Next button enabled when all 4 basic fields have any input
-      // Age validation happens separately in real-time and at form submission
-      return form.age && form.sex && form.height_cm && form.weight_kg;
+      // Next is enabled only when all four basics are filled in and age,
+      // height and weight are inside the allowed ranges.
+      return Boolean(form.age && form.sex && form.height_cm && form.weight_kg)
+        && !validateProfileField('age', form.age)
+        && !validateProfileField('height_cm', form.height_cm)
+        && !validateProfileField('weight_kg', form.weight_kg);
     }
     return true;
   }
 
   async function handleFinish() {
-    // Validate age at form submission
-    const ageVal = Number(form.age);
-    if (!form.age || isNaN(ageVal) || ageVal < 18) {
-      setAgeError('Age should be 18 or above.');
+    // Last line of defence: check the numbers again before saving.
+    if (!form.age || !checkBody()) {
       return;
     }
 
@@ -186,14 +201,10 @@ export default function OnboardingPage() {
                             set('age', e.target.value); 
                             if (ageError) setAgeError(''); 
                           }}
-                          onBlur={e => {
-                            const ageVal = Number(e.target.value);
-                            if (e.target.value && (isNaN(ageVal) || ageVal < 18)) {
-                              setAgeError('Age should be 18 or above.');
-                            }
-                          }}
+                          onBlur={e => setAgeError(validateProfileField('age', e.target.value))}
                           id="onboard-age"
-                          min="18"
+                          min={PROFILE_LIMITS.age.min}
+                          max={PROFILE_LIMITS.age.max}
                         />
                         {ageError && (
                           <div className="form-error" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
@@ -210,11 +221,37 @@ export default function OnboardingPage() {
                     <div className="grid-2">
                       <div className="form-group">
                         <label className="form-label">Height (cm)</label>
-                        <input className="form-input" type="number" placeholder="165" value={form.height_cm} onChange={e => set('height_cm', e.target.value)} id="onboard-height" />
+                        <input
+                          className={`form-input${heightError ? ' form-input-error' : ''}`}
+                          type="number" placeholder="165" value={form.height_cm}
+                          onChange={e => { set('height_cm', e.target.value); if (heightError) setHeightError(''); }}
+                          onBlur={e => setHeightError(validateProfileField('height_cm', e.target.value))}
+                          min={PROFILE_LIMITS.height_cm.min} max={PROFILE_LIMITS.height_cm.max}
+                          id="onboard-height"
+                        />
+                        {heightError && (
+                          <div className="form-error" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                            <AlertCircle size={13} />
+                            {heightError}
+                          </div>
+                        )}
                       </div>
                       <div className="form-group">
                         <label className="form-label">Weight (kg)</label>
-                        <input className="form-input" type="number" placeholder="65" value={form.weight_kg} onChange={e => set('weight_kg', e.target.value)} id="onboard-weight" />
+                        <input
+                          className={`form-input${weightError ? ' form-input-error' : ''}`}
+                          type="number" placeholder="65" value={form.weight_kg}
+                          onChange={e => { set('weight_kg', e.target.value); if (weightError) setWeightError(''); }}
+                          onBlur={e => setWeightError(validateProfileField('weight_kg', e.target.value))}
+                          min={PROFILE_LIMITS.weight_kg.min} max={PROFILE_LIMITS.weight_kg.max}
+                          id="onboard-weight"
+                        />
+                        {weightError && (
+                          <div className="form-error" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                            <AlertCircle size={13} />
+                            {weightError}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

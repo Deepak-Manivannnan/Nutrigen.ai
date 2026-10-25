@@ -24,8 +24,8 @@ export default function SignUpPage() {
       setError('Please fill in all fields.');
       return;
     }
-    if (form.password.length < 6) {
-      setError('Password must be at least 6 characters.');
+    if (form.password.length < 8) {
+      setError('Password must be at least 8 characters.');
       return;
     }
     if (form.password !== form.confirm) {
@@ -98,7 +98,7 @@ export default function SignUpPage() {
               <Lock className="icon" size={15} />
               <input
                 id="signup-password" name="password" type={showPass ? 'text' : 'password'}
-                className="form-input" placeholder="Password (min 6 chars)"
+                className="form-input" placeholder="Password (min 8 chars)"
                 value={form.password} onChange={handleChange}
                 style={{ paddingRight: 42 }}
               />

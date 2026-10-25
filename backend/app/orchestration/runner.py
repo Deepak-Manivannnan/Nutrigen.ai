@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.schemas.state import PlanState, PendingWorkflow
 from backend.app.orchestration.graph import create_meal_planner_graph
 from backend.app.orchestration.supervisor.intent import extract_user_intent, EditDetails
+from backend.app.orchestration.supervisor.routing import missing_main_ingredients
 from backend.app.orchestration.supervisor.agent import SupervisorAgent
 from backend.app.db.repositories.plans import PlanRepository
 from backend.app.db.session import AsyncSessionLocal
@@ -180,6 +181,11 @@ def _describe_pending_work(pending) -> str:
         return "deleting one of your meal plans"
     if pending.workflow_type == "approve_plan":
         return "approving one of your meal plans"
+    conflicts = pending.pending_conflicts or []
+    if "capability_offer" in conflicts:
+        return "deciding whether to build a full-day plan instead of the single-meal plan they asked for"
+    if "ingredients_offer" in conflicts:
+        return "deciding how to use the foods they listed in a meal plan"
     if pending.workflow_type == "save_dislikes":
         return "deciding whether to remember the foods you asked to leave out as dislikes"
     return "creating your new meal plan"
@@ -215,6 +221,69 @@ async def _save_dislikes(user_id: int, new_items: list, session=None) -> list:
         return await _go(session)
     async with AsyncSessionLocal() as temp_session:
         return await _go(temp_session)
+
+
+async def _ask_for_days(supervisor, state, *, intent_data, pending_info, user_message, history,
+                         user_profile, ingredients_note: Optional[str] = None, ask_days: bool = True) -> None:
+    """Ask how many days the plan should cover (never assumed), in the flow of the chat.
+
+    When the foods the user listed cannot carry a whole plan on their own, the same
+    message also puts that honestly and asks whether to build around them (two
+    questions at once, in one natural message).
+    """
+    max_days = settings.max_plan_days
+    known = _request_details(intent_data)
+    known_bits = ", ".join(
+        f"{label}: {', '.join(map(str, v)) if isinstance(v, list) else v}"
+        for key, label in (("cuisine", "cuisine"), ("style_notes", "style"), ("main_ingredients", "main foods"),
+                           ("diet", "diet"), ("calories", "calories per day"))
+        if (v := known.get(key))
+    )
+    context = f"The user wants a new meal plan{' (' + known_bits + ')' if known_bits else ''}. "
+    if ask_days:
+        context += (
+            f"They have not said how many days it should cover. A plan can cover at most {max_days} days. "
+        )
+    conflicts = ["days_missing"]
+    if ingredients_note:
+        context += (
+            f"They also said the only foods they have are: {ingredients_note}. Those few foods cannot make a whole plan on their own "
+            f"(there would be too little variety and they could not reach the calories). Be honest about that, and ask whether to "
+            f"go ahead using those foods as the MAIN ingredients while adding a few other foods, or whether they would rather cancel. "
+            f"{'Ask this together with how many days, as one natural message of 2 to 4 sentences, no greeting. ' if ask_days else 'One natural message of 2 to 3 sentences, no greeting. '}"
+        )
+        conflicts = ["ingredients_offer"] + (["days_missing"] if ask_days else [])
+    else:
+        context += (
+            f"In warm, natural conversational English (1 to 3 sentences, no greeting), ask how many days they would like "
+            f"it for and mention the {max_days}-day maximum. You may offer a full week as a suggestion, but let them choose. "
+        )
+    context += (
+        "Acknowledge anything they already told you instead of asking for it again. "
+        "IMPORTANT: do NOT start creating the plan - you are only asking."
+    )
+    msg = await _ask_without_claiming(
+        supervisor, user_message=user_message, context=context,
+        history=history, user_name=user_profile.get("name"),
+    )
+    state.system_message = msg
+    state.status = "conversational"
+    state.pending_workflow = PendingWorkflow(
+        workflow_type="new_plan",
+        pending_conflicts=conflicts,
+        asked_questions=[msg],
+        extracted_info={**pending_info, "days_pending": True, "prompt_text": msg},
+        next_expected_decision="days_answer",
+        original_intent="new_plan",
+        original_message=user_message,
+        user_profile_at_start=dict(user_profile or {}),
+        created_at=datetime.utcnow().isoformat()
+    )
+    await supervisor.log_step(
+        state=state, from_agent="supervisor", to_agent="user",
+        msg_type="feedback", content=str(msg)[:120] + "...",
+        payload={"action": "days_request", "conflicts": conflicts}
+    )
 
 
 async def _compose_unclear_reply(supervisor, *, user_message: str, user_name: str,
@@ -788,6 +857,8 @@ def _request_details(intent_data) -> dict:
     fixed = intent_data.fixed_meals if isinstance(intent_data.fixed_meals, list) else []
     details = {
         "cuisine": intent_data.requested_cuisine,
+        "style_notes": list(getattr(intent_data, "style_notes", []) or []),
+        "main_ingredients": list(getattr(intent_data, "main_ingredients", []) or []),
         "exclusions": list(intent_data.requested_exclusions or []),
         "include_snack": bool(getattr(intent_data, "include_snack", False)),
         "plan_name": getattr(intent_data, "new_plan_name", None),
@@ -814,6 +885,10 @@ def _restore_request_details(intent_data, pending) -> None:
     from backend.app.orchestration.supervisor.intent import FixedMealSlot
     if not intent_data.requested_cuisine and carry.get("cuisine"):
         intent_data.requested_cuisine = carry["cuisine"]
+    if not getattr(intent_data, "style_notes", None) and carry.get("style_notes"):
+        intent_data.style_notes = list(carry["style_notes"])
+    if not getattr(intent_data, "main_ingredients", None) and carry.get("main_ingredients"):
+        intent_data.main_ingredients = list(carry["main_ingredients"])
     if not intent_data.requested_exclusions and carry.get("exclusions"):
         intent_data.requested_exclusions = list(carry["exclusions"])
     if not getattr(intent_data, "include_snack", False) and carry.get("include_snack"):
@@ -980,6 +1055,8 @@ async def _run_meal_planner_impl(    user_id: int,
         fixed_meals=fixed,
         edit_details=intent_data.edit_details,
         plan_name=getattr(intent_data, "new_plan_name", None),
+        style_notes=list(getattr(intent_data, "style_notes", []) or []),
+        main_ingredients=list(getattr(intent_data, "main_ingredients", []) or []),
         # A new plan uses the cuisine asked for. An edit stays in the cuisine the plan
         # was made in, unless the user names a different one for this edit.
         cuisine=(
@@ -1511,11 +1588,12 @@ async def _run_meal_planner_impl(    user_id: int,
                     # Telling us the number of days answers an open "how many
                     # days?" question just as a diet or calorie choice answers
                     # theirs.
-                    days_answered = (
-                        "days_missing" in (pending_workflow.pending_conflicts or [])
-                        and bool(intent_data.requested_days)
-                    )
-                    competing = not (sig["answered_any"] or days_answered)
+                    _open = set(pending_workflow.pending_conflicts or [])
+                    days_answered = "days_missing" in _open and bool(intent_data.requested_days)
+                    # An offer (a full-day plan instead, or using the listed foods as main
+                    # ingredients) is answered by the model reading a plan request.
+                    offer_answered = bool(_open & {"capability_offer", "ingredients_offer"})
+                    competing = not (sig["answered_any"] or days_answered or offer_answered)
             else:
                 competing = False
 
@@ -2624,12 +2702,64 @@ async def _run_meal_planner_impl(    user_id: int,
             # The number of days is never assumed: if the user did not say it,
             # it is asked for below.
 
+        # The request needs something this app cannot do (for example "a dinner
+        # plan"). The model judged that, from the capability facts in its
+        # instructions, and set unsupported_reason; here the app says so politely
+        # and offers what it can do. Everything else the user said stays with the
+        # open question, so "yes, 5 days" carries on with their cuisine, style
+        # and ingredients.
+        if intent_data.unsupported_reason:
+            max_days = settings.max_plan_days
+            known = _request_details(intent_data)
+            bits = ", ".join(
+                f"{label}: {', '.join(map(str, v)) if isinstance(v, list) else v}"
+                for key, label in (("cuisine", "cuisine"), ("style_notes", "style"), ("main_ingredients", "main foods"), ("days", "days"))
+                if (v := known.get(key))
+            )
+            offer_context = (
+                f"The user asked for something this app cannot do: {intent_data.unsupported_reason}. "
+                f"{'What they told you so far: ' + bits + '. ' if bits else ''}"
+                f"What the app CAN do is build a meal plan of whole days (breakfast, lunch and dinner each day, optionally a snack) "
+                f"for 1 up to {max_days} days in one request. It cannot build a plan of one kind of meal or a single meal on its own. "
+                f"In warm, natural, polite English (2 to 4 sentences, no greeting): say honestly that you cannot do exactly what they asked, "
+                f"say what you can do instead (whole-day plans for 1 to {max_days} days, using everything they told you), "
+                + (f"and ask whether they would like a {known['days']}-day plan like that (they already said {known['days']} days, so do not ask for the days again). "
+                   if known.get("days") else "and ask whether they would like that and for how many days. ")
+                + f"Be gentle, not stiff, and do not blame them. "
+                f"IMPORTANT: you are only asking; do not create anything yet."
+            )
+            msg = await _ask_without_claiming(
+                supervisor, user_message=user_message, context=offer_context,
+                history=history, user_name=user_profile.get("name"),
+            )
+            state.system_message = msg
+            state.status = "conversational"
+            state.pending_workflow = PendingWorkflow(
+                workflow_type="new_plan",
+                pending_conflicts=["capability_offer"],
+                asked_questions=[msg],
+                extracted_info={"prompt_text": msg, "unsupported_reason": intent_data.unsupported_reason},
+                next_expected_decision="capability_offer_answer",
+                original_intent="new_plan",
+                original_message=user_message,
+                user_profile_at_start=dict(user_profile or {}),
+                created_at=datetime.utcnow().isoformat()
+            )
+            await supervisor.log_step(
+                state=state, from_agent="supervisor", to_agent="user",
+                msg_type="feedback", content=str(msg)[:120] + "...",
+                payload={"action": "capability_offer", "reason": intent_data.unsupported_reason}
+            )
+            return state
+
         # A bare create request (the LLM extracted no specs at all and nothing
         # is pending): offer profile defaults vs. custom specs conversationally
         # instead of silently generating a default plan.
         has_any_spec = bool(
             intent_data.requested_days
             or intent_data.requested_cuisine
+            or intent_data.style_notes
+            or intent_data.main_ingredients
             or intent_data.requested_calories
             or intent_data.requested_diet_type
             or intent_data.chosen_diet_type
@@ -2669,44 +2799,41 @@ async def _run_meal_planner_impl(    user_id: int,
         req_cal = user_cal if user_cal is not None else pending_info.get("cal_val")
         req_days = intent_data.requested_days or pending_info.get("days_val") or None
 
+        # The foods the user listed are ALL they have: say honestly that they cannot make a
+        # whole plan alone and offer to build around them (asked once; any continuation
+        # of the conversation after the offer counts as agreeing).
+        _offer_made = "ingredients_offer" in ((pending.pending_conflicts if pending else None) or [])
+        if intent_data.ingredients_only and intent_data.main_ingredients and not _offer_made:
+            await _ask_for_days(
+                supervisor, state, intent_data=intent_data, pending_info=pending_info,
+                user_message=user_message, history=history, user_profile=user_profile,
+                ingredients_note=", ".join(intent_data.main_ingredients),
+                ask_days=not req_days,
+            )
+            return state
+
         # The number of days is never assumed. If the user has not said it, ask -
-        # in the flow of the conversation - before anything else is checked.
-        if not req_days:
-            max_days = settings.max_plan_days
-            known = _request_details(intent_data)
-            known_bits = ", ".join(
-                f"{label}: {known[key]}" for key, label in
-                (("cuisine", "cuisine"), ("diet", "diet"), ("calories", "calories per day")) if known.get(key)
+        # in the flow of the conversation. When a diet conflict or an unsafe calorie
+        # target also needs an answer, those questions ask for the days too (below),
+        # so the user is not asked one thing per message.
+        _diet_open = bool(
+            req_diet and req_diet != profile_diet
+            and not (
+                pending_info.get("diet_resolved")
+                or intent_data.diet_conflict_confirmed or intent_data.chosen_diet_type
+                or (pending_info.get("diet_pending") and user_diet is not None)
             )
-            days_context = (
-                f"The user wants a new meal plan{' (' + known_bits + ')' if known_bits else ''} but has not said how many days "
-                f"it should cover. A plan can cover at most {max_days} days. "
-                f"In warm, natural conversational English (1 to 3 sentences, no greeting), ask how many days they would like "
-                f"it for and mention the {max_days}-day maximum. You may offer a full week as a suggestion, but let them choose. "
-                f"Acknowledge anything they already told you instead of asking for it again. "
-                f"IMPORTANT: do NOT start creating the plan - you are only asking."
-            )
-            msg = await _ask_without_claiming(
-                supervisor, user_message=user_message, context=days_context,
-                history=history, user_name=user_profile.get("name"),
-            )
-            state.system_message = msg
-            state.status = "conversational"
-            state.pending_workflow = PendingWorkflow(
-                workflow_type="new_plan",
-                pending_conflicts=["days_missing"],
-                asked_questions=[msg],
-                extracted_info={**pending_info, "days_pending": True, "prompt_text": msg},
-                next_expected_decision="days_answer",
-                original_intent="new_plan",
-                original_message=user_message,
-                user_profile_at_start=dict(user_profile or {}),
-                created_at=datetime.utcnow().isoformat()
-            )
-            await supervisor.log_step(
-                state=state, from_agent="supervisor", to_agent="user",
-                msg_type="feedback", content=str(msg)[:120] + "...",
-                payload={"action": "days_request"}
+        )
+        _cal_unsafe = False
+        if not req_days and req_cal is not None:
+            _cal_unsafe = not supervisor.check_input_guardrail(
+                user_profile=user_profile, requested_calories=req_cal, requested_days=None,
+                fixed_meals=fixed, requested_diet_type=None,
+            )[0]
+        if not req_days and not (_diet_open or _cal_unsafe):
+            await _ask_for_days(
+                supervisor, state, intent_data=intent_data, pending_info=pending_info,
+                user_message=user_message, history=history, user_profile=user_profile,
             )
             return state
 
@@ -2785,7 +2912,7 @@ async def _run_meal_planner_impl(    user_id: int,
             # Set pending workflow for diet conflict (and potentially calorie guardrail)
             state.pending_workflow = PendingWorkflow(
                 workflow_type="new_plan",
-                pending_conflicts=["diet_conflict"] + (["calorie_guardrail"] if is_calorie_unsafe else []),
+                pending_conflicts=["diet_conflict"] + (["calorie_guardrail"] if is_calorie_unsafe else []) + (["days_missing"] if not days_val else []),
                 asked_questions=["diet_preference"] + (["calorie_confirmation"] if is_calorie_unsafe else []),
                 extracted_info={
                     "profile_diet": profile_diet,
@@ -2945,7 +3072,7 @@ async def _run_meal_planner_impl(    user_id: int,
                 # User is insisting on an unsafe value after already being warned.
                 # Strictly refuse - do not ask again.
                 guardrail_context = (
-                    f"The user confirmed they want {diet_display} for this {req_days}-day meal plan, "
+                    f"The user confirmed they want {diet_display} for this {str(req_days) + '-day ' if req_days else ''}meal plan, "
                     f"but they are insisting on {cal_display:,} kcal/day which is outside their safe "
                     f"range of {int(min_safe):,}–{int(max_safe):,} kcal for their {goal} goal. "
                     f"{goal_guidance} The recommended target is {int(suggested):,} kcal. "
@@ -2975,7 +3102,7 @@ async def _run_meal_planner_impl(    user_id: int,
 
             # First time hitting unsafe - ask confirmation with safe options only.
             guardrail_context = (
-                f"The user just confirmed they want {diet_display} for this {req_days}-day meal plan. "
+                f"The user just confirmed they want {diet_display} for this {str(req_days) + '-day ' if req_days else ''}meal plan. "
                 f"First acknowledge that choice warmly. Then explain their requested target of "
                 f"{cal_display:,} kcal/day is {relation} their safe range of "
                 f"{int(min_safe):,}–{int(max_safe):,} kcal for their {goal} goal. "
@@ -2984,6 +3111,8 @@ async def _run_meal_planner_impl(    user_id: int,
                 f"unsafe value. Keep it natural and conversational, 2-4 sentences, no greeting, "
                 f"no bullet points. CRITICAL: their saved profile has NOT been changed. The diet "
                 f"they just chose applies to THIS plan only."
+                + (f" The user has also not said how many days they want (at most {max_days}); also ask that, in the same message, "
+                   f"as a separate short question." if not req_days else "")
             )
             msg = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -3004,7 +3133,7 @@ async def _run_meal_planner_impl(    user_id: int,
             # Store pending workflow so the next partial answer is understood
             state.pending_workflow = PendingWorkflow(
                 workflow_type="new_plan",
-                pending_conflicts=["calorie_guardrail"],
+                pending_conflicts=["calorie_guardrail"] + (["days_missing"] if not req_days else []),
                 asked_questions=[msg],
                 extracted_info={
                     "effective_diet": effective_diet,
@@ -3025,6 +3154,16 @@ async def _run_meal_planner_impl(    user_id: int,
                 original_message=user_message,
                 user_profile_at_start=user_profile.copy(),
                 created_at=datetime.utcnow().isoformat()
+            )
+            return state
+
+        # Every other question is settled. If the length is still unknown (the
+        # user answered a diet or calorie question without giving it), ask now:
+        # a plan is never built for a length nobody chose.
+        if not state.days:
+            await _ask_for_days(
+                supervisor, state, intent_data=intent_data, pending_info=pending_info,
+                user_message=user_message, history=history, user_profile=user_profile,
             )
             return state
 
@@ -3110,6 +3249,15 @@ async def _run_meal_planner_impl(    user_id: int,
     # =========================================================================
     # Step 10: Persist Plan to Database & Format Friendly Response
     # =========================================================================
+    # Foods the user wanted the meals built around that never made it into the plan:
+    # the reply must say so instead of implying everything was used.
+    _unused = missing_main_ingredients(final_state.current_plan, final_state.main_ingredients) if final_state.current_plan else []
+    _unused_note = (
+        f"IMPORTANT: the user asked for meals built around {', '.join(_unused)}, but {'it is' if len(_unused) == 1 else 'they are'} not in this plan. "
+        f"Say so honestly and offer to work {'it' if len(_unused) == 1 else 'them'} in. "
+        if _unused else ""
+    )
+
     # Persist plan if it exists and status indicates completion (reviewing/approved/escalated/failed)
     if final_state.current_plan and final_state.status in ("reviewing", "approved", "escalated", "failed"):
         try:
@@ -3177,6 +3325,7 @@ async def _run_meal_planner_impl(    user_id: int,
                         f"In natural, polite, friendly conversational English, let the user know their meal plan has been CREATED and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready. "
                         f"CRITICAL: this is a brand-new plan, so it was CREATED, never updated. Do not use the word 'updated' and do not say an existing plan was changed. "
                         f"Do NOT claim their saved profile was changed (it was not) - a diet choice here applies to this plan only."
+                        f"{_unused_note}"
                     )
                     final_state.system_message = await supervisor.generate_conversational_response(
                         user_message=user_message,
@@ -3247,6 +3396,7 @@ async def _run_meal_planner_impl(    user_id: int,
                             f"In natural, polite, friendly conversational English, let the user know their meal plan has been CREATED and is ready to review in the Plans tab, and invite them to approve it or make adjustments whenever ready. "
                             f"CRITICAL: this is a brand-new plan, so it was CREATED, never updated. Do not use the word 'updated' and do not say an existing plan was changed. "
                             f"Do NOT claim their saved profile was changed (it was not) - a diet choice here applies to this plan only."
+                            f"{_unused_note}"
                         )
                         final_state.system_message = await supervisor.generate_conversational_response(
                             user_message=user_message,

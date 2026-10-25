@@ -64,7 +64,7 @@ async def test_missing_days_are_asked_for_never_assumed(world, graph):
     pw = state.pending_workflow
     assert pw.pending_conflicts == ["days_missing"]
     ctx = world.replies[-1]["context"]
-    assert "has not said how many days" in ctx and "at most 7 days" in ctx
+    assert "have not said how many days" in ctx and "at most 7 days" in ctx
     assert "do NOT start creating the plan" in ctx
     assert "South Indian" in ctx                                 # what they already said is acknowledged
     assert pw.extracted_info["carry"]["cuisine"] == "South Indian"

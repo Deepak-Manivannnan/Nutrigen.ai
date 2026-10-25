@@ -58,6 +58,21 @@ class PlannerAgent(BaseAgent[MealPlan]):
             f"cuisines. Create variety by using different {c} dishes. Meals the user locked stay exactly as they wrote them."
         )
 
+    @staticmethod
+    def _preference_rules(style_notes: Optional[List[str]], main_ingredients: Optional[List[str]]) -> str:
+        """What the user wants the food to be like, and the foods to build meals around."""
+        parts = []
+        if style_notes:
+            parts.append(
+                f"STYLE: the user wants the food to be {', '.join(style_notes)}. Lean every meal that way where it makes sense."
+            )
+        if main_ingredients:
+            parts.append(
+                f"MAIN INGREDIENTS: the user has or wants {', '.join(main_ingredients)}. Build meals around them and use each one "
+                f"in at least one meal across the plan (more often if it suits). You may add other ingredients to make complete meals."
+            )
+        return " ".join(parts)
+
     async def generate_plan(
         self,
         days: int,
@@ -71,7 +86,9 @@ class PlannerAgent(BaseAgent[MealPlan]):
         plan_name: Optional[str] = None,
         exclusions: Optional[List[str]] = None,
         cuisine: Optional[str] = None,
-        include_snack: bool = False
+        include_snack: bool = False,
+        style_notes: Optional[List[str]] = None,
+        main_ingredients: Optional[List[str]] = None
     ) -> MealPlan:
         plan_diet = getattr(current_plan, "diet_type", None) or user_profile.get("diet_type") or "veg"
         plan_name = plan_name or getattr(current_plan, "name", None) or f"{days}-Day {plan_diet.capitalize()} Plan"
@@ -89,6 +106,9 @@ class PlannerAgent(BaseAgent[MealPlan]):
         )
         if cuisine:
             task_instruction += self._cuisine_rule(cuisine) + "\n"
+        prefs = self._preference_rules(style_notes, main_ingredients)
+        if prefs:
+            task_instruction += prefs + "\n"
         if feedback:
             task_instruction += (
                 f"\nCRITICAL REVISION FEEDBACK FROM PREVIOUS ROUND (Must be addressed):\n"
@@ -201,6 +221,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 f"- Exclude ingredients: {exclusions or []}\n"
                 f"- Avoid dislikes: {user_profile.get('dislikes', [])}\n"
                 + (f"- {self._cuisine_rule(cuisine)}\n" if cuisine else "")
+                + (f"- {prefs}\n" if prefs else "")
                 + f"- Provide EXACTLY {days} DayPlan items (day_number 1 to {days}).\n"
                 + meals_desc_fallback
                 + f"- For EACH meal, provide detailed step-by-step 'instructions' (3 to 4 numbered steps detailing prep, cooking, seasoning, and serving warm). NEVER output generic 1-liners.\n"
@@ -323,10 +344,15 @@ class PlannerAgent(BaseAgent[MealPlan]):
         exclusions: Optional[List[str]],
         avoid_names: List[str],
         cuisine: Optional[str] = None,
+        style_notes: Optional[List[str]] = None,
+        main_ingredients: Optional[List[str]] = None,
     ) -> Meal:
         """Ask the AI for ONE replacement meal; retry once if it breaks a rule."""
         constraints = self._constraint_lines(plan_diet, user_profile, exclusions)
         cuisine_line = f"- {self._cuisine_rule(cuisine)}\n" if cuisine else ""
+        _prefs = self._preference_rules(style_notes, main_ingredients)
+        if _prefs:
+            cuisine_line += f"- {_prefs}\n"
         rejected_note = ""
         meal: Optional[Meal] = None
         for _attempt in range(2):
@@ -376,6 +402,8 @@ class PlannerAgent(BaseAgent[MealPlan]):
         task_id: Optional[str] = None,
         exclusions: Optional[List[str]] = None,
         cuisine: Optional[str] = None,
+        style_notes: Optional[List[str]] = None,
+        main_ingredients: Optional[List[str]] = None,
     ) -> MealPlan:
         """Redo only what the Supervisor flagged (a RepairTargets instruction).
 
@@ -435,6 +463,7 @@ class PlannerAgent(BaseAgent[MealPlan]):
                 day_number=day_no, meal_type=meal_type, target_cal=cal, reasons=reasons,
                 plan_diet=plan_diet, user_profile=user_profile, exclusions=exclusions,
                 avoid_names=kept_names, cuisine=cuisine,
+                style_notes=style_notes, main_ingredients=main_ingredients,
             )
             for day_no, _i, meal_type, cal, reasons in jobs
         ])

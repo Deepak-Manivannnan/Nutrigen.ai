@@ -61,6 +61,28 @@ temperature 0, and treat the returned object as the contract for the turn.
   plan (`plans.cuisine`, added 2026-10-25; NULL for older plans), so a later "change Tuesday's
   lunch" stays inside it; an edit takes its cuisine, diet and calorie target from the plan and
   asks only what to change, unless the user names another cuisine for that one meal.
+- **What the app can and cannot do is told to the model, not matched by words.** The intent
+  prompt states the capability facts (whole-day plans of breakfast, lunch and dinner for 1 to
+  7 days; no plan of one kind of meal and no single meal). When a request needs something
+  outside that, the model keeps `intent = new_plan`, fills every other field and sets
+  `unsupported_reason`. The app then writes (via the reply model) a polite refusal that offers
+  a whole-day plan using everything the user said, and keeps the request open as a
+  `capability_offer`; a yes, or a number of days, builds it. The field is only for these
+  structural limits, never for calories, diet or safety (those have their own checks).
+- **Locked meals are for named dishes only.** "Keep eggs and toast for breakfast" is a locked
+  meal; "a high protein dinner" is never one. What the food should be like goes to
+  `style_notes`; foods the user has or wants used go to `main_ingredients`
+  (`ingredients_only` when they say these are all they have). Both reach the Planner's
+  prompts, including targeted repairs and the follow-up memory.
+- **Listed foods are checked in code.** After the reviews, `missing_main_ingredients` looks
+  (whole word, singular or plural) for each wanted food in the plan. A missing one is a soft
+  problem: it earns a targeted repair of a lunch or dinner slot while rounds remain and is
+  never a reason to hold back a safe plan; the reply says honestly if a food was not worked in.
+  When the user says the listed foods are ALL they have, the app says they cannot carry a whole
+  plan and asks whether to build around them with a few extra foods (`ingredients_offer`).
+- **Fewer, fuller questions.** Missing days are asked in the same message as an open diet
+  conflict, an unsafe calorie target, or the ingredients offer, instead of one question per
+  message; the pending question lists every open item.
 - **New exclusions can be remembered.** After a plan is created, foods the user left out that
   are not already in their saved dislikes or allergies are offered for saving
   (`save_dislikes` pending). They are applied to the plan either way. The model reads the

@@ -168,6 +168,8 @@ def create_meal_planner_graph(
                         task_id=state.task_id,
                         exclusions=state.intent_data.requested_exclusions if state.intent_data else None,
                         cuisine=getattr(state, "cuisine", None),
+                        style_notes=state.style_notes,
+                        main_ingredients=state.main_ingredients,
                     )
                 except Exception as repair_err:
                     # Never leave the user without a plan because a repair
@@ -197,7 +199,9 @@ def create_meal_planner_graph(
                     plan_name=getattr(state, "plan_name", None),
                     cuisine=getattr(state, "cuisine", None),
                     exclusions=state.intent_data.requested_exclusions if state.intent_data else None,
-                    include_snack=getattr(state, "include_snack", False) or (getattr(state.intent_data, "include_snack", False) if state.intent_data else False)
+                    include_snack=getattr(state, "include_snack", False) or (getattr(state.intent_data, "include_snack", False) if state.intent_data else False),
+                    style_notes=state.style_notes,
+                    main_ingredients=state.main_ingredients,
                 )
 
 

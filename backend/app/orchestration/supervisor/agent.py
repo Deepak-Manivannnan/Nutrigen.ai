@@ -3,7 +3,8 @@ from typing import Dict, Any, Optional, List
 from backend.app.schemas.state import PlanState
 from backend.app.schemas.messages import AgentMessage
 from backend.app.schemas.domain import MealPlan, NutritionReport, AllergyReport, GroceryList
-from backend.app.orchestration.supervisor.routing import decide_next_step, RouteDecision
+from backend.app.config import settings
+from backend.app.orchestration.supervisor.routing import decide_next_step, RouteDecision, missing_main_ingredients
 from backend.app.guardrails.input_checks import validate_input_request
 from backend.app.guardrails.output_checks import verify_output_safety
 from backend.app.observability.trace import trace_hub
@@ -75,6 +76,7 @@ class SupervisorAgent:
             allergy_report=state.allergy_report,
             max_rounds=state.max_rounds,
             plan=state.current_plan,
+            missing_ingredients=missing_main_ingredients(state.current_plan, state.main_ingredients),
         )
 
     async def generate_explanation(
@@ -185,6 +187,12 @@ class SupervisorAgent:
         
         profile_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(profile_diet, profile_diet.capitalize())
         requested_display = {"veg": "Vegetarian", "non-veg": "Non-Vegetarian", "vegan": "Vegan"}.get(requested_diet, requested_diet.capitalize())
+        # The number of days may not be known yet: then it is asked in this same message.
+        days_phrase = f"for {days_val} days " if days_val else ""
+        days_ask = (
+            f"CRITICAL: the user has also not said how many days they want (a plan can cover at most {settings.max_plan_days}), "
+            f"so your message MUST also contain a short, separate question asking how many days (1 to {settings.max_plan_days}). "
+        ) if not days_val else ""
         
         if is_calorie_unsafe:
             suggested = int(meta.get("suggested_target", 2250.0))
@@ -194,7 +202,7 @@ class SupervisorAgent:
                 f"You are NutriGen, a helpful meal planning companion talking with {name}.\n\n"
                 f"{history_ctx}"
                 f"Situation: The user's profile diet preference is **{profile_display}**, but they just requested a **{requested_display}** meal plan "
-                f"for {days_val} days at {cal_val:,} kcal/day.\n\n"
+                f"{days_phrase}at {cal_val:,} kcal/day.\n\n"
                 f"Additionally, {cal_val:,} kcal/day is below their safe maintenance range of {min_safe:,}–{max_safe:,} kcal. "
                 f"The recommended target is {suggested:,} kcal/day.\n\n"
                 f"Your task: Explain both conflicts (diet + calories) naturally in 2-3 sentences. "
@@ -202,6 +210,7 @@ class SupervisorAgent:
                 f"or (2) use their profile {profile_display} diet with its recommended calories. "
                 f"CRITICAL: Do NOT offer to proceed at {cal_val:,} kcal because it is outside their safe range. "
                 f"CRITICAL: Do NOT start with 'Hey {name}' or greetings. Be direct, warm, and clear. "
+                f"{days_ask}"
                 f"Present options naturally without bullet points.\n"
                 f"CRITICAL: the user has not changed anything yet. Never say or imply that you updated, "
                 f"changed or saved their profile, diet preference, calorie range or settings - nothing has been "
@@ -212,11 +221,12 @@ class SupervisorAgent:
                 f"You are NutriGen, a helpful meal planning companion talking with {name}.\n\n"
                 f"{history_ctx}"
                 f"Situation: The user's profile diet preference is **{profile_display}**, but they just requested a **{requested_display}** meal plan "
-                f"for {days_val} days at {cal_val:,} kcal/day.\n\n"
+                f"{days_phrase}at {cal_val:,} kcal/day.\n\n"
                 f"Your task: Explain the diet preference mismatch naturally in 2-3 sentences. "
                 f"Ask whether they want to: (1) proceed with {requested_display}, "
                 f"or (2) use their profile {profile_display} diet.\n"
                 f"CRITICAL: Do NOT start with 'Hey {name}' or greetings. Be direct, warm, and clear. "
+                f"{days_ask}"
                 f"Present options naturally without bullet points.\n"
                 f"CRITICAL: the user has not changed anything yet. Never say or imply that you updated, "
                 f"changed or saved their profile, diet preference, calorie range or settings - nothing has been "

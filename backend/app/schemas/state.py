@@ -42,6 +42,10 @@ class PlanState(BaseModel):
     days: Optional[int] = None
     calorie_target: Optional[float] = None
     cuisine: Optional[str] = None
+    # What the user asked the food to be like ("high protein") and the foods the
+    # meals should be built around ("chicken"). Both go to the Planner.
+    style_notes: List[str] = Field(default_factory=list)
+    main_ingredients: List[str] = Field(default_factory=list)
     fixed_meals: Dict[str, Any] = Field(default_factory=dict)
     edit_details: Optional[Any] = None
     plan_name: Optional[str] = None

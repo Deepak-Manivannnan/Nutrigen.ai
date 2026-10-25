@@ -137,6 +137,38 @@ class UserIntentExtraction(BaseModel):
         description="True if the user explicitly requested to include snacks or snack meals in the meal plan (e.g. 'with snacks', 'including snack meal', 'add snack to meals')."
     )
 
+    style_notes: List[str] = Field(
+        default_factory=list,
+        description="Qualities the user wants in the food, as short phrases: 'high protein', 'light', 'spicy', 'quick to cook', 'low carb'. NOT dishes, NOT ingredients, NOT foods to exclude."
+    )
+    main_ingredients: List[str] = Field(
+        default_factory=list,
+        description="Foods the user says they have, or want the meals built around ('chicken', 'tomato'), as singular lower-case words. NEVER foods they want excluded."
+    )
+    ingredients_only: bool = Field(
+        default=False,
+        description="True only when the user says these are ALL the foods they have / the only foods to use ('I have only chicken and tomatoes'). False when they merely want some foods included."
+    )
+    unsupported_reason: Optional[str] = Field(
+        None,
+        description="Set when the request needs something this app cannot do (see 'WHAT THIS APP CAN AND CANNOT DO'): one short sentence on what is being asked, e.g. 'only dinners, not whole days'. Keep intent='new_plan' and still fill every other field. Null for ordinary requests."
+    )
+
+    @field_validator("main_ingredients", "style_notes", mode="before")
+    @classmethod
+    def normalize_word_lists(cls, v):
+        if not v:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        seen, out = set(), []
+        for item in v:
+            clean = str(item).strip().lower()
+            if clean and clean not in seen:
+                seen.add(clean)
+                out.append(clean)
+        return out
+
     @field_validator("requested_exclusions", mode="before")
     @classmethod
     def normalize_exclusions(cls, v):
@@ -294,8 +326,18 @@ NutriGen's domain is STRICTLY LIMITED to:
 - "Go with 2100" -> True, 2100.0
 - "Use recommended" -> True, <suggested_value>
 
-**fixed_meals**: Explicitly locked meals
+**fixed_meals**: Explicitly locked meals - ONLY when the user names the actual food or dish to eat in a slot
 - "Fix breakfast as eggs and toast" -> [{"meal_type": "breakfast", "dish": "eggs and toast"}]
+- "keep bread and eggs for breakfast every day" -> [{"meal_type": "breakfast", "dish": "bread and eggs"}]
+- NEVER use fixed_meals for: a quality or goal ("a high protein dinner" -> style_notes), a meal slot on its own ("a dinner plan", "lunch only" -> unsupported_reason), or foods the user merely has at home ("I have chicken and tomatoes" -> main_ingredients). A dish value that is just the slot name or a style word is always wrong.
+
+**style_notes**: short phrases for what the food should be like ("high protein", "light", "spicy", "low carb", "quick to cook").
+
+**main_ingredients**: foods the user has or wants the meals built around ("I have chicken and tomatoes" -> ["chicken", "tomato"]; "use paneer and spinach" -> ["paneer", "spinach"]). Never foods they want excluded.
+
+**ingredients_only**: true only when they say these are ALL they have or the only foods to use ("I have only chicken and tomatoes", "just these"). False for "include chicken".
+
+**unsupported_reason**: see WHAT THIS APP CAN AND CANNOT DO below.
 
 **edit_details** (only for edit_meal intent):
 - day: "day 2" -> 2, "on day 3" -> 3
@@ -401,6 +443,12 @@ When PENDING WORKFLOW CONTEXT is provided, the user's message may be a PARTIAL a
    - "no", "just for this plan", "don't save", "only this time" -> save_preference_answer = false
    - Any other message (a new request, a question) is NOT an answer: leave save_preference_answer null and classify the message normally.
 
+11. **Offer answers**: If pending_conflicts includes "capability_offer" (the assistant explained it can only plan whole days and offered a full-day plan) or "ingredients_offer" (the assistant explained the listed foods cannot fill a plan on their own and offered to use them as main ingredients and add other foods):
+   - yes / go ahead / sounds good (with or without a number of days) -> intent = "new_plan", requested_days if given, unsupported_reason null, ingredients_only false.
+   - a number of days alone ("5 days", "a week") -> intent = "new_plan" with requested_days.
+   - no / cancel / never mind -> intent = "cancel_request".
+   - Do not repeat the other details; the application remembers them.
+
 8. **Profile-defaults agreement**: If the assistant just offered to create the plan with the user's saved profile
    defaults (check the conversation history for that offer) and the user agrees — "yes", "go ahead", "use my profile",
    "create it with my defaults", "sounds good, do it" — set intent = "new_plan" AND use_profile_defaults = true.
@@ -410,6 +458,15 @@ CRITICAL: When user answers a pending question PARTIALLY (e.g., only answers die
 
 ---
 
+
+---
+
+### WHAT THIS APP CAN AND CANNOT DO (use this to fill unsupported_reason)
+
+CAN: build a meal plan of whole days - breakfast, lunch and dinner every day, plus an optional snack - for 1 to 7 days in one request; follow a diet, a cuisine, exclusions, locked meals, style notes (e.g. high protein) and main ingredients; edit a meal in a saved plan.
+CANNOT: build a plan of only one kind of meal ("a dinner plan", "only lunches", "just breakfasts"), a single meal on its own ("make me a dinner"), or part of a day. (More than 7 days is handled separately: just set requested_days.)
+
+When a request needs something in the CANNOT list, keep intent = "new_plan", fill EVERY other field you can (days, cuisine, style_notes, main_ingredients, exclusions...), and set unsupported_reason to one short sentence describing what was asked ("wants only dinners, not whole days"). Judge by meaning, not by particular words: "dinner ideas for a week", "a plan with just suppers", "only dinner for 5 days" all need it; "a 5 day plan" or "a high protein plan" do not. Do not set it for ordinary requests. It is ONLY for the structural limits in the CANNOT list: never set it because of a calorie target, a diet, a cuisine, ingredients, exclusions or anything about health or safety (the application handles those itself).
 
 ---
 

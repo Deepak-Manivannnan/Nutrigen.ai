@@ -1,3 +1,4 @@
+import re
 from typing import Dict, List, Optional, Literal, Tuple
 from pydantic import BaseModel, Field
 from backend.app.schemas.domain import (
@@ -14,10 +15,46 @@ class RouteDecision(BaseModel):
     repair: Optional[RepairTargets] = None
 
 
+def _singular(word: str) -> str:
+    w = word.strip().lower()
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith("oes") and len(w) > 4:
+        return w[:-2]
+    if w.endswith("s") and not w.endswith("ss") and len(w) > 3:
+        return w[:-1]
+    return w
+
+
+def missing_main_ingredients(plan: Optional[MealPlan], wanted: Optional[List[str]]) -> List[str]:
+    """Foods the user asked the meals to be built around that appear nowhere in the plan.
+
+    Plain data matching (no AI): each wanted food is looked for, singular or plural,
+    as a whole word in every ingredient name and recipe name.
+    """
+    if plan is None or not wanted:
+        return []
+    texts = []
+    for d in plan.days:
+        for m in d.meals:
+            texts.append((m.recipe_name or "").lower())
+            texts.extend((i.name or "").lower() for i in m.ingredients)
+    missing = []
+    for item in wanted:
+        stem = _singular(str(item))
+        if not stem:
+            continue
+        pattern = re.compile(rf"\b{re.escape(stem)}(?:s|es)?\b")
+        if not any(pattern.search(t) for t in texts):
+            missing.append(str(item))
+    return missing
+
+
 def find_repair_targets(
     plan: MealPlan,
     allergy_report: Optional[AllergyReport],
     nutrition_report: Optional[NutritionReport],
+    missing_ingredients: Optional[List[str]] = None,
 ) -> RepairTargets:
     """Turn the two review reports into a precise to-do list for the Planner.
 
@@ -76,6 +113,21 @@ def find_repair_targets(
             else:
                 flag_day(issue.day_number, reason)
 
+    # Foods the user wanted the meals built around but that are not in the plan:
+    # give each one a lunch or dinner slot (spread over the days, never a locked meal).
+    if missing_ingredients:
+        candidates = [
+            (d, mt)
+            for d in sorted(slots)
+            for mt in ("lunch", "dinner")
+            if mt in slots[d] and not slots[d][mt]
+        ]
+        for i, food in enumerate(missing_ingredients):
+            if not candidates:
+                break
+            day, mt = candidates[i % len(candidates)]
+            flag_meal(day, mt, f"it must be built around {food}, which the user asked for and which is not in the plan yet")
+
     # A flagged day already covers every meal in it.
     for day in list(day_reasons):
         for key in [k for k in meal_reasons if k[0] == day]:
@@ -92,6 +144,7 @@ def decide_next_step(
     allergy_report: Optional[AllergyReport],
     max_rounds: Optional[int] = None,
     plan: Optional[MealPlan] = None,
+    missing_ingredients: Optional[List[str]] = None,
 ) -> RouteDecision:
     """
     Deterministic code routing logic inside Supervisor:
@@ -108,12 +161,24 @@ def decide_next_step(
     has_allergy_violation = allergy_report is not None and not allergy_report.passed
     has_nutrition_issues = nutrition_report is not None and not nutrition_report.passed
 
+    has_missing = bool(missing_ingredients)
+
     # Both passed!
     if not has_allergy_violation and not has_nutrition_issues:
+        # A wanted food that is missing is a soft problem: worth one more targeted
+        # try while rounds remain, but never a reason to hold back a safe plan.
+        if not has_missing or current_round >= limit:
+            return RouteDecision(
+                action="proceed_shopper",
+                feedback=[],
+                reason="Both Nutrition and Allergy safety reviews passed."
+            )
+        found = find_repair_targets(plan, None, None, missing_ingredients) if plan is not None else RepairTargets()
         return RouteDecision(
-            action="proceed_shopper",
-            feedback=[],
-            reason="Both Nutrition and Allergy safety reviews passed."
+            action="retry_planner",
+            feedback=[f"[INGREDIENTS] Work these foods the user asked for into the plan: {', '.join(missing_ingredients)}."],
+            reason=f"Reviews passed, but the requested foods {', '.join(missing_ingredients)} are not used yet (round {current_round + 1}).",
+            repair=found if not found.is_empty else None,
         )
 
     # If any problems and round limit reached -> Escalate to user
@@ -148,9 +213,12 @@ def decide_next_step(
                 f"[NUTRITION ADJUSTMENT] Day {issue.day_number}: {issue.message}. Action: {issue.suggested_action}"
             )
 
+    if has_missing:
+        feedback_items.append(f"[INGREDIENTS] Also work these foods the user asked for into the plan: {', '.join(missing_ingredients)}.")
+
     repair: Optional[RepairTargets] = None
     if plan is not None:
-        found = find_repair_targets(plan, allergy_report, nutrition_report)
+        found = find_repair_targets(plan, allergy_report, nutrition_report, missing_ingredients)
         if not found.is_empty:
             repair = found
 

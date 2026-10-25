@@ -26,6 +26,8 @@ one structured object, and longer writes come back truncated or internally incon
   total does not move, and portion-balances a flagged day with the existing code. Every
   other meal is copied across from the previous draft and is never sent to the AI. If the
   repair fails, or nothing specific can be flagged, the whole plan is rewritten as before.
+- A wanted food that is missing from the plan (see ADR 0005) adds a meal-level repair target
+  while rounds remain; once the limit is reached it is accepted rather than escalated.
 - At most **3 rounds** (the first draft is round 1). The design intent is that on the
   third failure the run stops and asks the user what to relax rather than silently
   shipping a plan - see the known gap below.

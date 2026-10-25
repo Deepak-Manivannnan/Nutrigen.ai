@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { generateDemoPlan, generateDemoGrocery } from '../utils/workflowSimulator';
 import { USER_KEY, inflightKey, readSession, writeSession } from '../utils/sessionStore';
 import {
   fetchCurrentProfile,
@@ -441,32 +440,49 @@ export function AppProvider({ children }) {
     // One click, one approval. The ref (not the state) is the guard: two clicks
     // in the same tick both read the still-null state closure, so a second run
     // would otherwise reach the supervisor before the button could disable.
-    if (approvingRef.current !== null) return;
+    if (approvingRef.current !== null) return false;
     approvingRef.current = planId;
     setApprovingPlanId(planId);
     try {
+      let approvedBackendPlan = null;
       try {
-        const approvedBackendPlan = await approvePlanApi(planId);
-        if (approvedBackendPlan) {
-          const adapted = adaptBackendPlan(approvedBackendPlan, profile);
-          setPlans(prev =>
-            prev.map(p => (p.id === planId ? adapted : p))
-          );
-          if (approvedBackendPlan.grocery_list) {
-            const grocery = adaptBackendGrocery(approvedBackendPlan.grocery_list, approvedBackendPlan.days);
-            if (grocery) setGroceryList(grocery);
-          }
-        }
+        approvedBackendPlan = await approvePlanApi(planId);
       } catch (err) {
-        console.warn('Backend plan approval fallback:', err);
-        setPlans(prev =>
-          prev.map(p => (p.id === planId ? { ...p, status: 'approved' } : p))
+        // Nothing was written on the server, so nothing here may claim it was.
+        // This used to flip the plan to 'approved' and drop a demo grocery list
+        // into the Grocery tab, which told the user their plan was approved and
+        // their list was ready while the database still held a draft. Fail
+        // closed: leave the plan as it is and say so.
+        console.warn('Backend plan approval error:', err);
+        addToast(
+          "Couldn't approve your plan on the server. Nothing was changed - please try again.",
+          'error'
         );
-        const newGrocery = generateDemoGrocery();
-        setGroceryList(newGrocery);
+        return false;
       }
+
+      // A 200 with no plan body is not an approval we can show. Treat it the
+      // same as a failure rather than claiming a result we cannot confirm.
+      if (!approvedBackendPlan) {
+        addToast(
+          "Couldn't confirm the approval with the server. Please try again.",
+          'error'
+        );
+        return false;
+      }
+
+      const adapted = adaptBackendPlan(approvedBackendPlan, profile);
+      setPlans(prev =>
+        prev.map(p => (p.id === planId ? adapted : p))
+      );
+      if (approvedBackendPlan.grocery_list) {
+        const grocery = adaptBackendGrocery(approvedBackendPlan.grocery_list, approvedBackendPlan.days);
+        if (grocery) setGroceryList(grocery);
+      }
+
       markBadge(setGroceryBadge, GROCERY_PATH);
       addToast('Meal plan approved! Grocery list prepared.', 'success');
+      return true;
     } finally {
       approvingRef.current = null;
       setApprovingPlanId(null);

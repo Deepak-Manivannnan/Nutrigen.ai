@@ -22,7 +22,6 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import PlanSelect from '../components/PlanSelect';
-import { generateDemoPlan } from '../utils/workflowSimulator';
 import { sortPlansNewestFirst, isLiquidIngredient } from '../utils/planHelpers';
 
 const MEAL_ICONS = {
@@ -213,7 +212,6 @@ export default function PlansPage() {
     approvingPlanId,
     deletePlan,
     renamePlan,
-    addPlan,
     addToast,
   } = useApp();
 
@@ -277,14 +275,6 @@ export default function PlansPage() {
 
     navigator.clipboard?.writeText(summary);
     addToast('Meal plan copied to clipboard!', 'success');
-  }
-
-  function handleLoadSample() {
-    const sample = generateDemoPlan('7-day 1800 cal veg');
-    addPlan(sample);
-    setActivePlanId(sample.id);
-    setActiveDayIndex(0);
-    addToast('Sample 7-day meal plan created!', 'success');
   }
 
   if (!activePlan || plansArray.length === 0) {

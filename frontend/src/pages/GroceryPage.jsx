@@ -8,12 +8,11 @@ import {
 import { useApp } from '../context/AppContext';
 import PlanSelect from '../components/PlanSelect';
 import { adaptBackendGrocery } from '../utils/api';
-import { generateDemoGrocery } from '../utils/workflowSimulator';
 import { sortPlansNewestFirst } from '../utils/planHelpers';
 
 export default function GroceryPage() {
   const navigate = useNavigate();
-  const { plans, activePlanId, setActivePlanId, groceryList, setGrocery, addToast } = useApp();
+  const { plans, activePlanId, setActivePlanId, groceryList, addToast } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
 
   // Only approved plans have a grocery list, so drafts are excluded here and
@@ -82,12 +81,6 @@ export default function GroceryPage() {
     document.body.removeChild(link);
 
     addToast('Grocery list exported as CSV!', 'success');
-  }
-
-  function handleGenerateSample() {
-    const demo = generateDemoGrocery();
-    setGrocery(demo);
-    addToast('Sample grocery list generated!', 'success');
   }
 
   const currency = currentGrocery?.currency || '₹';

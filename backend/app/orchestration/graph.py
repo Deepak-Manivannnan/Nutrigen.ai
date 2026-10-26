@@ -2,14 +2,11 @@ import asyncio
 from typing import Dict, Any, Optional
 from langgraph.graph import StateGraph, START, END
 from backend.app.schemas.state import PlanState
-from backend.app.schemas.domain import MealPlan, NutritionReport, AllergyReport, GroceryList
+from backend.app.schemas.domain import MealPlan, NutritionReport, AllergyReport
 from backend.app.agents.planner.agent import PlannerAgent
 from backend.app.agents.nutrition.agent import NutritionAgent
 from backend.app.agents.allergy.agent import AllergyAgent
-from backend.app.agents.shopper.agent import ShopperAgent
 from backend.app.orchestration.supervisor.agent import SupervisorAgent
-from backend.app.guardrails.output_checks import verify_output_safety
-from backend.app.db.session import AsyncSessionLocal
 from backend.app.observability.logging import get_logger
 
 logger = get_logger("orchestration.graph")
@@ -18,18 +15,21 @@ def create_meal_planner_graph(
     planner: Optional[PlannerAgent] = None,
     nutrition: Optional[NutritionAgent] = None,
     allergy: Optional[AllergyAgent] = None,
-    shopper: Optional[ShopperAgent] = None,
     supervisor: Optional[SupervisorAgent] = None
 ):
     """
     Constructs the LangGraph multi-agent workflow.
     Rule: Worker agents communicate only with the Supervisor (hub-and-spoke).
     Nutrition and Allergy execute reviews in parallel.
+
+    The graph ends at a reviewed DRAFT. The Shopper and the final output
+    guardrail are not part of drafting: they run only when the user approves
+    the plan (see orchestration/approval.py), so the grocery list is built once,
+    for the version the user actually approved.
     """
     p_agent = planner or PlannerAgent()
     n_agent = nutrition or NutritionAgent()
     a_agent = allergy or AllergyAgent()
-    s_agent = shopper or ShopperAgent()
     sup_agent = supervisor or SupervisorAgent()
 
     # --- Node Definitions ---
@@ -388,100 +388,19 @@ def create_meal_planner_graph(
                 "trace": [msg]
             }
 
-        # proceed_shopper
-        msg = await sup_agent.log_step(
-            state=state,
-            from_agent="supervisor",
-            to_agent="shopper_agent",
-            msg_type="task",
-            content="Reviews passed. Supervisor instructing Shopper Agent to aggregate grocery list and verify mandi costs.",
-            payload={"task": "build_grocery_list"}
-        )
-        return {
-            "system_message": decision.reason,
-            "trace": [msg]
-        }
-
-    async def shopper_node(state: PlanState) -> Dict[str, Any]:
-        """Shopper Agent: Compiles grocery list and costs."""
-        plan = state.current_plan
-        if not plan:
-            return {"status": "failed", "system_message": "Missing plan for shopper."}
-
-        msg_start = await sup_agent.log_step(
-            state=state,
-            from_agent="supervisor",
-            to_agent="shopper_agent",
-            msg_type="task",
-            content="Shopper Agent aggregating meal ingredients and querying Mandi/CEDA market rates...",
-            payload={"task": "build_grocery_list"}
-        )
-
-        grocery_list: GroceryList = await s_agent.build_grocery_list(plan, task_id=state.task_id)
-
-        msg = await sup_agent.log_step(
-            state=state,
-            from_agent="shopper_agent",
-            to_agent="supervisor",
-            msg_type="draft",
-            content=f"Shopper Agent compiled grocery basket: {len(grocery_list.items)} items, estimated total {grocery_list.currency} {grocery_list.total_estimated_cost:.2f}.",
-            payload={
-                "items_count": len(grocery_list.items),
-                "total_cost": grocery_list.total_estimated_cost,
-                "currency": grocery_list.currency
-            }
-        )
-
-        return {
-            "grocery_list": grocery_list,
-            "trace": [msg_start, msg]
-        }
-
-    async def supervisor_finalize_node(state: PlanState) -> Dict[str, Any]:
-        """Supervisor Step 5: Output guardrail & prepare for user approval."""
-        plan = state.current_plan
-        grocery = state.grocery_list
-
-        if not plan or not grocery:
-            return {"status": "failed", "system_message": "Incomplete plan or grocery list."}
-
-        async with AsyncSessionLocal() as session:
-            is_valid, warnings, meta = await verify_output_safety(
-                plan=plan,
-                grocery_list=grocery,
-                user_allergies=state.user_profile.get("allergies", []),
-                session=session
-            )
-
-        if not is_valid:
-            err = warnings[0] if warnings else "Output guardrail safety check failed."
-            msg = await sup_agent.log_step(
-                state=state,
-                from_agent="supervisor",
-                to_agent="user",
-                msg_type="error",
-                content=f"Output Guardrail Safety Veto: {err}",
-                payload={"error": err}
-            )
-            return {"status": "failed", "system_message": err, "trace": [msg]}
-
-        # Output guardrail passed! Status is 'reviewing' waiting for human-in-the-loop approval
+        # Both reviews passed: the reviewed draft goes back to the user for
+        # approval. No grocery list yet - that is built only on approval.
         msg = await sup_agent.log_step(
             state=state,
             from_agent="supervisor",
             to_agent="user",
             msg_type="approve",
-            content="Output guardrails verified. Meal plan and Agmarknet grocery basket ready for user review.",
-            payload={
-                "summary": "Plan and grocery list ready for user review and approval.",
-                "disclaimer": meta.get("disclaimer"),
-                "warnings": warnings
-            }
+            content="Nutrition and Allergy reviews passed. Draft plan ready for the user to review and approve.",
+            payload={"summary": "Draft plan ready for user review and approval."}
         )
-
         return {
             "status": "reviewing",
-            "system_message": "Your meal plan and grocery list have been generated safely and are ready for approval.",
+            "system_message": "Your meal plan has been checked and is ready for your review.",
             "trace": [msg]
         }
 
@@ -502,7 +421,8 @@ def create_meal_planner_graph(
         decision = sup_agent.evaluate_reviews(state)
         if decision.action == "retry_planner":
             return "planner"
-        return "shopper"
+        # Reviews passed: stop at the draft. The Shopper runs only on approval.
+        return END
 
     # --- Build the StateGraph ---
     workflow = StateGraph(PlanState)
@@ -511,8 +431,6 @@ def create_meal_planner_graph(
     workflow.add_node("planner", planner_node)
     workflow.add_node("parallel_reviews", parallel_reviews_node)
     workflow.add_node("supervisor_evaluate", supervisor_evaluate_node)
-    workflow.add_node("shopper", shopper_node)
-    workflow.add_node("supervisor_finalize", supervisor_finalize_node)
 
     # Wire Edges
     workflow.add_edge(START, "supervisor_init")
@@ -520,7 +438,5 @@ def create_meal_planner_graph(
     workflow.add_edge("planner", "parallel_reviews")
     workflow.add_edge("parallel_reviews", "supervisor_evaluate")
     workflow.add_conditional_edges("supervisor_evaluate", route_after_evaluation)
-    workflow.add_edge("shopper", "supervisor_finalize")
-    workflow.add_edge("supervisor_finalize", END)
 
     return workflow.compile()

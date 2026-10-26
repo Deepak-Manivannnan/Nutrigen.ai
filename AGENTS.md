@@ -74,10 +74,10 @@ The input guardrail is not an agent. It is plain code (Mifflin-St Jeor formula) 
 3. Save everything in shared state and start the **Planner**
 4. Read the plan, then start **Nutrition and Allergy in parallel**
 5. Wait for both reports, then decide:
-   - Both OK → start the **Shopper**
+   - Both OK → save the plan as a **Draft** and show it to the user
    - Any problem and rounds left → send the plan back to the **Planner** with the feedback
    - Round 3 reached → ask the user what to relax
-6. Run the output guardrail and ask the user to approve
+6. The user approves (or asks for changes, which go through steps 3–5 again). On approval: start the **Shopper**, then run the output guardrail on the plan and grocery list. Pass → Approved; fail → stays a Draft
 
 **What is LLM and what is code inside the Supervisor:**
 - **LLM:** reads the request, analyzes the reports, writes explanations for the user
@@ -161,7 +161,7 @@ Every worker is an LLM with its own tools that repeats a loop until its goal is 
 2. Act: start the Planner. Observe: plan returned
 3. Act: start Nutrition and Allergy in parallel. Observe: both reports
 4. Think: veto found, round 1 of 3. Act: send the plan back to the Planner with feedback
-5. Repeat until both pass, then start the Shopper
+5. Repeat until both pass, then save the Draft. The Shopper starts only when the user approves
 
 ### Autonomy is matched to risk
 

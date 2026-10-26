@@ -2124,8 +2124,8 @@ async def _run_meal_planner_impl(    user_id: int,
             state.status = "conversational"
             return state
 
-        # Generate grocery list via Shopper Agent
-        from backend.app.agents.shopper.agent import ShopperAgent
+        # Shopper builds the grocery list, then the final safety check (output guardrail)
+        from backend.app.orchestration.approval import build_and_verify_grocery, ApprovalBlocked
         from backend.app.db.models import ist_now
         try:
             # Mark as approving to prevent concurrent approvals
@@ -2144,11 +2144,22 @@ async def _run_meal_planner_impl(    user_id: int,
                         await repo.session.commit()
 
             domain_plan = PlanRepository.to_meal_plan_domain(target_plan)
-            shopper = ShopperAgent()
-            grocery_basket = await shopper.generate_grocery_list(
-                meal_plan=domain_plan,
-                task_id=f"approve-{target_plan.id}"
-            )
+            approval_allergies = list(user_profile.get("allergies") or [])
+            if session:
+                grocery_basket = await build_and_verify_grocery(
+                    meal_plan=domain_plan,
+                    user_allergies=approval_allergies,
+                    session=session,
+                    task_id=f"approve-{target_plan.id}"
+                )
+            else:
+                async with AsyncSessionLocal() as check_session:
+                    grocery_basket = await build_and_verify_grocery(
+                        meal_plan=domain_plan,
+                        user_allergies=approval_allergies,
+                        session=check_session,
+                        task_id=f"approve-{target_plan.id}"
+                    )
             target_plan.grocery_list = grocery_basket.model_dump()
             target_plan.status = "approved"
             target_plan.approved_at = ist_now()
@@ -2195,6 +2206,41 @@ async def _run_meal_planner_impl(    user_id: int,
             # succeeded, so the stored approve offer is spent. Without this it
             # survived into the next turn and was re-presented as if the plan
             # were still a draft.
+            state.pending_workflow = None
+            return state
+        except ApprovalBlocked as blocked:
+            # The final safety check failed: the plan stays a draft and no
+            # grocery list is saved. Tell the user why, plainly.
+            if session:
+                repo = PlanRepository(session)
+                p_db = await repo.get_by_id(target_plan.id)
+                if p_db:
+                    p_db.status = "draft"
+                    await repo.session.commit()
+            else:
+                async with AsyncSessionLocal() as temp_session:
+                    repo = PlanRepository(temp_session)
+                    p_db = await repo.get_by_id(target_plan.id)
+                    if p_db:
+                        p_db.status = "draft"
+                        await repo.session.commit()
+            logger.warning(f"Output guardrail blocked chat approval of plan #{target_plan.id}")
+            context_prompt = (
+                f"The user asked to approve the meal plan '{target_plan.name}', but the final safety check blocked it: "
+                f"{blocked.reason} "
+                f"In polite, natural English, explain that the plan was NOT approved, say which item caused it, "
+                f"that it is still a draft, and offer to swap that meal so they can approve it. "
+                f"Do NOT say the plan was approved."
+            )
+            response_text = await supervisor.generate_conversational_response(
+                user_message=user_message,
+                context=context_prompt,
+                history=history,
+                user_name=user_profile.get("name")
+            )
+            state.system_message = response_text
+            state.status = "draft"
+            state.plan_id = target_plan.id
             state.pending_workflow = None
             return state
         except Exception as e:

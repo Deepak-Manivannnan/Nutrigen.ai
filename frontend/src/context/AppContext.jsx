@@ -465,7 +465,7 @@ export function AppProvider({ children }) {
         // closed: leave the plan as it is and say so.
         console.warn('Backend plan approval error:', err);
         addToast(
-          "Couldn't approve your plan on the server. Nothing was changed - please try again.",
+          err?.userMessage || "Couldn't approve your plan on the server. Nothing was changed - please try again.",
           'error'
         );
         return false;

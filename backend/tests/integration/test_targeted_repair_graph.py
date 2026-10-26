@@ -68,16 +68,13 @@ class FakeAllergy:
         return AllergyReport(passed=True, summary="clean")
 
 
-class FakeShopper:
-    async def build_grocery_list(self, plan, task_id=None):
-        return GroceryList(items=[GroceryItem(name="rice", total_grams=100.0)], total_estimated_cost=1.0)
 
 
 async def test_retry_round_repairs_only_the_flagged_meal_instead_of_regenerating():
     planner = FakePlanner()
     graph = create_meal_planner_graph(
         planner=planner, nutrition=FakeNutrition(), allergy=FakeAllergy(),
-        shopper=FakeShopper(), supervisor=SupervisorAgent(),
+        supervisor=SupervisorAgent(),
     )
     state = PlanState(task_id="t-repair-1", user_id=1, user_profile=PROFILE, days=2, calorie_target=2550.0)
 
@@ -124,7 +121,7 @@ async def test_failed_repair_falls_back_to_writing_the_whole_plan():
     planner = BrokenRepairPlanner()
     graph = create_meal_planner_graph(
         planner=planner, nutrition=FakeNutrition(), allergy=FakeAllergy(),
-        shopper=FakeShopper(), supervisor=SupervisorAgent(),
+        supervisor=SupervisorAgent(),
     )
     state = PlanState(task_id="t-repair-2", user_id=1, user_profile=PROFILE, days=2, calorie_target=2550.0)
 
@@ -154,7 +151,7 @@ async def test_editing_a_meal_uses_the_edit_path_and_never_the_repair_or_full_re
     planner = EditPlanner()
     graph = create_meal_planner_graph(
         planner=planner, nutrition=FakeNutrition(), allergy=FakeAllergy(),
-        shopper=FakeShopper(), supervisor=SupervisorAgent(),
+        supervisor=SupervisorAgent(),
     )
     state = PlanState(
         task_id="t-edit-1", user_id=1, user_profile=PROFILE, intent="edit_meal",

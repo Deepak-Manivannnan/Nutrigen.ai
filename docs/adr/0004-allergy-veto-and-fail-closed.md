@@ -1,6 +1,6 @@
 # The allergy veto is absolute and verification fails closed
 
-**Status:** Accepted · **Recorded:** 2026-10-22 · **Updated:** 2026-10-25
+**Status:** Accepted · **Recorded:** 2026-10-22 · **Updated:** 2026-10-26
 
 ## Context
 
@@ -17,8 +17,11 @@ Screen allergies in three independent layers and never guess when a layer is una
    This runs inside the Allergy agent and again in the output guardrail.
 2. **Agent investigation.** The Allergy agent can inspect compound ingredients with
    `lookup_ingredient` and explain hidden sources (dashi → fish, ghee → dairy).
-3. **Output guardrail.** The finished plan **and grocery list** are re-screened, plus the
-   declared diet, before the result is returned.
+3. **Output guardrail.** Runs at approval, after the Shopper: the plan **and its grocery
+   list** are re-screened against the user's current allergies, plus the declared diet,
+   before the plan is marked approved. If it fails, the plan stays a draft and no grocery
+   list is saved. Drafts are not re-screened here: the Allergy agent's own code check
+   (layer 1, plus `check_diet_compliance`) already ran on the same meals.
 
 The Supervisor then applies fixed rules:
 

@@ -71,8 +71,11 @@ A request normally travels like this:
 4. The input guardrail validates age, days, calories, diet, and fixed meals.
 5. The Planner drafts; Nutrition and Allergy review in parallel.
 6. A deterministic routing function decides: proceed, revise (max 3 rounds), or escalate.
-7. The Shopper builds the grocery list; the output guardrail re-checks the whole result.
-8. The plan is saved as a draft and shown to the user; approval is a separate, idempotent step.
+7. When both reviews pass, the plan is saved as a draft and shown to the user. No grocery list yet.
+8. The user can ask for changes (each change goes through the Planner and both reviews again).
+9. On approval (chat or button) the Shopper builds the grocery list, then the output guardrail
+   re-checks the whole plan and that list. Pass: the plan is marked approved and the list saved.
+   Fail: it stays a draft with no list, and the user is told why (`orchestration/approval.py`).
 
 ## Vocabulary
 

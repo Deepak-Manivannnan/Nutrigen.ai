@@ -4,7 +4,6 @@ from backend.app.schemas.domain import MealPlan, DayPlan, Meal, Ingredient, Nutr
 from backend.app.agents.planner.agent import PlannerAgent
 from backend.app.agents.nutrition.agent import NutritionAgent
 from backend.app.agents.allergy.agent import AllergyAgent
-from backend.app.agents.shopper.agent import ShopperAgent
 from backend.app.orchestration.supervisor.agent import SupervisorAgent
 from backend.app.orchestration.graph import create_meal_planner_graph
 from backend.tests.fakes.fake_llm import FakeLLMClient
@@ -77,27 +76,15 @@ async def test_full_graph_happy_path():
     )
     fake_a_llm.queue_structured_response(mock_allergy)
 
-    mock_grocery = GroceryList(
-        items=[
-            GroceryItem(name="rolled oats", total_grams=80.0, price_per_kg=120.0, estimated_cost=9.6, price_source="mandi_api"),
-            GroceryItem(name="rice", total_grams=150.0, price_per_kg=50.0, estimated_cost=7.5, price_source="mandi_api")
-        ],
-        total_estimated_cost=17.1,
-        currency="INR"
-    )
-    fake_s_llm.queue_structured_response(mock_grocery)
-
     planner = PlannerAgent(client=fake_p_llm, max_steps=1)
     nutrition = NutritionAgent(client=fake_n_llm, max_steps=1)
     allergy = AllergyAgent(client=fake_a_llm, max_steps=1)
-    shopper = ShopperAgent(client=fake_s_llm, max_steps=1)
     supervisor = SupervisorAgent()
 
     graph = create_meal_planner_graph(
         planner=planner,
         nutrition=nutrition,
         allergy=allergy,
-        shopper=shopper,
         supervisor=supervisor
     )
 
@@ -124,8 +111,9 @@ async def test_full_graph_happy_path():
 
     assert final_state.status == "reviewing"
     assert final_state.current_plan is not None
-    assert final_state.grocery_list is not None
-    assert len(final_state.trace) >= 5
+    # Drafting never builds a grocery list; that happens only on approval.
+    assert final_state.grocery_list is None
+    assert len(final_state.trace) >= 4
 
     # Check architectural constraint: all messages must be to or from supervisor
     for msg in final_state.trace:
@@ -258,23 +246,15 @@ async def test_graph_allergy_veto_replanning_loop():
     ))
     fake_a_llm.queue_structured_response(AllergyReport(passed=True, violations=[]))
 
-    # Shopper finishes on round 2
-    fake_s_llm.queue_structured_response(GroceryList(
-        items=[GroceryItem(name="rolled oats", total_grams=100.0, price_per_kg=120.0, estimated_cost=12.0, price_source="mandi_api")],
-        total_estimated_cost=12.0
-    ))
-
     planner = PlannerAgent(client=fake_p_llm, max_steps=1)
     nutrition = NutritionAgent(client=fake_n_llm, max_steps=1)
     allergy = AllergyAgent(client=fake_a_llm, max_steps=1)
-    shopper = ShopperAgent(client=fake_s_llm, max_steps=1)
     supervisor = SupervisorAgent()
 
     graph = create_meal_planner_graph(
         planner=planner,
         nutrition=nutrition,
         allergy=allergy,
-        shopper=shopper,
         supervisor=supervisor
     )
 
@@ -301,7 +281,6 @@ async def test_graph_allergy_veto_replanning_loop():
     assert final_state.status == "reviewing"
     assert final_state.round == 2
     assert final_state.plan_version == 2
-    # Verify Shopper ran only after round 2 approved
-    assert final_state.grocery_list is not None
-    assert final_state.grocery_list.items[0].name == "rolled oats"
+    # Drafting never builds a grocery list; that happens only on approval.
+    assert final_state.grocery_list is None
 

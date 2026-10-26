@@ -270,7 +270,16 @@ export async function approvePlanApi(planId) {
   const res = await authFetch(`${API_BASE}/plans/${planId}/approve`, {
     method: 'POST',
   });
-  if (!res.ok) throw new Error(`Failed to approve plan: ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(`Failed to approve plan: ${res.status}`);
+    // 422 = the final safety check blocked approval; its detail is written
+    // for the user (which item, and that the plan is still a draft).
+    if (res.status === 422) {
+      const data = await res.json().catch(() => ({}));
+      if (typeof data.detail === 'string') err.userMessage = data.detail;
+    }
+    throw err;
+  }
   return await res.json();
 }
 

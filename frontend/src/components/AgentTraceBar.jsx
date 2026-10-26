@@ -22,7 +22,6 @@ const STAGES = [
   { key: 'planning', label: 'Building your plan', agent: 'planner' },
   { key: 'nutrition', label: 'Checking calories', agent: 'nutrition' },
   { key: 'allergy', label: 'Checking allergens', agent: 'allergy' },
-  { key: 'grocery', label: 'Building grocery list', agent: 'shopper' },
 ];
 
 // Progress copy for the active stage, refined by what the agent is doing.
@@ -199,13 +198,6 @@ function applyEvent(prev, from, to, type, payload) {
     else start('allergy', '');
     return [pass];
   }
-
-  if (type === 'task' && to === 'shopper_agent') {
-    start('grocery', '');
-    return [pass];
-  }
-
-  if (from === 'shopper_agent' && type === 'draft') setStatus('grocery', 'done');
 
   return [pass];
 }

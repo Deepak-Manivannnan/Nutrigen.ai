@@ -7,6 +7,9 @@ from sqlalchemy.orm import selectinload
 from backend.app.db.models import Plan, ist_now
 from backend.app.db.repositories.plans import PlanRepository
 from backend.app.api.deps import get_plan_repository, get_authenticated_user_id
+from backend.app.observability.logging import get_logger
+
+logger = get_logger("api.plans")
 
 router = APIRouter(prefix="/plans", tags=["Meal Plans"])
 
@@ -136,7 +139,9 @@ async def approve_plan(
 ):
     """
     Human-in-the-loop: User reviews the generated meal plan and approves it.
-    Generates/finalizes the grocery list via Shopper Agent, and updates status from 'draft' to 'approved'.
+    The Shopper builds the grocery list, then the output guardrail re-checks the
+    plan and that list. Only if it passes is the list saved and the plan marked
+    'approved'; otherwise it stays a draft with no list and a 422 explains why.
     Idempotent: if already approved, returns existing plan without regenerating grocery.
     """
     plan = await plan_repo.get_by_id(plan_id)
@@ -156,16 +161,25 @@ async def approve_plan(
     plan.status = "approving"
     await plan_repo.session.commit()
 
-    # Generate grocery list via Shopper Agent
-    from backend.app.agents.shopper.agent import ShopperAgent
+    # Shopper builds the grocery list, then the final safety check (output guardrail)
+    from backend.app.orchestration.approval import build_and_verify_grocery, ApprovalBlocked
+    from backend.app.db.repositories.users import UserRepository
     try:
+        user = await UserRepository(plan_repo.session).get_by_id(caller_id)
+        user_allergies = [a.allergen for a in (user.allergies if user else [])]
         domain_plan = PlanRepository.to_meal_plan_domain(plan)
-        shopper = ShopperAgent()
-        grocery_list = await shopper.generate_grocery_list(
+        grocery_list = await build_and_verify_grocery(
             meal_plan=domain_plan,
+            user_allergies=user_allergies,
+            session=plan_repo.session,
             task_id=f"approve-{plan_id}"
         )
         plan.grocery_list = grocery_list.model_dump()
+    except ApprovalBlocked as blocked:
+        plan.status = "draft"  # Not approved, and no grocery list is saved
+        await plan_repo.session.commit()
+        logger.warning(f"Output guardrail blocked approval of plan #{plan_id}")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=blocked.reason)
     except Exception as e:
         plan.status = "draft"  # Revert on failure
         await plan_repo.session.commit()

@@ -7,6 +7,7 @@ import RedirectIfAuthenticated from './components/RedirectIfAuthenticated';
 import LandingPage from './pages/LandingPage';
 import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import OnboardingPage from './pages/OnboardingPage';
 import HomePage from './pages/HomePage';
 import ChatPage from './pages/ChatPage';
@@ -46,6 +47,14 @@ export default function App() {
             element={
               <RedirectIfAuthenticated>
                 <SignUpPage />
+              </RedirectIfAuthenticated>
+            }
+          />
+          <Route
+            path="/forgot-password"
+            element={
+              <RedirectIfAuthenticated>
+                <ForgotPasswordPage />
               </RedirectIfAuthenticated>
             }
           />

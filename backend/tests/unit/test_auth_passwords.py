@@ -31,7 +31,7 @@ class FakeRepo:
     async def set_password_hash(self, user, new_hash):
         user.password_hash = new_hash
 
-    async def create_account(self, name, email, password_hash):
+    async def create_account(self, name, email, password_hash, **kw):
         self.created = (name, email, password_hash)
         return FakeUser(password_hash)
 
@@ -45,8 +45,13 @@ def _login(payload, repo):
     return auth.login(payload, repo, FakeRefreshRepo())
 
 
+class FakeCodes:
+    async def consume_ticket(self, email, purpose, ticket):
+        return None
+
+
 def _register(payload, repo):
-    return auth.register(payload, repo, FakeRefreshRepo())
+    return auth.register(payload, repo, FakeRefreshRepo(), FakeCodes())
 
 
 @pytest.fixture(autouse=True)

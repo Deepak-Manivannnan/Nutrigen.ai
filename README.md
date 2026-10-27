@@ -206,6 +206,10 @@ The system employs a swarm of specialized agents orchestrated via LangGraph:
 | `FRONTEND_ORIGINS` | Website address(es) allowed to call the API from a browser, comma separated, no trailing slash (e.g. `https://nutrigen-frontend.onrender.com`). Empty in production means no website is allowed; in development any `localhost` port works | Required in production |
 | `REFRESH_TOKEN_TTL_DAYS` | How many days of not using the app before a user must sign in again (each use renews it) | `30` |
 | `DEBUG` | Verbose debug logging (can include user messages). Keep off in production | `false` |
+| `GOOGLE_CLIENT_ID` | Google OAuth Web Client ID (backend checks Google sign-in tokens against it). Empty turns Google sign-in off | Optional |
+| `VITE_GOOGLE_CLIENT_ID` | Same Client ID, for the frontend's "Continue with Google" button. Set on the frontend service; read at build time | Optional |
+| `BREVO_API_KEY` | Brevo API key (Transactional email: All) for sign-up and password-reset codes | Required for email sign-up |
+| `EMAIL_FROM` / `EMAIL_FROM_NAME` | Verified Brevo sender address and display name for code emails | Required for email sign-up |
 
 ---
 

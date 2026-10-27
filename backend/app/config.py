@@ -61,6 +61,22 @@ class Settings(BaseSettings):
     # out a fresh key, so someone who keeps using the app is never signed out;
     # someone who stays away this long has to sign in again.
     refresh_token_ttl_days: int = 30
+
+    # --- Sign-in with Google and email codes --------------------------------
+    # Public OAuth Web Client ID from Google Cloud. Empty = Google sign-in off.
+    google_client_id: str = ""
+    # Brevo (transactional email) for verification and password-reset codes.
+    brevo_api_key: str = ""
+    email_from: str = ""
+    email_from_name: str = "NutriGen.ai"
+    # Code rules: how long a code lives, wrong tries allowed, resend cooldown,
+    # and a per-email cap on codes sent per hour (stops email flooding).
+    email_code_ttl_minutes: int = 10
+    email_code_max_attempts: int = 5
+    email_code_resend_seconds: int = 60
+    email_code_max_per_hour: int = 5
+    # After the code is verified, how long the user has to set a password.
+    email_verified_window_minutes: int = 30
     default_calorie_buffer_pct: float = 0.05  # ±5%
     min_calories_adult: int = 1200
     max_calories_adult: int = 4000

@@ -54,11 +54,14 @@ class UserRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def create_account(self, name: str, email: str, password_hash: str) -> User:
+    async def create_account(self, name: str, email: str, password_hash: Optional[str],
+                             email_verified: Optional[bool] = None, google_id: Optional[str] = None) -> User:
         user = User(
             name=name.strip(),
             email=email.strip().lower(),
             password_hash=password_hash,
+            email_verified=email_verified,
+            google_id=google_id,
             # Profile fields left as None - will be set during onboarding
             age=None,
             sex=None,
@@ -77,6 +80,24 @@ class UserRepository:
     async def set_password_hash(self, user: User, new_hash: str) -> None:
         """Store a freshly computed password hash (used to upgrade old hashes)."""
         user.password_hash = new_hash
+        await self.session.commit()
+
+    async def get_by_google_id(self, google_id: str) -> Optional[User]:
+        stmt = select(User).where(User.google_id == google_id).options(selectinload(User.allergies))
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def link_google(self, user: User, google_id: str) -> None:
+        """Attach a Google login to an existing account (same verified email).
+
+        An account created before verification existed was never proven to
+        belong to this email's owner, so its old password is removed: only the
+        real owner (who just proved it through Google) keeps access.
+        """
+        if not user.email_verified:
+            user.password_hash = None
+        user.google_id = google_id
+        user.email_verified = True
         await self.session.commit()
 
     async def get_first(self) -> Optional[User]:

@@ -15,6 +15,11 @@ class User(Base):
     name = Column(String(100), nullable=False)
     email = Column(String(255), unique=True, nullable=True, index=True)
     password_hash = Column(String(255), nullable=True)
+    # True once the email is proven (code or Google). NULL = account created
+    # before verification existed; those keep working as before.
+    email_verified = Column(Boolean, nullable=True)
+    # Google's permanent account id ("sub"); set when the user uses Google.
+    google_id = Column(String(64), unique=True, nullable=True, index=True)
     # Nullable on purpose: registration happens before onboarding, so a user row
     # legitimately exists with no profile yet (has_profile is False until these
     # are filled in). These were NOT NULL, which made MySQL reject registration
@@ -38,6 +43,25 @@ class User(Base):
 
     allergies = relationship("UserAllergy", back_populates="user", cascade="all, delete-orphan")
     plans = relationship("Plan", back_populates="user", cascade="all, delete-orphan")
+
+class EmailCode(Base):
+    """A one-time code emailed to prove an address (sign-up or password reset).
+
+    Only the hash of the code is stored. After a correct code, a separate
+    random ticket (also stored hashed) lets the same browser finish the step.
+    """
+    __tablename__ = "email_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), nullable=False, index=True)
+    purpose = Column(String(20), nullable=False)  # "signup" | "reset"
+    code_hash = Column(String(64), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=False)
+    verified_at = Column(DateTime, nullable=True)
+    ticket_hash = Column(String(64), nullable=True)
+    created_at = Column(DateTime, nullable=False)
+
 
 class UserAllergy(Base):
     __tablename__ = "user_allergies"

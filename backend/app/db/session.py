@@ -37,6 +37,8 @@ async def init_db():
         migrations = [
             "ALTER TABLE users ADD COLUMN email VARCHAR(255) UNIQUE",
             "ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)",
+            "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NULL",
+            "ALTER TABLE users ADD COLUMN google_id VARCHAR(64) NULL UNIQUE",
             "ALTER TABLE plans ADD COLUMN name VARCHAR(150)",
             "ALTER TABLE plans ADD COLUMN version INT NOT NULL DEFAULT 1",
             "ALTER TABLE plans ADD COLUMN diet_type VARCHAR(50) DEFAULT 'veg'",

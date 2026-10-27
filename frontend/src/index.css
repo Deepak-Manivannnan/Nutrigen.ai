@@ -4964,3 +4964,29 @@ ol {
     right: 9px;
   }
 }
+
+
+/* --- Sign in with Google + email code steps ------------------------------ */
+.auth-divider.auth-divider-spaced { margin: var(--space-5) 0 var(--space-4); }
+
+.google-btn-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.google-btn-wrap.is-busy { opacity: 0.6; pointer-events: none; }
+.google-btn-slot { width: 100%; min-height: 44px; display: flex; justify-content: center; }
+.google-btn-status { font-size: var(--text-xs); color: var(--gray-500); }
+
+.auth-row-end { display: flex; justify-content: flex-end; margin-top: -4px; }
+.auth-link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-size: var(--text-sm); font-family: inherit; font-weight: 600; color: var(--green-600);
+}
+.auth-link:hover { color: var(--green-700); text-decoration: underline; }
+.auth-link:disabled { color: var(--gray-400); cursor: default; text-decoration: none; }
+
+.auth-info {
+  background: var(--green-50, #f0fdf4); border: 1px solid #bbf7d0; color: var(--green-700, #15803d);
+  border-radius: var(--radius-md); padding: 10px 14px; font-size: var(--text-sm); margin-bottom: var(--space-4);
+}
+.auth-step-note { font-size: var(--text-sm); color: var(--gray-600); margin: 0; }
+.code-input { letter-spacing: 6px; font-size: var(--text-lg, 18px); font-weight: 600; text-align: center; }
+.code-actions { display: flex; justify-content: space-between; align-items: center; font-size: var(--text-sm); }
+.verified-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--green-700, #15803d); font-size: var(--text-sm); font-weight: 600; }

@@ -4,6 +4,7 @@ import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { API_BASE, setAuthToken } from '../utils/api';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
+import GoogleButton, { googleSignInEnabled } from '../components/GoogleButton';
 
 export default function SignInPage() {
   const navigate = useNavigate();
@@ -17,6 +18,16 @@ export default function SignInPage() {
     const { name, value } = e.target;
     setForm(p => ({ ...p, [name]: value }));
     setError('');
+  }
+
+  // Shared by email sign-in and Google sign-in: both return the same session.
+  async function finishSignIn(data) {
+    setAuthToken(data.token);
+    await signIn(data);
+    addToast(`Welcome back, ${data.name}!`, 'success');
+    // replace, not push: the sign-in page must not be left in history, or
+    // Back from Home lands the user on a login form they already passed.
+    navigate(data.has_profile ? '/app/home' : '/onboarding', { replace: true });
   }
 
   async function handleSubmit(e) {
@@ -40,16 +51,7 @@ export default function SignInPage() {
       if (!res.ok) {
         throw new Error(data.detail || 'Invalid email or password.');
       }
-      setAuthToken(data.token);
-      signIn(data);
-      addToast(`Welcome back, ${data.name}!`, 'success');
-      if (data.has_profile) {
-        // replace, not push: the sign-in page must not be left in history, or
-        // Back from Home lands the user on a login form they already passed.
-        navigate('/app/home', { replace: true });
-      } else {
-        navigate('/onboarding', { replace: true });
-      }
+      await finishSignIn(data);
     } catch (err) {
       setError(err.message || 'Unable to sign in. Please check your credentials.');
     } finally {
@@ -121,16 +123,29 @@ export default function SignInPage() {
             </div>
           </div>
 
+          <div className="auth-row-end">
+            <button type="button" className="auth-link" onClick={() => navigate('/forgot-password', { state: { email: form.email.trim() } })} id="goto-forgot">
+              Forgot password?
+            </button>
+          </div>
+
           <button
             type="submit"
             className="btn btn-primary"
-            style={{ width: '100%', padding: '13px', marginTop: 'var(--space-2)' }}
+            style={{ width: '100%', padding: '13px' }}
             disabled={loading}
             id="signin-submit"
           >
             {loading ? 'Signing in…' : 'Sign In'}
           </button>
         </form>
+
+        {googleSignInEnabled && (
+          <>
+            <div className="auth-divider auth-divider-spaced"><span>or continue with</span></div>
+            <GoogleButton onSuccess={finishSignIn} onError={setError} disabled={loading} />
+          </>
+        )}
 
         <div className="auth-footer">
           Don&apos;t have an account?{' '}

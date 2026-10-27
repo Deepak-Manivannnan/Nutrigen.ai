@@ -10,12 +10,17 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from backend.app.api.deps import get_refresh_token_repository, get_user_repository
+from backend.app.api.deps import get_email_code_repository, get_refresh_token_repository, get_user_repository
+from backend.app.config import settings
+from backend.app.db.repositories.email_codes import CodeError, EmailCodeRepository
+from backend.app.tools.email_sender import EmailSendError, send_code_email
+from backend.app.observability.logging import get_logger
 from backend.app.api.security import create_token
 from backend.app.db.repositories.refresh_tokens import RefreshTokenRepository
 from backend.app.db.repositories.users import UserRepository
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+logger = get_logger("api.auth")
 
 # --- Password rules (enforced here, not only in the browser) -----------------
 MIN_PASSWORD_LENGTH = 8
@@ -46,6 +51,28 @@ class RegisterRequest(BaseModel):
     name: str
     email: str
     password: str
+    # One-time ticket from /auth/signup/verify-code: proves the email is real.
+    verification_token: str = ""
+
+
+class SendCodeRequest(BaseModel):
+    email: str
+    name: str = ""
+
+
+class VerifyCodeRequest(BaseModel):
+    email: str
+    code: str
+
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    verification_token: str
+    password: str
+
+
+class GoogleSignInRequest(BaseModel):
+    credential: str
 
 
 class AuthUserResponse(BaseModel):
@@ -119,6 +146,71 @@ def needs_rehash(stored_hash: str) -> bool:
     return _hasher.check_needs_rehash(stored_hash)
 
 
+# --- Shared sign-in response -------------------------------------------------
+async def _auth_response(user, refresh_repo: RefreshTokenRepository) -> AuthUserResponse:
+    has_profile = bool(user.age and user.height_cm and user.weight_kg)
+    profile_data = {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "age": user.age,
+        "sex": user.sex,
+        "height_cm": user.height_cm,
+        "weight_kg": user.weight_kg,
+        "activity_level": user.activity_level,
+        "goal": user.goal,
+        "diet_type": user.diet_type,
+        "dislikes": user.dislikes or [],
+        "allergies": [a.allergen for a in getattr(user, "allergies", [])] if getattr(user, "allergies", None) else [],
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+    } if has_profile else None
+    return AuthUserResponse(
+        id=user.id,
+        name=user.name,
+        email=user.email or "",
+        has_profile=has_profile,
+        profile=profile_data,
+        token=create_token(user.id),
+        refresh_token=await refresh_repo.issue(user.id),
+    )
+
+
+def _clean_email(raw: str) -> str:
+    email = (raw or "").strip().lower()
+    if len(email) > 255 or not _EMAIL_PATTERN.match(email):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please enter a valid email address.")
+    return email
+
+
+def _check_password_rules(password: str) -> None:
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+    if len(password) > MAX_PASSWORD_LENGTH:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Password must be at most {MAX_PASSWORD_LENGTH} characters.")
+
+
+def _code_http_error(err: CodeError) -> HTTPException:
+    return HTTPException(status_code=err.status, detail=err.reason)
+
+
+async def _send_code(codes: EmailCodeRepository, email: str, purpose: str) -> None:
+    try:
+        code = await codes.create(email, purpose)
+    except CodeError as err:
+        raise _code_http_error(err)
+    try:
+        await send_code_email(email, code, purpose)
+    except EmailSendError as err:
+        logger.warning(f"Could not send {purpose} code email: {err}")
+        # The user never got this code, so it must not block a retry.
+        await codes.discard_latest(email, purpose)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="We couldn't send the code right now. Please try again in a minute.")
+
+
 # --- Lockout helpers ---------------------------------------------------------
 def _recent_failures(email: str) -> list:
     cutoff = time.time() - LOCKOUT_SECONDS
@@ -168,6 +260,13 @@ async def login(
         await asyncio.to_thread(verify_password, _DUMMY_HASH, payload.password)
         password_ok = False
 
+    if user and not stored_hash and getattr(user, "google_id", None):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account uses Google sign-in. Please use Continue with Google, "
+                   "or set a password with Forgot password.",
+        )
+
     if not user or not password_ok:
         _record_failure(email)
         raise HTTPException(
@@ -183,39 +282,14 @@ async def login(
         new_hash = await asyncio.to_thread(hash_password, payload.password)
         await user_repo.set_password_hash(user, new_hash)
 
-    has_profile = bool(user.age and user.height_cm and user.weight_kg)
-    profile_data = {
-        "id": user.id,
-        "name": user.name,
-        "email": user.email or email,
-        "age": user.age,
-        "sex": user.sex,
-        "height_cm": user.height_cm,
-        "weight_kg": user.weight_kg,
-        "activity_level": user.activity_level,
-        "goal": user.goal,
-        "diet_type": user.diet_type,
-        "dislikes": user.dislikes or [],
-        "allergies": [a.allergen for a in getattr(user, "allergies", [])] if getattr(user, "allergies", None) else [],
-        "created_at": user.created_at.isoformat() if user.created_at else None,
-        "updated_at": user.updated_at.isoformat() if user.updated_at else None,
-    } if has_profile else None
-
-    return AuthUserResponse(
-        id=user.id,
-        name=user.name,
-        email=user.email or email,
-        has_profile=has_profile,
-        profile=profile_data,
-        token=create_token(user.id),
-        refresh_token=await refresh_repo.issue(user.id),
-    )
+    return await _auth_response(user, refresh_repo)
 
 @router.post("/register", response_model=AuthUserResponse)
 async def register(
     payload: RegisterRequest,
     user_repo: UserRepository = Depends(get_user_repository),
     refresh_repo: RefreshTokenRepository = Depends(get_refresh_token_repository),
+    codes: EmailCodeRepository = Depends(get_email_code_repository),
 ):
     name = payload.name.strip()
     email = payload.email.strip().lower()
@@ -223,39 +297,163 @@ async def register(
     # Plain 400s with readable text: the sign-up page shows `detail` as-is.
     if not name or len(name) > 100:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please enter your name (up to 100 characters).")
-    if len(email) > 255 or not _EMAIL_PATTERN.match(email):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please enter a valid email address.")
-    if len(payload.password) < MIN_PASSWORD_LENGTH:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
-        )
-    if len(payload.password) > MAX_PASSWORD_LENGTH:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Password must be at most {MAX_PASSWORD_LENGTH} characters.",
-        )
+    email = _clean_email(email)
+    _check_password_rules(payload.password)
 
     existing = await user_repo.get_by_email(email)
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="An account with this email already exists.")
 
+    # The email must have been proven with a code first (/auth/signup/*).
+    try:
+        await codes.consume_ticket(email, "signup", payload.verification_token)
+    except CodeError as err:
+        raise _code_http_error(err)
+
     password_hash = await asyncio.to_thread(hash_password, payload.password)
     user = await user_repo.create_account(
         name=name,
         email=email,
-        password_hash=password_hash
+        password_hash=password_hash,
+        email_verified=True,
     )
+    return await _auth_response(user, refresh_repo)
 
-    return AuthUserResponse(
-        id=user.id,
-        name=user.name,
-        email=user.email or email,
-        has_profile=False,
-        profile=None,
-        token=create_token(user.id),
-        refresh_token=await refresh_repo.issue(user.id),
-    )
+
+# --- Sign-up email verification ---------------------------------------------
+@router.post("/signup/send-code")
+async def signup_send_code(
+    payload: SendCodeRequest,
+    user_repo: UserRepository = Depends(get_user_repository),
+    codes: EmailCodeRepository = Depends(get_email_code_repository),
+):
+    email = _clean_email(payload.email)
+    if await user_repo.get_by_email(email):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="An account with this email already exists. Please sign in instead.")
+    await _send_code(codes, email, "signup")
+    return {"message": f"We sent a 6-digit code to {email}.",
+            "resend_after": settings.email_code_resend_seconds}
+
+
+@router.post("/signup/verify-code")
+async def signup_verify_code(
+    payload: VerifyCodeRequest,
+    codes: EmailCodeRepository = Depends(get_email_code_repository),
+):
+    email = _clean_email(payload.email)
+    try:
+        ticket = await codes.verify(email, "signup", payload.code)
+    except CodeError as err:
+        raise _code_http_error(err)
+    return {"verification_token": ticket}
+
+
+# --- Forgot password ----------------------------------------------------------
+_RESET_SENT = "If an account exists for this email, we sent a 6-digit code to it."
+
+
+@router.post("/password/send-code")
+async def password_send_code(
+    payload: SendCodeRequest,
+    user_repo: UserRepository = Depends(get_user_repository),
+    codes: EmailCodeRepository = Depends(get_email_code_repository),
+):
+    email = _clean_email(payload.email)
+    # Same answer whether or not the account exists, so this can't be used to
+    # find out who has an account.
+    if await user_repo.get_by_email(email):
+        await _send_code(codes, email, "reset")
+    return {"message": _RESET_SENT, "resend_after": settings.email_code_resend_seconds}
+
+
+@router.post("/password/verify-code")
+async def password_verify_code(
+    payload: VerifyCodeRequest,
+    codes: EmailCodeRepository = Depends(get_email_code_repository),
+):
+    email = _clean_email(payload.email)
+    try:
+        ticket = await codes.verify(email, "reset", payload.code)
+    except CodeError as err:
+        raise _code_http_error(err)
+    return {"verification_token": ticket}
+
+
+@router.post("/password/reset", response_model=AuthUserResponse)
+async def password_reset(
+    payload: ResetPasswordRequest,
+    user_repo: UserRepository = Depends(get_user_repository),
+    refresh_repo: RefreshTokenRepository = Depends(get_refresh_token_repository),
+    codes: EmailCodeRepository = Depends(get_email_code_repository),
+):
+    email = _clean_email(payload.email)
+    _check_password_rules(payload.password)
+    user = await user_repo.get_by_email(email)
+    try:
+        await codes.consume_ticket(email, "reset", payload.verification_token)
+    except CodeError as err:
+        raise _code_http_error(err)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please verify your email again.")
+    new_hash = await asyncio.to_thread(hash_password, payload.password)
+    await user_repo.set_password_hash(user, new_hash)
+    # Resetting through an emailed code proves the email belongs to them.
+    if not user.email_verified:
+        user.email_verified = True
+        await user_repo.session.commit()
+    _failed_logins.pop(email, None)
+    return await _auth_response(user, refresh_repo)
+
+
+# --- Google sign-in -----------------------------------------------------------
+def verify_google_credential(credential: str) -> dict:
+    """Check Google's signed ID token: signature, expiry, issuer and audience.
+
+    Raises ValueError when the token is not valid for this app.
+    """
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as google_requests
+    return id_token.verify_oauth2_token(credential, google_requests.Request(), settings.google_client_id)
+
+
+@router.post("/google", response_model=AuthUserResponse)
+async def google_sign_in(
+    payload: GoogleSignInRequest,
+    user_repo: UserRepository = Depends(get_user_repository),
+    refresh_repo: RefreshTokenRepository = Depends(get_refresh_token_repository),
+):
+    """Sign in or sign up with Google. One endpoint for both."""
+    if not settings.google_client_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Google sign-in is not available right now.")
+    try:
+        info = await asyncio.to_thread(verify_google_credential, payload.credential)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Google sign-in failed. Please try again.")
+
+    google_id = str(info.get("sub") or "")
+    email = str(info.get("email") or "").strip().lower()
+    if not google_id or not email or info.get("email_verified") is not True:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Your Google account's email isn't verified, so we can't use it to sign in.")
+
+    user = await user_repo.get_by_google_id(google_id)
+    if user is None:
+        user = await user_repo.get_by_email(email)
+        if user is not None:
+            # Same verified email: same account, now also reachable via Google.
+            await user_repo.link_google(user, google_id)
+        else:
+            # New account. The name is copied from Google once; after that the
+            # app's own (editable) name is used and never overwritten.
+            name = (str(info.get("name") or "").strip() or email.split("@", 1)[0])[:100]
+            user = await user_repo.create_account(
+                name=name, email=email, password_hash=None,
+                email_verified=True, google_id=google_id,
+            )
+    return await _auth_response(user, refresh_repo)
 
 @router.post("/refresh", response_model=RefreshResponse)
 async def refresh(

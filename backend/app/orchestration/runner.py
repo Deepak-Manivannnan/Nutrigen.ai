@@ -3321,6 +3321,17 @@ async def _run_meal_planner_impl(    user_id: int,
         if _unused else ""
     )
 
+    # The account was deleted while this plan was being built: there is no
+    # owner left, so nothing may be saved. Drop the result.
+    from backend.app.account_context import is_deleted
+    if is_deleted(user_id):
+        logger.info(f"[{tid}] Account deleted during the run; discarding the plan.")
+        final_state.current_plan = None
+        final_state.pending_workflow = None
+        final_state.status = "failed"
+        final_state.system_message = "This account no longer exists."
+        return final_state
+
     # Persist plan if it exists and status indicates completion (reviewing/approved/escalated/failed)
     if final_state.current_plan and final_state.status in ("reviewing", "approved", "escalated", "failed"):
         try:

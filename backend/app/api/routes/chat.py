@@ -12,6 +12,7 @@ import time
 import uuid
 
 logger = get_logger("api.chat")
+from backend.app.account_context import current_user_id  # noqa: E402
 router = APIRouter(prefix="/chat", tags=["Chat & Agents"])
 
 # Delivery inbox: finished chat responses keyed by task_id so a client that
@@ -123,6 +124,9 @@ async def chat_interaction(
         "suggested_target_calories": user.suggested_target_calories,
     }
 
+    # Tag every agent trace row of this run with its owner (account deletion
+    # removes them by this id).
+    current_user_id.set(user.id)
     try:
         final_state = await run_meal_planner(
             user_id=user.id,
@@ -164,6 +168,12 @@ async def chat_interaction(
         latest_plan = await plan_repo.get_latest_by_user(user.id)
         if latest_plan:
             plan_id = latest_plan.id
+
+    # Deleted while the run was going: answer like any signed-out request and
+    # keep nothing (no inbox entry).
+    from backend.app.account_context import is_deleted
+    if is_deleted(caller_id):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="This account no longer exists.")
 
     resp_text = final_state.system_message or "Plan generation complete."
     is_wf = (

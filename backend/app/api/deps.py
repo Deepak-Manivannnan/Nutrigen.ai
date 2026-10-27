@@ -7,6 +7,7 @@ from backend.app.db.repositories.trace import TraceRepository
 from backend.app.db.repositories.refresh_tokens import RefreshTokenRepository
 from backend.app.db.repositories.email_codes import EmailCodeRepository
 from backend.app.api.security import decode_token
+from backend.app.account_context import is_deleted
 
 async def get_user_repository(session: AsyncSession = Depends(get_db)) -> UserRepository:
     return UserRepository(session)
@@ -37,7 +38,8 @@ def get_authenticated_user_id(authorization: str = Header(default="")) -> int:
             detail="Not signed in.",
         )
     user_id = decode_token(authorization.split(" ", 1)[1].strip())
-    if user_id is None:
+    # A deleted account's still-unexpired token must stop working at once.
+    if user_id is None or is_deleted(user_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Your session has expired. Please sign in again.",

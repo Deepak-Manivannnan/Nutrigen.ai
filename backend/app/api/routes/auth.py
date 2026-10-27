@@ -10,10 +10,13 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from backend.app.api.deps import get_email_code_repository, get_refresh_token_repository, get_user_repository
+from backend.app.api.deps import (
+    get_authenticated_user_id, get_email_code_repository, get_refresh_token_repository, get_user_repository,
+)
+from backend.app import account_context
 from backend.app.config import settings
 from backend.app.db.repositories.email_codes import CodeError, EmailCodeRepository
-from backend.app.tools.email_sender import EmailSendError, send_code_email
+from backend.app.tools.email_sender import EmailSendError, send_account_deleted_email, send_code_email
 from backend.app.observability.logging import get_logger
 from backend.app.api.security import create_token
 from backend.app.db.repositories.refresh_tokens import RefreshTokenRepository
@@ -71,8 +74,16 @@ class ResetPasswordRequest(BaseModel):
     password: str
 
 
+class DeleteAccountConfirmRequest(BaseModel):
+    code: str = ""
+    password: str = ""
+
+
 class GoogleSignInRequest(BaseModel):
-    credential: str
+    # Either Google's signed ID token (official Google button) or an OAuth
+    # access token (our own "Continue with Google" button, popup token flow).
+    credential: str = ""
+    access_token: str = ""
 
 
 class AuthUserResponse(BaseModel):
@@ -260,13 +271,6 @@ async def login(
         await asyncio.to_thread(verify_password, _DUMMY_HASH, payload.password)
         password_ok = False
 
-    if user and not stored_hash and getattr(user, "google_id", None):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="This account uses Google sign-in. Please use Continue with Google, "
-                   "or set a password with Forgot password.",
-        )
-
     if not user or not password_ok:
         _record_failure(email)
         raise HTTPException(
@@ -332,7 +336,7 @@ async def signup_send_code(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="An account with this email already exists. Please sign in instead.")
     await _send_code(codes, email, "signup")
-    return {"message": f"We sent a 6-digit code to {email}.",
+    return {"message": f"Check your inbox. We've sent a code to {email}.",
             "resend_after": settings.email_code_resend_seconds}
 
 
@@ -350,7 +354,6 @@ async def signup_verify_code(
 
 
 # --- Forgot password ----------------------------------------------------------
-_RESET_SENT = "If an account exists for this email, we sent a 6-digit code to it."
 
 
 @router.post("/password/send-code")
@@ -364,7 +367,8 @@ async def password_send_code(
     # find out who has an account.
     if await user_repo.get_by_email(email):
         await _send_code(codes, email, "reset")
-    return {"message": _RESET_SENT, "resend_after": settings.email_code_resend_seconds}
+    return {"message": f"Check your inbox. We've sent a code to {email}.",
+            "resend_after": settings.email_code_resend_seconds}
 
 
 @router.post("/password/verify-code")
@@ -417,6 +421,37 @@ def verify_google_credential(credential: str) -> dict:
     return id_token.verify_oauth2_token(credential, google_requests.Request(), settings.google_client_id)
 
 
+GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+
+
+async def verify_google_access_token(access_token: str) -> dict:
+    """Check an OAuth access token with Google and return the user's details.
+
+    Google's tokeninfo says which app the token was issued to; it must be OUR
+    client id, otherwise a token issued to some other website could be
+    replayed here. Then userinfo gives the profile (sub, email, name).
+    Raises ValueError when the token is not valid for this app.
+    """
+    import httpx
+    async with httpx.AsyncClient(timeout=10) as client:
+        info = await client.get(GOOGLE_TOKENINFO_URL, params={"access_token": access_token})
+        if info.status_code != 200:
+            raise ValueError("invalid access token")
+        tok = info.json()
+        if settings.google_client_id not in (tok.get("aud"), tok.get("azp")):
+            raise ValueError("token was issued to a different app")
+        prof = await client.get(GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
+        if prof.status_code != 200:
+            raise ValueError("could not read Google profile")
+        data = prof.json()
+    if tok.get("sub") and data.get("sub") != tok.get("sub"):
+        raise ValueError("token and profile do not match")
+    verified = data.get("email_verified")
+    data["email_verified"] = verified is True or str(verified).lower() == "true"
+    return data
+
+
 @router.post("/google", response_model=AuthUserResponse)
 async def google_sign_in(
     payload: GoogleSignInRequest,
@@ -428,7 +463,12 @@ async def google_sign_in(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Google sign-in is not available right now.")
     try:
-        info = await asyncio.to_thread(verify_google_credential, payload.credential)
+        if payload.access_token:
+            info = await verify_google_access_token(payload.access_token)
+        elif payload.credential:
+            info = await asyncio.to_thread(verify_google_credential, payload.credential)
+        else:
+            raise ValueError("no Google token sent")
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Google sign-in failed. Please try again.")
@@ -481,3 +521,95 @@ async def logout(
     """Sign out for good on this device: the long-lived key stops working."""
     await refresh_repo.revoke(payload.refresh_token)
     return {"message": "Signed out"}
+
+
+# --- Delete account -----------------------------------------------------------
+def mask_email(email: str) -> str:
+    """d•••••k@gmail.com: enough to recognise, not enough to read off a screen."""
+    local, _, domain = (email or "").partition("@")
+    if not domain:
+        return email
+    if len(local) <= 2:
+        hidden = local[:1] + "•" * max(1, len(local) - 1)
+    else:
+        hidden = local[0] + "•" * min(6, len(local) - 2) + local[-1]
+    return f"{hidden}@{domain}"
+
+
+def _delete_method(user) -> str:
+    """Verified email (including Google) -> emailed code. Older accounts whose
+    email was never verified -> their password instead (no code is sent)."""
+    if user.email_verified and user.email:
+        return "code"
+    return "password"
+
+
+@router.post("/account/delete/start")
+async def delete_account_start(
+    caller_id: int = Depends(get_authenticated_user_id),
+    user_repo: UserRepository = Depends(get_user_repository),
+    codes: EmailCodeRepository = Depends(get_email_code_repository),
+):
+    """Step 1 of deleting an account: say how the user must confirm, and send
+    the code when that is by email."""
+    user = await user_repo.get_by_id(caller_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
+    method = _delete_method(user)
+    if method == "code":
+        await _send_code(codes, user.email.strip().lower(), "delete")
+        return {"method": "code", "masked_email": mask_email(user.email),
+                "resend_after": settings.email_code_resend_seconds}
+    if not user.password_hash:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="We couldn't confirm it's you. Please sign in again and retry.")
+    return {"method": "password"}
+
+
+@router.post("/account/delete/confirm")
+async def delete_account_confirm(
+    payload: DeleteAccountConfirmRequest,
+    caller_id: int = Depends(get_authenticated_user_id),
+    user_repo: UserRepository = Depends(get_user_repository),
+    codes: EmailCodeRepository = Depends(get_email_code_repository),
+):
+    """Step 2: check the code (or password), then delete everything."""
+    user = await user_repo.get_by_id(caller_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
+    email = (user.email or "").strip().lower()
+    name = user.name or ""
+    used_google = bool(user.google_id)
+
+    if _delete_method(user) == "code":
+        try:
+            await codes.verify(email, "delete", payload.code)
+        except CodeError as err:
+            raise _code_http_error(err)
+    else:
+        _check_not_locked(email)
+        ok = await asyncio.to_thread(verify_password, user.password_hash or "", payload.password)
+        if not ok:
+            _record_failure(email)
+            # 400, not 401: the session is fine, only the password is wrong. A
+            # 401 here would make the browser think the user was signed out.
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="That password is not correct.")
+        _failed_logins.pop(email, None)
+
+    # From here on this account is gone: its tokens stop working and a plan
+    # that is still being built for it saves nothing.
+    account_context.mark_deleted(caller_id)
+    try:
+        await user_repo.delete_account(user)
+    except Exception:
+        account_context.clear_deleted(caller_id)
+        logger.error(f"Account deletion failed for user {caller_id}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="We couldn't delete your account right now. Nothing was deleted - please try again.")
+
+    if email:
+        try:
+            await send_account_deleted_email(email, name, used_google=used_google)
+        except EmailSendError as err:
+            logger.warning(f"Account deleted, but the goodbye email failed: {err}")
+    return {"deleted": True}

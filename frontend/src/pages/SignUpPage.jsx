@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Mail, Lock, Eye, EyeOff, User, KeyRound, CheckCircle2 } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, User, CheckCircle2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { API_BASE, setAuthToken } from '../utils/api';
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 import GoogleButton, { googleSignInEnabled } from '../components/GoogleButton';
+import OtpInput from '../components/OtpInput';
 
 async function postJson(path, body) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -64,7 +65,7 @@ export default function SignUpPage() {
     setLoading(true);
     try {
       const data = await postJson('/auth/signup/send-code', { name: form.name.trim(), email: form.email.trim() });
-      setInfo(data.message);
+      setInfo(form.email.trim());
       setCooldown(data.resend_after || 60);
       setForm(p => ({ ...p, code: '' }));
       setStep('code');
@@ -78,7 +79,7 @@ export default function SignUpPage() {
   async function verifyCode(e) {
     e.preventDefault();
     if (form.code.length !== 6) {
-      setError('Please enter the 6-digit code from your email.');
+      setError('Please enter the code from your email.');
       return;
     }
     setLoading(true);
@@ -150,7 +151,6 @@ export default function SignUpPage() {
             {error}
           </div>
         )}
-        {info && !error && <div className="auth-info" role="status">{info}</div>}
 
         <form className="auth-form" onSubmit={onSubmit} noValidate>
           <div className="form-group">
@@ -160,9 +160,15 @@ export default function SignUpPage() {
             </div>
           </div>
           <div className="form-group">
-            <div className="form-input-icon">
+            <div className="form-input-icon" style={{ position: 'relative' }}>
               <Mail className="icon" size={15} />
-              <input id="signup-email" name="email" type="email" className="form-input" placeholder="Email address" value={form.email} onChange={handleChange} autoComplete="email" disabled={lockDetails} aria-label="Email address" />
+              <input id="signup-email" name="email" type="email"
+                className={`form-input${step === 'password' ? ' is-verified' : ''}`}
+                placeholder="Email address" value={form.email} onChange={handleChange} autoComplete="email"
+                disabled={lockDetails} aria-label={step === 'password' ? 'Email address (verified)' : 'Email address'} />
+              {step === 'password' && (
+                <span className="verified-check" title="Email verified" aria-hidden="true"><CheckCircle2 size={17} /></span>
+              )}
             </div>
           </div>
 
@@ -174,13 +180,10 @@ export default function SignUpPage() {
 
           {step === 'code' && (
             <>
-              <div className="form-group">
-                <div className="form-input-icon">
-                  <KeyRound className="icon" size={15} />
-                  <input id="signup-code" name="code" type="text" inputMode="numeric" autoComplete="one-time-code"
-                    className="form-input code-input" placeholder="6-digit code" value={form.code} onChange={handleChange} autoFocus aria-label="Verification code" />
-                </div>
-              </div>
+              <p className="auth-sent-note" role="status">
+                Check your inbox. We've sent a code to <strong>{info || form.email.trim()}</strong>
+              </p>
+              <OtpInput value={form.code} onChange={code => { setForm(p => ({ ...p, code })); setError(''); }} autoFocus disabled={loading} />
               <div className="code-actions">
                 <button type="button" className="auth-link" onClick={changeEmail}>Change email</button>
                 <button type="button" className="auth-link" onClick={sendCode} disabled={cooldown > 0 || loading}>
@@ -195,8 +198,7 @@ export default function SignUpPage() {
 
           {step === 'password' && (
             <>
-              <div className="code-actions">
-                <span className="verified-chip"><CheckCircle2 size={15} /> Email verified</span>
+              <div className="auth-row-end">
                 <button type="button" className="auth-link" onClick={changeEmail}>Change email</button>
               </div>
               <div className="form-group">

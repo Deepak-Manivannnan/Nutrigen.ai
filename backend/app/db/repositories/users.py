@@ -75,6 +75,8 @@ class UserRepository:
         self.session.add(user)
         await self.session.commit()
         await self.session.refresh(user)
+        from backend.app.account_context import clear_deleted
+        clear_deleted(user.id)
         return await self.get_by_id(user.id)
 
     async def set_password_hash(self, user: User, new_hash: str) -> None:
@@ -99,6 +101,34 @@ class UserRepository:
         user.google_id = google_id
         user.email_verified = True
         await self.session.commit()
+
+    async def delete_account(self, user: User) -> None:
+        """Permanently delete an account and everything it owns.
+
+        Explicit deletes, children first (no ORM lazy loading, which the async
+        driver can't do): meals, plans (grocery lists live on the plan row),
+        allergies, sign-in keys, agent trace rows, emailed codes, then the user.
+        One transaction: either everything goes or nothing does.
+        """
+        from sqlalchemy import delete as sa_delete
+        from backend.app.db.models import AgentTrace, EmailCode, Plan, PlanMeal, RefreshToken
+        uid = user.id
+        email = (user.email or "").strip().lower()
+        plan_ids = select(Plan.id).where(Plan.user_id == uid).scalar_subquery()
+        try:
+            await self.session.execute(sa_delete(PlanMeal).where(PlanMeal.plan_id.in_(plan_ids)))
+            await self.session.execute(sa_delete(Plan).where(Plan.user_id == uid))
+            await self.session.execute(sa_delete(UserAllergy).where(UserAllergy.user_id == uid))
+            await self.session.execute(sa_delete(RefreshToken).where(RefreshToken.user_id == uid))
+            await self.session.execute(sa_delete(AgentTrace).where(AgentTrace.user_id == uid))
+            if email:
+                await self.session.execute(sa_delete(EmailCode).where(EmailCode.email == email))
+            await self.session.execute(sa_delete(User).where(User.id == uid))
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        self.session.expunge_all()
 
     async def get_first(self) -> Optional[User]:
         stmt = select(User).order_by(User.id.asc()).options(selectinload(User.allergies))

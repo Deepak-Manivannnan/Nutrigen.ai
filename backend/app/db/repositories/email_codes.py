@@ -98,8 +98,9 @@ class EmailCodeRepository:
         if not hmac.compare_digest(row.code_hash, hash_value(email, purpose, (code or "").strip())):
             row.attempts += 1
             await self.session.commit()
+            # No countdown shown; only the last allowed try says what to do next.
             left = settings.email_code_max_attempts - row.attempts
-            raise CodeError("That code is not correct." + (f" {left} tries left." if left > 0 else " Please ask for a new code."))
+            raise CodeError("That code is not correct." if left > 0 else "That code is not correct. Please ask for a new code.")
         ticket = secrets.token_urlsafe(32)
         row.verified_at = now
         row.ticket_hash = hash_value(email, purpose, ticket)

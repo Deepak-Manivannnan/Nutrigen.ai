@@ -181,6 +181,26 @@ export function hasCompletedProfile(profile) {
  * Returns null when the account has no completed profile - not the empty
  * shell the API sends - so callers can treat null as "still needs onboarding".
  */
+/** Delete account, step 1: returns { method: 'code' | 'password', masked_email?, resend_after? } */
+export async function startAccountDeletion() {
+  const res = await authFetch(`${API_BASE}/auth/account/delete/start`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "We couldn't start deleting your account. Please try again.");
+  return data;
+}
+
+/** Delete account, step 2: { code } or { password }. Resolves once everything is deleted. */
+export async function confirmAccountDeletion(body) {
+  const res = await authFetch(`${API_BASE}/auth/account/delete/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "We couldn't delete your account. Please try again.");
+  return data;
+}
+
 export async function fetchCurrentProfile(userId) {
   try {
     const url = userId ? `${API_BASE}/profile/${userId}` : `${API_BASE}/profile/me`;

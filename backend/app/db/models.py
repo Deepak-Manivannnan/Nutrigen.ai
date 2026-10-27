@@ -137,6 +137,9 @@ class AgentTrace(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(String(100), nullable=False, index=True)
+    # Owner of the run, so deleting an account also deletes its trace rows.
+    # NULL for rows written before this column existed.
+    user_id = Column(Integer, nullable=True, index=True)
     from_agent = Column(String(50), nullable=False)
     to_agent = Column(String(50), nullable=False)
     type = Column(String(50), nullable=False)  # task, draft, feedback, veto, approve, etc.

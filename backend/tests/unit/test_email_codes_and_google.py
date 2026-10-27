@@ -186,7 +186,7 @@ async def test_no_code_is_sent_for_an_email_that_already_has_an_account(codes, s
 async def test_forgot_password_gives_the_same_answer_for_unknown_emails(codes, sent):
     known = await auth.password_send_code(auth.SendCodeRequest(email="a@b.co"), Users(_user()), codes)
     unknown = await auth.password_send_code(auth.SendCodeRequest(email="x@b.co"), Users(_user()), codes)
-    assert known["message"] == unknown["message"]
+    assert known["message"].replace("a@b.co", "") == unknown["message"].replace("x@b.co", "")
     assert [s[0] for s in sent] == ["a@b.co"]
 
 
@@ -274,10 +274,85 @@ def test_real_google_check_rejects_a_forged_token(monkeypatch):
         auth.verify_google_credential("not.a.real.token")
 
 
-async def test_google_only_account_gets_a_clear_message_on_password_login():
-    class R(Users):
-        pass
+async def test_google_only_account_gets_the_generic_login_error():
     user = _user(password_hash=None, google_id="g-1", email_verified=True)
     with pytest.raises(HTTPException) as err:
-        await auth.login(auth.LoginRequest(email="a@b.co", password="whatever1"), R(user), Refresh())
-    assert "Google" in err.value.detail
+        await auth.login(auth.LoginRequest(email="g-only@b.co", password="whatever1"),
+                         Users(_user(email="g-only@b.co", password_hash=None, google_id="g-1")), Refresh())
+    # Same answer as a wrong password: it must not reveal the account uses Google.
+    assert err.value.detail == auth.INVALID_CREDENTIALS
+    assert "Google" not in err.value.detail
+    auth._failed_logins.pop("g-only@b.co", None)
+
+
+# ------------------------------------------------- Google access-token button
+class FakeResp:
+    def __init__(self, status, data):
+        self.status_code, self._data = status, data
+
+    def json(self):
+        return self._data
+
+
+def _fake_google_http(monkeypatch, tokeninfo, userinfo):
+    import httpx
+
+    class Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            return tokeninfo if "tokeninfo" in url else userinfo
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+
+
+async def test_google_access_token_signs_up_a_new_user(monkeypatch):
+    monkeypatch.setattr(auth.settings, "google_client_id", "my-app")
+    _fake_google_http(monkeypatch,
+                      FakeResp(200, {"aud": "my-app", "sub": "g-9"}),
+                      FakeResp(200, {"sub": "g-9", "email": "New@B.co", "email_verified": True, "name": "Ravi"}))
+    users = Users()
+    res = await auth.google_sign_in(auth.GoogleSignInRequest(access_token="tok"), users, Refresh())
+    assert res.name == "Ravi" and users.created.email == "new@b.co" and users.created.google_id == "g-9"
+
+
+async def test_google_access_token_issued_to_another_app_is_refused(monkeypatch):
+    monkeypatch.setattr(auth.settings, "google_client_id", "my-app")
+    _fake_google_http(monkeypatch,
+                      FakeResp(200, {"aud": "someone-elses-app", "azp": "someone-elses-app", "sub": "g-9"}),
+                      FakeResp(200, {"sub": "g-9", "email": "a@b.co", "email_verified": True}))
+    with pytest.raises(HTTPException) as err:
+        await auth.google_sign_in(auth.GoogleSignInRequest(access_token="stolen"), Users(), Refresh())
+    assert err.value.status_code == 401
+
+
+async def test_google_access_token_with_unverified_email_is_refused(monkeypatch):
+    monkeypatch.setattr(auth.settings, "google_client_id", "my-app")
+    _fake_google_http(monkeypatch,
+                      FakeResp(200, {"aud": "my-app", "sub": "g-9"}),
+                      FakeResp(200, {"sub": "g-9", "email": "a@b.co", "email_verified": "false"}))
+    with pytest.raises(HTTPException) as err:
+        await auth.google_sign_in(auth.GoogleSignInRequest(access_token="tok"), Users(), Refresh())
+    assert err.value.status_code == 401
+
+
+async def test_an_expired_google_access_token_is_refused(monkeypatch):
+    monkeypatch.setattr(auth.settings, "google_client_id", "my-app")
+    _fake_google_http(monkeypatch, FakeResp(400, {"error": "invalid_token"}), FakeResp(401, {}))
+    with pytest.raises(HTTPException) as err:
+        await auth.google_sign_in(auth.GoogleSignInRequest(access_token="old"), Users(), Refresh())
+    assert err.value.status_code == 401
+
+
+async def test_code_sent_message_names_the_email_and_is_the_same_for_unknown_emails(codes, sent):
+    known = await auth.password_send_code(auth.SendCodeRequest(email="a@b.co"), Users(_user()), codes)
+    unknown = await auth.password_send_code(auth.SendCodeRequest(email="x@b.co"), Users(_user()), codes)
+    assert known["message"] == "Check your inbox. We've sent a code to a@b.co."
+    assert unknown["message"] == "Check your inbox. We've sent a code to x@b.co."
+    assert "If an account" not in known["message"]

@@ -148,6 +148,8 @@ async def approve_plan(
     if not plan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
     _ensure_owned(plan, caller_id)
+    from backend.app.account_context import current_user_id
+    current_user_id.set(caller_id)
 
     # Idempotency: if already approved, return existing plan
     if plan.status == "approved" and plan.grocery_list:

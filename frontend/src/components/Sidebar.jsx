@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ChevronUp, LogOut, Edit3, X } from 'lucide-react';
+import { ChevronUp, LogOut, Edit3, X, Trash2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { validateProfileField, PROFILE_LIMITS } from '../utils/profileLimits';
 import TagInput from './TagInput';
+import DeleteAccountModal from './DeleteAccountModal';
 import ThemedSelect from './ThemedSelect';
 import {
   COMMON_ALLERGENS,
@@ -119,6 +120,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }) {
   const { profile, user, signOut, chatBadge, plansBadge, groceryBadge } = useApp();
   const [showProfileDrop, setShowProfileDrop] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const footerRef = useRef(null);
 
   // Close profile dropdown when clicking outside
@@ -164,6 +166,11 @@ export default function Sidebar({ mobileOpen, onMobileClose }) {
     setShowProfileDrop(false);
     signOut();
     navigate('/');
+  }
+
+  function handleDeleteAccount() {
+    setShowProfileDrop(false);
+    setShowDeleteModal(true);
   }
 
   function handleEditProfile() {
@@ -225,6 +232,10 @@ export default function Sidebar({ mobileOpen, onMobileClose }) {
                 <Edit3 size={14} />
                 Edit Profile
               </button>
+              <button className="dropdown-item danger" onClick={handleDeleteAccount} id="delete-account-menu-item">
+                <Trash2 size={14} />
+                Delete Account
+              </button>
               <div className="dropdown-divider" />
               <button className="dropdown-item danger" onClick={handleSignOut} id="sign-out-menu-item">
                 <LogOut size={14} />
@@ -250,6 +261,9 @@ export default function Sidebar({ mobileOpen, onMobileClose }) {
 
       {showEditModal && (
         <EditProfileModal onClose={() => setShowEditModal(false)} />
+      )}
+      {showDeleteModal && (
+        <DeleteAccountModal onClose={() => setShowDeleteModal(false)} />
       )}
     </>
   );

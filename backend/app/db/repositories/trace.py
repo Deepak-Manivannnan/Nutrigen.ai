@@ -3,6 +3,7 @@ from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.models import AgentTrace
 from backend.app.schemas.messages import AgentMessage
+from backend.app.account_context import current_user_id
 
 class TraceRepository:
     def __init__(self, session: AsyncSession):
@@ -14,6 +15,7 @@ class TraceRepository:
             payload["message"] = message.content
         trace = AgentTrace(
             task_id=message.task_id,
+            user_id=current_user_id.get(),
             from_agent=message.from_agent,
             to_agent=message.to_agent,
             type=message.type,

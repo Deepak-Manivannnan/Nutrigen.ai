@@ -4969,11 +4969,6 @@ ol {
 /* --- Sign in with Google + email code steps ------------------------------ */
 .auth-divider.auth-divider-spaced { margin: var(--space-5) 0 var(--space-4); }
 
-.google-btn-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.google-btn-wrap.is-busy { opacity: 0.6; pointer-events: none; }
-.google-btn-slot { width: 100%; min-height: 44px; display: flex; justify-content: center; }
-.google-btn-status { font-size: var(--text-xs); color: var(--gray-500); }
-
 .auth-row-end { display: flex; justify-content: flex-end; margin-top: -4px; }
 .auth-link {
   background: none; border: none; padding: 0; cursor: pointer;
@@ -4990,3 +4985,47 @@ ol {
 .code-input { letter-spacing: 6px; font-size: var(--text-lg, 18px); font-weight: 600; text-align: center; }
 .code-actions { display: flex; justify-content: space-between; align-items: center; font-size: var(--text-sm); }
 .verified-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--green-700, #15803d); font-size: var(--text-sm); font-weight: 600; }
+
+.google-btn {
+  width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 11px 16px; background: #fff; border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-md); font-family: inherit; font-size: var(--text-sm);
+  font-weight: 600; color: var(--gray-700); cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.google-btn:hover:not(:disabled) { background: var(--gray-50); border-color: var(--gray-300); }
+.google-btn:disabled { opacity: 0.65; cursor: default; }
+
+.otp-group { display: flex; justify-content: space-between; gap: 8px; }
+.otp-box {
+  width: 100%; max-width: 52px; aspect-ratio: 1 / 1.1; text-align: center;
+  font-size: 22px; font-weight: 700; font-family: inherit; color: var(--gray-900);
+  border: 1.5px solid var(--color-border); border-radius: var(--radius-md); background: #fff;
+  outline: none; transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.otp-box:focus { border-color: var(--green-500, #22c55e); box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18); }
+
+.auth-sent-note { text-align: center; font-size: var(--text-sm); color: var(--gray-600); margin: 0; }
+.auth-sent-note strong { color: var(--gray-900); font-weight: 600; word-break: break-all; }
+
+.form-input.is-verified, .form-input:disabled.is-verified {
+  background: var(--gray-50); color: var(--gray-600); padding-right: 42px; cursor: default;
+}
+.verified-check {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  color: var(--green-600, #16a34a); display: flex; pointer-events: none;
+}
+
+/* --- Delete account ------------------------------------------------------ */
+.delete-account-modal { max-width: 440px; }
+.modal-title.danger-title { color: var(--color-error, #dc2626); }
+.delete-lead { margin: 0 0 var(--space-3); font-size: var(--text-sm); color: var(--gray-700); line-height: 1.5; }
+.delete-lead strong { color: var(--gray-900); }
+.delete-list { margin: 0 0 var(--space-3); padding-left: 20px; font-size: var(--text-sm); color: var(--gray-700); line-height: 1.7; }
+.delete-warning { margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--color-error, #dc2626); }
+.delete-resend { display: flex; justify-content: flex-end; margin-top: var(--space-3); }
+.delete-error {
+  margin-top: var(--space-3); background: var(--color-error-bg); border: 1px solid #fca5a5; color: var(--color-error);
+  border-radius: var(--radius-md); padding: 8px 12px; font-size: var(--text-sm);
+}
+.modal-close:disabled { opacity: 0.4; cursor: default; }

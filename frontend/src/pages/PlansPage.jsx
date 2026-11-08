@@ -412,7 +412,7 @@ export default function PlansPage() {
                   </>
                 ) : (
                   <>
-                    <Clock size={12} /> Draft
+                    <Clock size={12} /> {activePlan.version > 0 ? `Draft · changes to Version ${activePlan.version}` : 'Draft'}
                   </>
                 )}
               </span>

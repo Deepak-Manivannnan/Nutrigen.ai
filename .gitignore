@@ -24,6 +24,7 @@ frontend/dist/
 meal_planner.db
 *.sqlite3
 *.log
+_deleted_accounts_backup.json
 
 # Scratch directory
 scratch/

@@ -1,3 +1,5 @@
+import asyncio
+from pydantic import BaseModel, Field
 import re
 import uuid
 from datetime import datetime
@@ -201,6 +203,41 @@ def _new_exclusions(requested, user_profile) -> list:
             seen.add(key)
             fresh.append(key)
     return fresh
+
+
+class _NewDislikes(BaseModel):
+    new_foods: List[str] = Field(default_factory=list, description="Foods from the excluded list that are genuinely new.")
+
+
+async def _ai_new_exclusions(supervisor, requested, user_profile) -> list:
+    """The excluded foods the profile doesn't already cover, judged by the model.
+
+    Exact matching missed plurals, typos and other names for the same food
+    ("mushrooms" vs a saved "mushroom", "brinjal" vs "eggplant"). The model
+    gets the saved dislikes and allergies and returns only what is new. On any
+    failure nothing is asked: a wrong question is worse than none.
+    """
+    candidates = _new_exclusions(requested, user_profile)
+    if not candidates:
+        return []
+    known = [str(x) for x in (user_profile.get("dislikes") or [])] + [str(x) for x in (user_profile.get("allergies") or [])]
+    if not known:
+        return candidates
+    prompt = (
+        f"Saved disliked foods and allergies: {known}.\n"
+        f"Foods the user just asked to leave out: {candidates}.\n"
+        "Return in new_foods ONLY the foods from the second list that are NOT already covered by the first list. "
+        "A food is covered if it is the same food under a plural or singular form, a spelling variant or typo, "
+        "a regional or other common name (brinjal = eggplant, capsicum = bell pepper), or it falls under a saved "
+        "allergy (e.g. cashews under nuts). Use the user's wording from the second list. If none are new, return []."
+    )
+    try:
+        out = await asyncio.wait_for(supervisor.llm.generate_structured(prompt, _NewDislikes), timeout=20)
+    except Exception as e:
+        logger.warning(f"Dislike check failed, not asking: {e}")
+        return []
+    allowed = {c.lower(): c for c in candidates}
+    return [allowed[f.strip().lower()] for f in (out.new_foods or []) if f.strip().lower() in allowed]
 
 
 async def _save_dislikes(user_id: int, new_items: list, session=None) -> list:
@@ -2087,10 +2124,10 @@ async def _run_meal_planner_impl(    user_id: int,
         # Check if already approved
         if target_plan.status == "approved" and target_plan.grocery_list:
             context_prompt = (
-                f"The meal plan '{target_plan.name}' is already approved (Version {target_plan.version}). "
+                f"The meal plan '{target_plan.name}' is already approved. "
                 f"In polite, natural English, inform the user that this plan is already approved, "
                 f"and they can view its full itemized grocery checklist and Mandi market rates in the Grocery tab. "
-                f"Do NOT use the word 'approved' as a label - just mention it's Version {target_plan.version}."
+                f"Do NOT use the word 'approved' as a label. Do not mention version numbers."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -2145,12 +2182,15 @@ async def _run_meal_planner_impl(    user_id: int,
 
             domain_plan = PlanRepository.to_meal_plan_domain(target_plan)
             approval_allergies = list(user_profile.get("allergies") or [])
+            from backend.app.orchestration.progress import APPROVE_INTRO, approval_event
+            await approval_event(tid, "run_started", "running", intro=APPROVE_INTRO, plan_name=target_plan.name)
             if session:
                 grocery_basket = await build_and_verify_grocery(
                     meal_plan=domain_plan,
                     user_allergies=approval_allergies,
                     session=session,
-                    task_id=f"approve-{target_plan.id}"
+                    task_id=f"approve-{target_plan.id}",
+                    progress_task_id=tid,
                 )
             else:
                 async with AsyncSessionLocal() as check_session:
@@ -2158,9 +2198,13 @@ async def _run_meal_planner_impl(    user_id: int,
                         meal_plan=domain_plan,
                         user_allergies=approval_allergies,
                         session=check_session,
-                        task_id=f"approve-{target_plan.id}"
+                        task_id=f"approve-{target_plan.id}",
+                        progress_task_id=tid,
                     )
             target_plan.grocery_list = grocery_basket.model_dump()
+            # Versions count approvals: first approval = Version 1, next = 2.
+            approved_version = (target_plan.version or 0) + 1
+            target_plan.version = approved_version
             target_plan.status = "approved"
             target_plan.approved_at = ist_now()
             target_plan.updated_at = ist_now()
@@ -2170,6 +2214,7 @@ async def _run_meal_planner_impl(    user_id: int,
                 p_db = await repo.get_by_id(target_plan.id)
                 if p_db:
                     p_db.grocery_list = grocery_basket.model_dump()
+                    p_db.version = approved_version
                     p_db.status = "approved"
                     p_db.approved_at = ist_now()
                     p_db.updated_at = ist_now()
@@ -2181,6 +2226,7 @@ async def _run_meal_planner_impl(    user_id: int,
                     p_db = await repo.get_by_id(target_plan.id)
                     if p_db:
                         p_db.grocery_list = grocery_basket.model_dump()
+                        p_db.version = approved_version
                         p_db.status = "approved"
                         p_db.approved_at = ist_now()
                         p_db.updated_at = ist_now()
@@ -2188,10 +2234,10 @@ async def _run_meal_planner_impl(    user_id: int,
 
             cost = int(grocery_basket.total_estimated_cost or 0)
             context_prompt = (
-                f"Successfully approved meal plan '{target_plan.name}' (now Version {target_plan.version + 1}). "
+                f"Successfully approved meal plan '{target_plan.name}' (Version {approved_version}). "
                 f"Compiled an itemized grocery checklist with {len(grocery_basket.items)} ingredients based on wholesale Mandi benchmarks totaling approximately ₹{cost:,}. "
                 f"In polite, warm, conversational English, let the user know their meal plan is approved and their grocery list is ready to review in the Grocery tab. "
-                f"Mention they can view the approved plan (Version {target_plan.version + 1}) in the Plans tab."
+                f"Mention they can view the approved plan in the Plans tab. Do not mention version numbers."
             )
             response_text = await supervisor.generate_conversational_response(
                 user_message=user_message,
@@ -3286,6 +3332,25 @@ async def _run_meal_planner_impl(    user_id: int,
             )
         return state
 
+    # Live progress card: appears at once, then the Supervisor's opening line.
+    from backend.app.orchestration.progress import start_plan_announcement
+    await start_plan_announcement(supervisor, state, user_message, history)
+
+    # Hand the database connection back before the agents run. A plan build
+    # can take minutes; a connection held idle that long can be dropped by
+    # the network, and the save at the end then failed and the plan was lost.
+    # Sessions don't expire their objects on commit, so everything loaded
+    # stays usable; the next query gets a fresh, health-checked connection.
+    if session is not None:
+        try:
+            await session.commit()
+        except Exception as e:
+            logger.warning(f"[{tid}] Could not release the DB connection before planning: {e}")
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+
     graph = create_meal_planner_graph()
     result = await graph.ainvoke(state)
 
@@ -3340,7 +3405,7 @@ async def _run_meal_planner_impl(    user_id: int,
                 repo = PlanRepository(session)
                 if intent_data.intent == "edit_meal" and existing_plan and db_plan_id:
                     is_edit_previously_approved = bool(matched_plan and getattr(matched_plan, "status", None) == "approved")
-                    new_version = (existing_plan.version or 1) + 1 if is_edit_previously_approved else (existing_plan.version or 1)
+                    new_version = existing_plan.version or 0  # edits never change it; only approval does
                     final_state.current_plan.version = new_version
                     persist_status = final_state.status if final_state.status in ("escalated", "failed") else "draft"
                     updated_p = await repo.update_plan(
@@ -3348,7 +3413,7 @@ async def _run_meal_planner_impl(    user_id: int,
                         meal_plan=final_state.current_plan,
                         grocery_list=None,  # Reset grocery list until user approves!
                         status=persist_status,
-                        increment_version=is_edit_previously_approved
+                        increment_version=False
                     )
                     final_state.plan_id = db_plan_id
                     final_state.plan_version = new_version
@@ -3358,7 +3423,7 @@ async def _run_meal_planner_impl(    user_id: int,
                     plan_title = getattr(final_state.current_plan, "name", None) or (matched_plan.name if matched_plan else "your meal plan")
                     context_prompt = (
                         f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
-                        f"The plan is now Version {new_version} Draft in the Plans tab. "
+                        f"The plan is a Draft in the Plans tab again, waiting for approval. "
                         f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready. "
                         f"Word it as an UPDATE: the plan already existed and their changes were applied to it. Do NOT say the plan was created, and do NOT claim their saved profile was changed (it was not)."
                     )
@@ -3389,7 +3454,7 @@ async def _run_meal_planner_impl(    user_id: int,
                         name=p_name,
                         diet_type=plan_diet_str,
                         cuisine=getattr(final_state, "cuisine", None),
-                        version=1
+                        version=0  # a new plan is a Draft; approval makes it Version 1
                     )
                     final_state.plan_id = created_p.id
                     final_state.plan_version = 1
@@ -3414,14 +3479,14 @@ async def _run_meal_planner_impl(    user_id: int,
                     persist_status = final_state.status if final_state.status in ("escalated", "failed") else "draft"
                     if intent_data.intent == "edit_meal" and existing_plan and db_plan_id:
                         is_edit_previously_approved = bool(matched_plan and getattr(matched_plan, "status", None) == "approved")
-                        new_version = (existing_plan.version or 1) + 1 if is_edit_previously_approved else (existing_plan.version or 1)
+                        new_version = existing_plan.version or 0  # edits never change it; only approval does
                         final_state.current_plan.version = new_version
                         await repo.update_plan(
                             plan_id=db_plan_id,
                             meal_plan=final_state.current_plan,
                             grocery_list=None,
                             status=persist_status,
-                            increment_version=is_edit_previously_approved
+                            increment_version=False
                         )
                         final_state.plan_id = db_plan_id
                         final_state.plan_version = new_version
@@ -3431,7 +3496,7 @@ async def _run_meal_planner_impl(    user_id: int,
                         plan_title = getattr(final_state.current_plan, "name", "your meal plan")
                         context_prompt = (
                             f"Successfully applied the user's edit request '{clean_inst}' to meal plan '{plan_title}'. "
-                            f"The plan is now Version {new_version} Draft in the Plans tab. "
+                            f"The plan is a Draft in the Plans tab again, waiting for approval. "
                             f"In natural, polite, friendly conversational English, let the user know their modification has been applied to '{plan_title}' and that they can review it in the Plans tab and approve it whenever ready. "
                             f"Word it as an UPDATE: the plan already existed and their changes were applied to it. Do NOT say the plan was created, and do NOT claim their saved profile was changed (it was not)."
                         )
@@ -3460,7 +3525,7 @@ async def _run_meal_planner_impl(    user_id: int,
                             name=p_name,
                             diet_type=plan_diet_str,
                             cuisine=getattr(final_state, "cuisine", None),
-                            version=1
+                            version=0  # a new plan is a Draft; approval makes it Version 1
                         )
                         final_state.plan_id = created_p.id
                         final_state.plan_version = 1
@@ -3480,6 +3545,12 @@ async def _run_meal_planner_impl(    user_id: int,
                         )
         except Exception as e:
             logger.error(f"[{tid}] Failed to persist plan to database: {e}", exc_info=True)
+            # Leave the session usable for the rest of this reply.
+            if session is not None:
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
 
     # The user left foods out of this plan that their profile does not already
     # cover: now that the plan exists, ask whether to remember them as dislikes.
@@ -3490,19 +3561,28 @@ async def _run_meal_planner_impl(    user_id: int,
         and final_state.current_plan is not None
         and final_state.status == "draft"
     ):
-        fresh = _new_exclusions(intent_data.requested_exclusions, user_profile)
+        fresh = await _ai_new_exclusions(supervisor, intent_data.requested_exclusions, user_profile)
         if fresh:
             try:
-                question = await _ask_without_claiming(
-                    supervisor, user_message=user_message, history=history, user_name=user_profile.get("name"),
+                # ONE message: the plan-ready reply and the question together.
+                # Two separate texts glued together repeated "your plan is ready".
+                ready_text = (final_state.system_message or "").strip()
+                combined = await supervisor.generate_conversational_response(
+                    user_message=user_message, history=history, user_name=user_profile.get("name"),
                     context=(
-                        f"Their new plan is ready and it leaves out {', '.join(fresh)}, which are not in their saved disliked foods. "
-                        f"In one or two warm, natural sentences, ask whether they would like those remembered as disliked foods, "
-                        f"so future plans leave them out by default without them having to say so. "
-                        f"IMPORTANT: you are only asking; nothing has been saved yet. Do not repeat the sentence about the plan being ready."
+                        f"You already wrote this reply telling the user their plan is ready:\n\"{ready_text}\"\n"
+                        f"The plan also leaves out {', '.join(fresh)}, which are not in their saved disliked foods. "
+                        f"Rewrite it as ONE natural message: keep everything the reply says (plan ready, where to find it), "
+                        f"say it only once, and end with one short question asking whether they'd like {', '.join(fresh)} "
+                        f"remembered as disliked foods so future plans leave them out automatically. "
+                        f"IMPORTANT: nothing has been saved to their profile yet; you are only asking."
                     ),
                 )
-                final_state.system_message = f"{final_state.system_message}\n\n{question}".strip()
+                combined = (combined or "").strip()
+                question = combined.splitlines()[-1] if combined else ""
+                if not combined or not question:
+                    raise ValueError("empty combined reply")
+                final_state.system_message = combined
                 final_state.pending_workflow = PendingWorkflow(
                     workflow_type="save_dislikes",
                     pending_conflicts=["save_dislikes"],

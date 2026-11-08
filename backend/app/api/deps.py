@@ -3,7 +3,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.session import get_db
 from backend.app.db.repositories.users import UserRepository
 from backend.app.db.repositories.plans import PlanRepository
-from backend.app.db.repositories.trace import TraceRepository
 from backend.app.db.repositories.refresh_tokens import RefreshTokenRepository
 from backend.app.db.repositories.email_codes import EmailCodeRepository
 from backend.app.api.security import decode_token
@@ -14,9 +13,6 @@ async def get_user_repository(session: AsyncSession = Depends(get_db)) -> UserRe
 
 async def get_plan_repository(session: AsyncSession = Depends(get_db)) -> PlanRepository:
     return PlanRepository(session)
-
-async def get_trace_repository(session: AsyncSession = Depends(get_db)) -> TraceRepository:
-    return TraceRepository(session)
 
 async def get_refresh_token_repository(session: AsyncSession = Depends(get_db)) -> RefreshTokenRepository:
     return RefreshTokenRepository(session)

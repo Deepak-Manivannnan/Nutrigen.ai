@@ -8,7 +8,6 @@ from backend.app.api.routes.auth import router as auth_router
 from backend.app.api.routes.profile import router as profile_router
 from backend.app.api.routes.chat import router as chat_router
 from backend.app.api.routes.plans import router as plans_router
-from backend.app.api.routes.trace import router as trace_router
 from backend.app.api.streaming import router as streaming_router
 from backend.app.observability.logging import setup_logging
 
@@ -55,7 +54,6 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(profile_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
 app.include_router(plans_router, prefix="/api")
-app.include_router(trace_router, prefix="/api")
 app.include_router(streaming_router, prefix="/api")
 
 @app.get("/health")

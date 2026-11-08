@@ -122,8 +122,16 @@ class GroceryItem(BaseModel):
     price_per_kg: float = 0.0
     estimated_cost: float = 0.0
     price_source: Literal["mandi_api", "baseline_cache", "ai_estimate"] = "baseline_cache"
+    # Smallest pack a shop sells when the plan needs less (5 g ginger -> 100 g);
+    # the cost is for this amount. None when the plan's amount is bought as is.
+    buy_grams: Optional[float] = None
+    # Salt, spices, oils, sauces: listed, but most kitchens already have them,
+    # so they are kept out of the main total (see GroceryList.staples_cost).
+    staple: bool = False
 
 class GroceryList(BaseModel):
     items: List[GroceryItem] = Field(default_factory=list)
+    # Cost of the pantry staples, if the user has to buy them too.
+    staples_cost: float = 0.0
     total_estimated_cost: float = 0.0
     currency: str = "INR"

@@ -456,7 +456,7 @@ export function adaptBackendPlan(rawPlan, profile) {
     dietType: dietLabel,
     rawDietType: planDiet,
     status: rawPlan.status || 'draft',
-    version: rawPlan.version || 1,
+    version: rawPlan.version || 0,
     grocery_list: rawPlan.grocery_list || null,
     created_at: rawPlan.created_at,
     updated_at: rawPlan.updated_at,

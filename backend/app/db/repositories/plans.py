@@ -19,7 +19,7 @@ class PlanRepository:
         status: str = "draft",
         name: Optional[str] = None,
         diet_type: Optional[str] = None,
-        version: int = 1,
+        version: int = 0,
         cuisine: Optional[str] = None
     ) -> Plan:
         plan_name = name or getattr(meal_plan, "name", None) or f"{days}-Day Meal Plan"

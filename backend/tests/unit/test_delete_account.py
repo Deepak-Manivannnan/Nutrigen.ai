@@ -16,7 +16,7 @@ from backend.app.api import deps
 from backend.app.api.routes import auth
 from backend.app.api.security import create_token
 from backend.app.db.models import (
-    AgentTrace, EmailCode, Plan, PlanMeal, RefreshToken, User, UserAllergy,
+    EmailCode, Plan, PlanMeal, RefreshToken, User, UserAllergy,
 )
 from backend.app.db.repositories.email_codes import EmailCodeRepository
 from backend.app.db.repositories.users import UserRepository
@@ -64,10 +64,6 @@ async def _make_user(db, email="asha@b.co", verified=True, password_hash=None):
     db.add(PlanMeal(plan_id=plan.id, day=1, meal_type="lunch", recipe_name="Bowl", ingredients=[], calories=500.0))
     db.add(RefreshToken(user_id=user.id, token_hash="h" * 64, family_id="f", created_at=now,
                         expires_at=datetime(2099, 1, 1)))
-    db.add(AgentTrace(task_id="t-1", user_id=user.id, from_agent="supervisor", to_agent="planner_agent",
-                      type="task", payload={"message": "plan for Asha"}, timestamp=now))
-    db.add(AgentTrace(task_id="t-other", user_id=999, from_agent="supervisor", to_agent="planner_agent",
-                      type="task", payload={}, timestamp=now))
     await db.commit()
     return await UserRepository(db).get_by_id(user.id)
 
@@ -101,10 +97,7 @@ async def test_verified_account_is_deleted_with_a_code_and_nothing_is_left(db, s
     assert await _count(db, PlanMeal) == 0
     assert await _count(db, UserAllergy, UserAllergy.user_id == uid) == 0
     assert await _count(db, RefreshToken, RefreshToken.user_id == uid) == 0
-    assert await _count(db, AgentTrace, AgentTrace.user_id == uid) == 0
     assert await _count(db, EmailCode, EmailCode.email == "asha@b.co") == 0
-    # Someone else's trace rows are untouched.
-    assert await _count(db, AgentTrace, AgentTrace.user_id == 999) == 1
     assert sent["goodbye"] == ["asha@b.co"]
 
 

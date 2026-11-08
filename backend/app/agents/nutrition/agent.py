@@ -293,41 +293,51 @@ class NutritionAgent(BaseAgent[NutritionReport]):
         aliases: Dict[str, str] = {}
         estimates: Dict[str, Dict[str, Any]] = {}
         try:
-            probe = await self._probe_ingredients(plan)
-            uncertain = [n for n, r in probe.items() if not self._is_confident(r)]
-
-            if uncertain:
-                logger.info(
-                    f"[NutritionAgent] {len(uncertain)}/{len(probe)} ingredients "
-                    f"matched poorly; showing the model the alternatives."
-                )
-                aliases = await self._ask_for_better_search_terms(uncertain, probe)
-
-            if aliases:
-                set_ingredient_aliases(aliases)
-                # Re-probe only the rewritten names; everything else is cached.
-                recheck = await asyncio.gather(
-                    *(lookup_nutrition(n) for n in aliases),
-                    return_exceptions=True,
-                )
-                still_bad = [
-                    n for n, r in zip(aliases, recheck)
-                    if isinstance(r, Exception) or not self._is_confident(r)
-                ]
-                if still_bad:
-                    basis = "raw"
-                    if str(user_profile.get("goal") or "") == "maintain":
-                        basis = "cooked"
-                    estimates = await self._ask_for_macro_estimates(still_bad, basis)
-                    if estimates:
-                        logger.info(
-                            f"[NutritionAgent] No database record for "
-                            f"{len(estimates)} ingredient(s); using model estimates."
-                        )
+            await asyncio.wait_for(self._resolve_ingredients(plan, user_profile, aliases, estimates),
+                                   timeout=float(settings.nutrition_step_timeout_seconds))
         except Exception as e:
-            logger.warning(f"[NutritionAgent] Ingredient resolution error ({e}).")
-            aliases, estimates = {}, {}
+            # Includes a timeout: unresolved foods simply use the database
+            # match; the verdict is still computed in code below.
+            logger.warning(f"[NutritionAgent] Ingredient resolution stopped ({type(e).__name__}: {e}).")
+            aliases.clear()
+            estimates.clear()
+        return await self._finish_review(plan, calorie_target, user_profile, task_id, aliases, estimates)
 
+    async def _resolve_ingredients(self, plan, user_profile, aliases, estimates) -> None:
+        """Better food matches for the math: fills `aliases` and `estimates`."""
+        probe = await self._probe_ingredients(plan)
+        uncertain = [n for n, r in probe.items() if not self._is_confident(r)]
+
+        if uncertain:
+            logger.info(
+                f"[NutritionAgent] {len(uncertain)}/{len(probe)} ingredients "
+                f"matched poorly; showing the model the alternatives."
+            )
+            aliases.update(await self._ask_for_better_search_terms(uncertain, probe) or {})
+
+        if aliases:
+            set_ingredient_aliases(aliases)
+            # Re-probe only the rewritten names; everything else is cached.
+            recheck = await asyncio.gather(
+                *(lookup_nutrition(n) for n in aliases),
+                return_exceptions=True,
+            )
+            still_bad = [
+                n for n, r in zip(aliases, recheck)
+                if isinstance(r, Exception) or not self._is_confident(r)
+            ]
+            if still_bad:
+                basis = "raw"
+                if str(user_profile.get("goal") or "") == "maintain":
+                    basis = "cooked"
+                estimates.update(await self._ask_for_macro_estimates(still_bad, basis) or {})
+                if estimates:
+                    logger.info(
+                        f"[NutritionAgent] No database record for "
+                        f"{len(estimates)} ingredient(s); using model estimates."
+                    )
+
+    async def _finish_review(self, plan, calorie_target, user_profile, task_id, aliases, estimates):
         set_ingredient_aliases(aliases)
         set_ingredient_estimates(estimates)
         try:
@@ -366,8 +376,11 @@ class NutritionAgent(BaseAgent[NutritionReport]):
 
         # 3. Run LLM reasoning loop
         try:
-            report: NutritionReport = await self.run(task_instruction, context)
-        except Exception as e:
+            report: NutritionReport = await asyncio.wait_for(
+                self.run(task_instruction, context),
+                timeout=float(settings.nutrition_step_timeout_seconds),
+            )
+        except Exception as e:  # includes the overall timeout
             logger.warning(f"NutritionAgent LLM review failed ({e}); falling back to deterministic calculations.")
             report = NutritionReport(
                 daily_totals=code_daily_totals,

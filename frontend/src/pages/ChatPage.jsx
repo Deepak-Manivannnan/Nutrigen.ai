@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Send, Trash2, ChevronRight, MessageSquarePlus } from 'lucide-react';
 import { useApp, loadInflight, saveInflight } from '../context/AppContext';
-import AgentTraceBar from '../components/AgentTraceBar';
+import LiveRun, { AgentTimeline } from '../components/AgentRunCard';
+import useAgentRun from '../hooks/useAgentRun';
 import {
   sendChatMessage,
   fetchChatResult,
@@ -13,8 +14,8 @@ import {
 import nutrigenLogo from '../assets/nutrigen_logo.png';
 
 // Delivery machinery: how the client behaves when the page reloads mid-run.
-// INFLIGHT_TIMEOUT_MS â€” max wait for an orphaned run before an honest
-// timeout note replaces "typingâ€¦". BOOT_GRACE_MS â€” extra wait granted on
+// INFLIGHT_TIMEOUT_MS — max wait for an orphaned run before an honest
+// timeout note replaces "typing…". BOOT_GRACE_MS — extra wait granted on
 // boot so a slow-but-alive run can still deliver after a late reload.
 const INFLIGHT_TIMEOUT_MS = 10 * 60 * 1000;
 const BOOT_GRACE_MS = 3 * 60 * 1000;
@@ -153,11 +154,11 @@ function FormattedMessage({ text, onPlanLink }) {
         if (!line.trim()) {
           return <div key={idx} style={{ height: '0.35rem' }} />;
         }
-        const bulletMatch = line.match(/^(\s*[-â€¢*]\s+)(.*)$/);
+        const bulletMatch = line.match(/^(\s*[-•*]\s+)(.*)$/);
         if (bulletMatch) {
           return (
             <div key={idx} style={{ display: 'flex', gap: '0.4rem', margin: '0.2rem 0' }}>
-              <span style={{ color: 'var(--green-600)', fontWeight: 600 }}>â€¢</span>
+              <span style={{ color: 'var(--green-600)', fontWeight: 600 }}>•</span>
               <span>{renderInlineMarkdown(bulletMatch[2], onPlanLink)}</span>
             </div>
           );
@@ -172,7 +173,7 @@ function FormattedMessage({ text, onPlanLink }) {
   );
 }
 
-function MessageBubble({ msg, onAction, onPlanLink, userInitial = 'U' }) {
+function MessageBubble({ msg, onAction, onPlanLink, userInitial = 'U', isLast = false }) {
   const isUser = msg.role === 'user';
 
   function formatTime(ts) {
@@ -186,7 +187,10 @@ function MessageBubble({ msg, onAction, onPlanLink, userInitial = 'U' }) {
       <div className={`message-avatar ${isUser ? 'user' : 'ai'}`}>
         {isUser ? userInitial : <img src={nutrigenLogo} alt="" className="message-avatar-logo" />}
       </div>
-      <div style={{ maxWidth: '85%' }}>
+      <div style={{ maxWidth: '85%', minWidth: 0 }}>
+        {/* What the agents did, collapsed above the reply. Only while this
+            reply is the latest message: the next message hides it. */}
+        {!isUser && isLast && msg.run && <AgentTimeline run={msg.run} />}
         <div
           className={`message-bubble ${isUser ? 'user' : 'ai'}`}
           style={!isUser && msg.tone === 'error'
@@ -263,6 +267,10 @@ export default function ChatPage() {
   // state: it is only read at send time and must not trigger a re-render.
   const lastPlanId = useRef(null);
   const traceTaskId = activeTaskId || (isAgentRunning ? bootTaskRef.current : null);
+  // Live progress card for a plan build or approval (null for normal replies).
+  const liveRun = useAgentRun(traceTaskId, isAgentRunning);
+  const liveRunRef = useRef(null);
+  liveRunRef.current = liveRun;
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   // Pending conflict questions (e.g. diet/calorie) and in-progress updates live
@@ -282,7 +290,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, chatStatus]);
+  }, [messages, chatStatus, liveRun?.steps?.length, liveRun?.intro]);
 
   async function handleSend(textOverride) {
     const text = (typeof textOverride === 'string' ? textOverride : input).trim();
@@ -338,7 +346,7 @@ export default function ChatPage() {
     }
   }
 
-  // Applies a finished ChatResponse envelope through the single shared path â€”
+  // Applies a finished ChatResponse envelope through the single shared path —
   // used by live replies AND inbox deliveries alike, so a delivered reply
   // behaves indistinguishably (pending sync, plan sync, badges, buttons).
   // Always terminal: clears the inflight marker and the running flag.
@@ -351,6 +359,15 @@ export default function ChatPage() {
     // swallowed.
     const seenKey = chatRes?.task_id || null;
     if (seenKey && takeApplied(seenKey)) return;
+    // The finished run's timeline goes with the reply, collapsed to one line;
+    // the opening "Got it..." bubble disappears with the live card.
+    const finishedRun = liveRunRef.current
+      ? {
+          ...liveRunRef.current,
+          finishedAt: Date.now(),
+          steps: liveRunRef.current.steps.map(s => (s.status === 'running' ? { ...s, status: 'done' } : s)),
+        }
+      : null;
     setChatStatus(null);
     setIsAgentRunning(false);
     // The bar is progress for an in-flight run only; once the reply lands it
@@ -361,7 +378,7 @@ export default function ChatPage() {
 
     // Keep the pending conflict context so a follow-up answer resolves it
     // (context-level, survives navigating to the Plans tab and back).
-    // A null pending from a finished run overwrites any stale saved one â€”
+    // A null pending from a finished run overwrites any stale saved one —
     // this is what neutralizes resurrected confirmations after reload.
     setPendingWorkflow(chatRes.pending_workflow || null);
 
@@ -422,6 +439,7 @@ export default function ChatPage() {
       actionLabel: action ? action.label : null,
       actionTarget: action ? action.target : null,
       planId: createdPlan?.id,
+      run: finishedRun && finishedRun.steps.length ? finishedRun : undefined,
       });
 
     // NOW the run is over as far as the user is concerned, so the marker can
@@ -447,7 +465,7 @@ export default function ChatPage() {
   // delivered reply (indistinguishable from live) or time out honestly.
   // Send stays disabled throughout (isAgentRunning), mirroring generation.
   // NOTE: deliberately no "run once" ref guard here. React StrictMode
-  // double-invokes mount effects in dev (run â†’ cleanup â†’ run); the cleanup
+  // double-invokes mount effects in dev (run → cleanup → run); the cleanup
   // below already cancels the first poll, so the second run safely takes over.
   // A ref guard would kill the surviving run too (refs persist across the
   // double-invoke) and silently disable all boot reconciliation.
@@ -460,9 +478,9 @@ export default function ChatPage() {
     setIsAgentRunning(true);
     setChatStatus('Nutrigen is typing...');
     // Resumed run: hand its id to the progress bar so a reload mid-swarm still
-    // shows live stages rather than a bare "typingâ€¦" dot. Held in a ref rather
+    // shows live stages rather than a bare "typing…" dot. Held in a ref rather
     // than state because this effect already sets state for the same resume,
-    // and a third setter here would add a warning without adding a render â€”
+    // and a third setter here would add a warning without adding a render —
     // the isAgentRunning update above already re-renders past this line.
     bootTaskRef.current = inf.taskId;
     const deadline = Math.max((inf.sentAt || Date.now()) + INFLIGHT_TIMEOUT_MS, Date.now() + BOOT_GRACE_MS);
@@ -474,7 +492,7 @@ export default function ChatPage() {
         saveInflight(uid, null);
         addMessage({
           role: 'assistant',
-          content: "That run didn't finish before you reloaded, so I don't have its reply. Your request is still above â€” feel free to send it again.",
+          content: "That run didn't finish before you reloaded, so I don't have its reply. Your request is still above — feel free to send it again.",
           tone: 'error',
         });
         return;
@@ -563,24 +581,23 @@ export default function ChatPage() {
             </div>
           ) : (
             <>
-              {messages.map(msg => (
+              {messages.map((msg, i) => (
                 <MessageBubble
                   key={msg.id}
                   msg={msg}
+                  isLast={i === messages.length - 1}
                   onAction={handleAction}
                   onPlanLink={handlePlanLink}
                   userInitial={userInitial}
                 />
               ))}
-              {chatStatus && <StatusIndicator text={chatStatus} />}
+              {liveRun
+                ? <LiveRun run={liveRun} logo={nutrigenLogo} />
+                : chatStatus && <StatusIndicator text={chatStatus} />}
               <div ref={messagesEndRef} />
             </>
           )}
         </div>
-
-        {/* Live progress for a running swarm. Sits between the last message and
-            the composer, and renders nothing once the run is terminal. */}
-        <AgentTraceBar taskId={traceTaskId} active={isAgentRunning} />
 
         {/* Input */}
         <div className="chat-input-area">

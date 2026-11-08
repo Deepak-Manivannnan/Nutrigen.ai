@@ -107,11 +107,11 @@ class UserRepository:
 
         Explicit deletes, children first (no ORM lazy loading, which the async
         driver can't do): meals, plans (grocery lists live on the plan row),
-        allergies, sign-in keys, agent trace rows, emailed codes, then the user.
+        allergies, sign-in keys, emailed codes, then the user.
         One transaction: either everything goes or nothing does.
         """
         from sqlalchemy import delete as sa_delete
-        from backend.app.db.models import AgentTrace, EmailCode, Plan, PlanMeal, RefreshToken
+        from backend.app.db.models import EmailCode, Plan, PlanMeal, RefreshToken
         uid = user.id
         email = (user.email or "").strip().lower()
         plan_ids = select(Plan.id).where(Plan.user_id == uid).scalar_subquery()
@@ -120,7 +120,6 @@ class UserRepository:
             await self.session.execute(sa_delete(Plan).where(Plan.user_id == uid))
             await self.session.execute(sa_delete(UserAllergy).where(UserAllergy.user_id == uid))
             await self.session.execute(sa_delete(RefreshToken).where(RefreshToken.user_id == uid))
-            await self.session.execute(sa_delete(AgentTrace).where(AgentTrace.user_id == uid))
             if email:
                 await self.session.execute(sa_delete(EmailCode).where(EmailCode.email == email))
             await self.session.execute(sa_delete(User).where(User.id == uid))

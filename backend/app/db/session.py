@@ -39,8 +39,9 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)",
             "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NULL",
             "ALTER TABLE users ADD COLUMN google_id VARCHAR(64) NULL UNIQUE",
-            "ALTER TABLE agent_trace ADD COLUMN user_id INT NULL",
-            "CREATE INDEX ix_agent_trace_user_id ON agent_trace (user_id)",
+            # The agent_trace table was never written to (live progress is
+            # streamed, not stored); it was removed.
+            "DROP TABLE IF EXISTS agent_trace",
             "ALTER TABLE plans ADD COLUMN name VARCHAR(150)",
             "ALTER TABLE plans ADD COLUMN version INT NOT NULL DEFAULT 1",
             "ALTER TABLE plans ADD COLUMN diet_type VARCHAR(50) DEFAULT 'veg'",

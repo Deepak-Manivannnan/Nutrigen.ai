@@ -38,7 +38,7 @@ class PlanDetailResponse(BaseModel):
     diet_type: Optional[str] = "veg"
     cuisine: Optional[str] = None
     status: str
-    version: int = 1
+    version: int = 0
     grocery_list: Optional[Dict[str, Any]] = None
     created_at: datetime
     meals: List[PlanMealResponse] = []
@@ -70,7 +70,7 @@ def serialize_plan(plan: Plan) -> PlanDetailResponse:
         diet_type=plan_diet,
         cuisine=getattr(plan, "cuisine", None),
         status=plan.status,
-        version=getattr(plan, "version", 1) or 1,
+        version=getattr(plan, "version", 0) or 0,
         grocery_list=plan.grocery_list,
         created_at=plan.created_at,
         meals=meals_data
@@ -148,8 +148,6 @@ async def approve_plan(
     if not plan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
     _ensure_owned(plan, caller_id)
-    from backend.app.account_context import current_user_id
-    current_user_id.set(caller_id)
 
     # Idempotency: if already approved, return existing plan
     if plan.status == "approved" and plan.grocery_list:
@@ -189,6 +187,7 @@ async def approve_plan(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate grocery list")
 
     # Mark as approved with timestamp
+    plan.version = (plan.version or 0) + 1  # versions count approvals
     plan.status = "approved"
     plan.approved_at = ist_now()
     plan.updated_at = ist_now()

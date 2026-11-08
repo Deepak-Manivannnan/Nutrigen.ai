@@ -150,7 +150,9 @@ async def test_new_exclusions_are_applied_then_the_user_is_asked_to_remember_the
     assert state.pending_workflow.workflow_type == "save_dislikes"
     assert sorted(state.pending_workflow.extracted_info["exclusions"]) == ["mushroom", "paneer"]
     assert any("not in their saved disliked foods" in r["context"] for r in world.replies)
-    assert any("only asking; nothing has been saved yet" in r["context"] for r in world.replies)
+    assert any("you are only asking" in r["context"] for r in world.replies)
+    # One message, not two glued together: the plan-ready text is rewritten with the question.
+    assert any("Rewrite it as ONE natural message" in r["context"] for r in world.replies)
     assert state.profile_updated is False                        # nothing saved yet
 
 
@@ -361,3 +363,26 @@ async def test_the_planners_own_cuisine_guess_is_dropped():
 async def test_a_plan_without_a_requested_cuisine_is_saved_with_none(world, creating_graph):
     await run(world, "3 day plan", new_plan(requested_days=3))
     assert CreatingRepo.created[0]["cuisine"] is None
+
+async def test_the_model_decides_which_excluded_foods_are_really_new():
+    """Plurals, typos and other names are recognised; only new foods are offered."""
+    from types import SimpleNamespace
+    calls = []
+
+    class LLM:
+        async def generate_structured(self, prompt, schema):
+            calls.append(prompt)
+            return schema(new_foods=["paneer"])
+    sup = SimpleNamespace(llm=LLM())
+    out = await runner._ai_new_exclusions(sup, ["Mushrooms", "paneer"], {"dislikes": ["mushroom"], "allergies": []})
+    assert out == ["paneer"] and "mushroom" in calls[0]
+
+
+async def test_if_the_dislike_check_fails_nothing_is_asked():
+    from types import SimpleNamespace
+
+    class LLM:
+        async def generate_structured(self, prompt, schema):
+            raise RuntimeError("down")
+    out = await runner._ai_new_exclusions(SimpleNamespace(llm=LLM()), ["mushrooms"], {"dislikes": ["mushroom"]})
+    assert out == []

@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     max_rounds: int = 3
     max_agent_steps: int = 6
     agent_timeout_seconds: int = 30
+    # Hard limit on one AI request (seconds); see llm/client.py.
+    llm_request_timeout_seconds: int = 120
+    # Overall limit on each of the Nutrition agent's AI steps (seconds).
+    nutrition_step_timeout_seconds: int = 45
 
     # HMAC key used to sign session tokens. Set AUTH_TOKEN_SECRET in the
     # deployment environment; the fallback only exists so a fresh clone runs,

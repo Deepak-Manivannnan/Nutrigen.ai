@@ -118,7 +118,13 @@ class LLMClient:
         if self._client is None:
             if not self.api_key:
                 raise ValueError("GEMINI_API_KEY is not configured in .env")
-            self._client = genai.Client(api_key=self.api_key)
+            # Per-request time limit. Without one a single stuck call could
+            # wait for minutes. 120s still covers the Planner writing a whole
+            # 7-day plan in one call; a timeout is not retried.
+            self._client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=settings.llm_request_timeout_seconds * 1000),
+            )
         return self._client
 
     async def generate_text(self, prompt: str, system_instruction: Optional[str] = None) -> str:

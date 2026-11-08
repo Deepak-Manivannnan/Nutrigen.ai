@@ -12,7 +12,6 @@ import time
 import uuid
 
 logger = get_logger("api.chat")
-from backend.app.account_context import current_user_id  # noqa: E402
 router = APIRouter(prefix="/chat", tags=["Chat & Agents"])
 
 # Delivery inbox: finished chat responses keyed by task_id so a client that
@@ -124,9 +123,6 @@ async def chat_interaction(
         "suggested_target_calories": user.suggested_target_calories,
     }
 
-    # Tag every agent trace row of this run with its owner (account deletion
-    # removes them by this id).
-    current_user_id.set(user.id)
     try:
         final_state = await run_meal_planner(
             user_id=user.id,

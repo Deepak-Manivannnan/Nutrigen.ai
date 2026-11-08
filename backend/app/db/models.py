@@ -85,7 +85,8 @@ class Plan(Base):
     # The cuisine the plan was asked for (e.g. "South Indian"); later edits stay in it. NULL for older plans.
     cuisine = Column(String(100), nullable=True)
     status = Column(String(50), default="draft")  # draft, approving, approved, rejected, escalated
-    version = Column(Integer, default=1, nullable=False)
+    # Number of times approved: 0 = never approved (a Draft), 1 = Version 1...
+    version = Column(Integer, default=0, nullable=False)
     grocery_list = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=ist_now)
     updated_at = Column(DateTime, default=ist_now, onupdate=ist_now, nullable=True)
@@ -130,19 +131,3 @@ class RefreshToken(Base):
     expires_at = Column(DateTime, nullable=False)
     rotated_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
-
-
-class AgentTrace(Base):
-    __tablename__ = "agent_trace"
-
-    id = Column(Integer, primary_key=True, index=True)
-    task_id = Column(String(100), nullable=False, index=True)
-    # Owner of the run, so deleting an account also deletes its trace rows.
-    # NULL for rows written before this column existed.
-    user_id = Column(Integer, nullable=True, index=True)
-    from_agent = Column(String(50), nullable=False)
-    to_agent = Column(String(50), nullable=False)
-    type = Column(String(50), nullable=False)  # task, draft, feedback, veto, approve, etc.
-    payload = Column(JSON, default=dict)
-    timestamp = Column(DateTime, default=ist_now, index=True)
-
